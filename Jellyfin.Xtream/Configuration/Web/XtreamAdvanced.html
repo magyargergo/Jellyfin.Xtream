@@ -1,0 +1,380 @@
+<div id="XtreamAdvancedPage" data-role="page" class="page type-interior pluginConfigurationPage withTabs"
+  data-require="emby-input,emby-button,emby-select" data-controller="__plugin/XtreamAdvanced.js">
+  <div data-role="content">
+    <div class="content-primary">
+      <form id="XtreamAdvancedForm">
+        
+        <!-- Networking Section -->
+        <div class="verticalSection verticalSection-extrabottompadding">
+          <div class="sectionTitleContainer flex align-items-center">
+            <h2 class="sectionTitle">Network Configuration</h2>
+          </div>
+          
+          <h3>Proxy Configuration</h3>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="EnableProxy" />
+              <span>Enable Proxy</span>
+            </label>
+            <div class="fieldDescription">
+              Enable HTTP proxy for all Xtream API requests.
+            </div>
+          </div>
+          
+          <div id="ProxySettings" style="display: none;">
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ProxyAddress">Proxy Address</label>
+              <input id="ProxyAddress" name="ProxyAddress" type="text" is="emby-input" placeholder="proxy.example.com" />
+              <div class="fieldDescription">
+                The proxy server hostname or IP address (e.g., proxy.example.com or 192.168.1.5). 
+                <strong>Do not include http:// or port.</strong>
+              </div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ProxyPort">Proxy Port</label>
+              <input id="ProxyPort" name="ProxyPort" type="number" min="1" max="65535" is="emby-input" placeholder="8080" />
+              <div class="fieldDescription">The proxy server port (typically 8080, 3128, or 8888).</div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ProxyUsername">Proxy Username (Optional)</label>
+              <input id="ProxyUsername" name="ProxyUsername" type="text" is="emby-input" />
+              <div class="fieldDescription">The proxy username if authentication is required.</div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ProxyPassword">Proxy Password (Optional)</label>
+              <input id="ProxyPassword" name="ProxyPassword" type="password" is="emby-input" />
+              <div class="fieldDescription">The proxy password if authentication is required.</div>
+            </div>
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input is="emby-checkbox" type="checkbox" id="ProxyBypassLocal" />
+                <span>Bypass Proxy for Local Addresses</span>
+              </label>
+              <div class="fieldDescription">
+                Bypass the proxy for local network addresses.
+              </div>
+            </div>
+          </div>
+          
+          <h3>User-Agent Configuration</h3>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="EnableUserAgentRotation" />
+              <span>Enable User-Agent Rotation</span>
+            </label>
+            <div class="fieldDescription">
+              Automatically rotate through a pool of browser User-Agents to avoid WAF/DDoS protection blocking.
+              Recommended when making many requests to providers with aggressive rate limiting.
+            </div>
+          </div>
+          
+          <div id="UserAgentRotationSettings" style="display: none; margin-left: 20px;">
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input is="emby-checkbox" type="checkbox" id="UseRandomUserAgent" />
+                <span>Random Selection (vs Sequential)</span>
+              </label>
+              <div class="fieldDescription">
+                If enabled, randomly selects User-Agents from the pool. Otherwise, rotates sequentially.
+              </div>
+            </div>
+          </div>
+          
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="CustomUserAgent">Custom User-Agent (Optional)</label>
+            <input id="CustomUserAgent" name="CustomUserAgent" type="text" is="emby-input" 
+                   placeholder="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..." />
+            <div class="fieldDescription">
+              Custom User-Agent header for IPTV API requests. 
+              <strong>If set, this overrides User-Agent rotation.</strong>
+              <br>Leave empty to use rotation (if enabled) or default plugin User-Agent.
+            </div>
+          </div>
+          
+          <h3>Rate Limiting</h3>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="EnableRateLimiting" />
+              <span>Enable Request Throttling</span>
+            </label>
+            <div class="fieldDescription">
+              Limit the number of requests per second to avoid triggering WAF/DDoS protection.
+              <strong>Recommended for providers with aggressive rate limiting.</strong>
+            </div>
+          </div>
+          
+          <div id="RateLimitingSettings" style="display: none; margin-left: 20px;">
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="RequestsPerSecond">Max Requests Per Second</label>
+              <input id="RequestsPerSecond" name="RequestsPerSecond" type="number" min="1" max="100" is="emby-input" />
+              <div class="fieldDescription">
+                Maximum API requests per second (1-100). Lower = safer but slower.
+                <br><strong>Recommended: 3-5 for aggressive WAFs, 10-20 for normal providers.</strong>
+              </div>
+            </div>
+            
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="BurstSize">Burst Size</label>
+              <input id="BurstSize" name="BurstSize" type="number" min="1" max="1000" is="emby-input" />
+              <div class="fieldDescription">
+                Maximum requests in initial burst before throttling (1-1000).
+                <br>Allows quick bursts while maintaining average rate limit.
+              </div>
+            </div>
+          </div>
+
+          <h3>Connection Limits</h3>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="EnforceConnectionLimit" />
+              <span>Enforce Connection Limit</span>
+            </label>
+            <div class="fieldDescription">
+              Automatically manage concurrent streams to avoid exceeding your provider's connection limit.
+              <strong>Useful for providers with limited connections (e.g., max 1-2 streams).</strong>
+            </div>
+          </div>
+
+          <div id="ConnectionLimitSettings" style="display: none; margin-left: 20px;">
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="MaxConcurrentStreams">Max Concurrent Streams</label>
+              <input id="MaxConcurrentStreams" name="MaxConcurrentStreams" type="number" min="0" max="10" is="emby-input" />
+              <div class="fieldDescription">
+                Maximum number of simultaneous streams allowed.
+                <br><strong>Set to 0 to automatically use the provider's limit.</strong>
+              </div>
+            </div>
+
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input is="emby-checkbox" type="checkbox" id="AutoKillOldestStream" />
+                <span>Auto-Kill Oldest Stream</span>
+              </label>
+              <div class="fieldDescription">
+                When connection limit is reached, automatically stop the oldest stream to make room for the new one.
+                <br>If disabled, new stream requests will fail with an error when limit is reached.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Buffer Diagnostics Section -->
+        <div class="verticalSection verticalSection-extrabottompadding">
+          <div class="sectionTitleContainer flex align-items-center">
+            <h2 class="sectionTitle">Buffer Diagnostics</h2>
+          </div>
+
+          <p>
+            Streams use automatic quality-based buffering that adjusts buffer size based on detected quality:
+            <br>• <strong>SD/480p:</strong> 32MB buffer
+            <br>• <strong>HD/720p:</strong> 64MB buffer
+            <br>• <strong>Full HD/1080p:</strong> 64MB buffer
+            <br>• <strong>UHD/4K:</strong> 128MB buffer
+          </p>
+
+          <div style="margin-top: 10px;">
+            <button is="emby-button" type="button" class="raised block emby-button" id="sendBufferDiagnosticsButton" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+              <span>📊 Send Buffer Diagnostics to Discord</span>
+            </button>
+          </div>
+
+          <div class="paperList" style="margin-top: 10px; padding: 12px; background: rgba(102, 126, 234, 0.1); border-left: 3px solid #667eea; border-radius: 4px;">
+            <div style="font-weight: 500; margin-bottom: 5px;">ℹ️ Requirements</div>
+            <div>
+              This feature requires <strong>Discord webhook URL</strong> to be configured in the Discord Notifications section below.
+              <br><br>
+              Sends real-time diagnostics for all active buffer streams including:
+              <ul style="margin: 5px 0 0 20px; padding: 0;">
+                <li>Buffer size and utilization</li>
+                <li>Read/write statistics</li>
+                <li>Current lag/gap measurements</li>
+                <li>Buffer overflow events and data loss</li>
+                <li>MPEG-TS sync alignment status</li>
+                <li>Color-coded health status</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- External EPG Section -->
+        <div class="verticalSection verticalSection-extrabottompadding">
+          <div class="sectionTitleContainer flex align-items-center">
+            <h2 class="sectionTitle">External EPG</h2>
+          </div>
+
+          <p>
+            Use external XMLTV sources for EPG data and channel logos when your provider doesn't have them.
+            <br>For Polish channels, <a href="https://epg.ovh" target="_blank">epg.ovh</a> provides free EPG and logos.
+          </p>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="EnableExternalEpg" />
+              <span>Enable External EPG</span>
+            </label>
+            <div class="fieldDescription">
+              Enable fetching EPG data from external XMLTV sources as a fallback when your provider's EPG is unavailable.
+            </div>
+          </div>
+
+          <div id="ExternalEpgSettings" style="display: none;">
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ExternalEpgUrl">External XMLTV URL</label>
+              <input id="ExternalEpgUrl" name="ExternalEpgUrl" type="text" is="emby-input"
+                     placeholder="https://epg.ovh/pl.xml" />
+              <div class="fieldDescription">
+                URL to an external XMLTV file. Examples:
+                <br>• <strong>Polish:</strong> https://epg.ovh/pl.xml
+                <br>• <strong>UK:</strong> https://epg.ovh/uk.xml
+                <br>• <strong>DE:</strong> https://epg.ovh/de.xml
+              </div>
+            </div>
+
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ExternalEpgLogoBaseUrl">Logo Base URL (Optional)</label>
+              <input id="ExternalEpgLogoBaseUrl" name="ExternalEpgLogoBaseUrl" type="text" is="emby-input"
+                     placeholder="https://epg.ovh/logo/" />
+              <div class="fieldDescription">
+                Base URL for channel logos. The channel name is appended to form the full URL.
+                <br>Leave empty to disable external logo fallback.
+              </div>
+            </div>
+
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input is="emby-checkbox" type="checkbox" id="UseExternalLogoFallback" />
+                <span>Use External Logos as Fallback</span>
+              </label>
+              <div class="fieldDescription">
+                When a channel has no logo from the provider, attempt to fetch one from the external logo URL.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Logging Section -->
+        <div class="verticalSection verticalSection-extrabottompadding">
+          <div class="sectionTitleContainer flex align-items-center">
+            <h2 class="sectionTitle">Logging</h2>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="EnableDebugLogging" />
+              <span>Enable Debug Logging</span>
+            </label>
+            <div class="fieldDescription">
+              Enable detailed debug logging for troubleshooting. This will log additional information to help diagnose issues.
+              <br><strong>Note:</strong> Debug logs may contain sensitive information. Disable after troubleshooting.
+            </div>
+          </div>
+        </div>
+
+        <!-- Discord Notifications Section -->
+        <div class="verticalSection">
+          <div class="sectionTitleContainer flex align-items-center">
+            <h2 class="sectionTitle">Discord Notifications</h2>
+          </div>
+
+          <p>Receive real-time notifications about stream health and issues via Discord webhooks.</p>
+          
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="EnableDiscordNotifications" />
+              <span>Enable Discord Notifications</span>
+            </label>
+            <div class="fieldDescription">
+              Enable sending notifications to Discord webhook
+            </div>
+          </div>
+
+          <h3>Webhook Configuration</h3>
+          
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="DiscordWebhookUrl">Discord Webhook URL</label>
+            <input id="DiscordWebhookUrl" name="DiscordWebhookUrl" type="text" is="emby-input" />
+            <div class="fieldDescription">
+              Your Discord webhook URL (e.g., https://discord.com/api/webhooks/...)
+              <br /><a href="https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks" target="_blank">How to create a Discord webhook</a>
+            </div>
+          </div>
+
+          <div>
+            <button is="emby-button" type="button" class="raised button-submit block emby-button" id="testWebhookButton">
+              <span>Test Webhook</span>
+            </button>
+          </div>
+
+          <h3>Notification Settings</h3>
+          
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="NotifyOnBufferOverflow" />
+              <span>Notify on Buffer Overflow</span>
+            </label>
+            <div class="fieldDescription">
+              Send notification when buffer overflows occur (causes lag/stuttering)
+            </div>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="NotifyOnStreamStart" />
+              <span>Notify on Stream Start</span>
+            </label>
+            <div class="fieldDescription">
+              Send notification when a new stream starts broadcasting
+            </div>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="NotifyOnStreamError" />
+              <span>Notify on Stream Error</span>
+            </label>
+            <div class="fieldDescription">
+              Send notification when stream encounters errors
+            </div>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="NotifyOnStreamKilled" />
+              <span>Notify on Stream Killed</span>
+            </label>
+            <div class="fieldDescription">
+              Send notification when a stream is terminated (manually, due to connection limits, or errors)
+            </div>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="NotifyOnStreamQualityViolation" />
+              <span>Notify on Stream Quality Violations</span>
+            </label>
+            <div class="fieldDescription">
+              Send notification when TR 101 290 stream quality issues are detected (invalid PCR PID, PAT/PMT version changes, excessive jitter)
+            </div>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="NotifyOnEpgRefresh" />
+              <span>Notify on EPG Refresh</span>
+            </label>
+            <div class="fieldDescription">
+              Send notification when EPG (guide) data refresh starts and completes, with success/failure statistics
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+            <span>Save</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

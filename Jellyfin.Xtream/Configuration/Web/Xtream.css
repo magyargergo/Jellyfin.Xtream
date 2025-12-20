@@ -34,3 +34,13 @@
 .overrides-table thead th:first-child {
   width: 0;
 }
+
+.btnRefresh {
+  margin-left: 1em;
+  min-width: auto;
+  padding: 0.5em;
+}
+
+.btnRefresh .material-icons {
+  font-size: 1.2em;
+}

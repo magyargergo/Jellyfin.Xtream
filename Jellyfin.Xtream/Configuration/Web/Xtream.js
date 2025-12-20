@@ -15,38 +15,39 @@ const htmlExpand = document.createElement('span');
 htmlExpand.ariaHidden = true;
 htmlExpand.classList.add('material-icons', 'expand_more');
 
+// Helper to create DOM elements with properties
+const createElement = (tag, props = {}, children = []) => {
+  const elem = document.createElement(tag);
+  Object.entries(props).forEach(([key, value]) => {
+    if (key === 'classList') {
+      elem.classList.add(...(Array.isArray(value) ? value : [value]));
+    } else if (key === 'dataset') {
+      Object.assign(elem.dataset, value);
+    } else {
+      elem[key] = value;
+    }
+  });
+  children.forEach(child => {
+    elem.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+  });
+  return elem;
+};
+
 const createItemRow = (item, state, update) => {
-  const tr = document.createElement('tr');
-  tr.dataset['itemId'] = item.Id;
+  const tr = createElement('tr', { dataset: { itemId: item.Id } });
+  
+  const checkbox = createElement('input', { type: 'checkbox', checked: state, onchange: update });
+  tr.appendChild(createElement('td', {}, [checkbox]));
+  
+  tr.appendChild(createElement('td', {}, [createElement('label', { innerText: item.Name })]));
 
-  let td = document.createElement('td');
-  const checkbox = document.createElement('input');
-  checkbox.type = 'checkbox';
-  checkbox.checked = state;
-  checkbox.onchange = update;
-  td.appendChild(checkbox);
-  tr.appendChild(td);
-
-  td = document.createElement('td');
-  const label = document.createElement('label');
-  label.innerText = item.Name;
-  td.appendChild(label);
-  tr.appendChild(td);
-
-  td = document.createElement('td');
+  const catchupTd = document.createElement('td');
   if (item.HasCatchup) {
-    td.title = `Catch-up supported for ${item.CatchupDuration} days.`;
-
-    let span = document.createElement('span');
-    span.innerText = item.CatchupDuration;
-    td.appendChild(span);
-
-    span = document.createElement('span');
-    span.ariaHidden = true;
-    span.classList.add('material-icons', 'timer');
-    td.appendChild(span);
+    catchupTd.title = `Catch-up supported for ${item.CatchupDuration} days.`;
+    catchupTd.appendChild(createElement('span', { innerText: item.CatchupDuration }));
+    catchupTd.appendChild(createElement('span', { ariaHidden: true, classList: ['material-icons', 'timer'] }));
   }
-  tr.appendChild(td);
+  tr.appendChild(catchupTd);
 
   return tr;
 }
@@ -84,23 +85,16 @@ const setCheckboxState = (checkbox, live) => {
 }
 
 const createCategoryRow = (wrapper, category, loadItems) => {
-  const tr = document.createElement('tr');
-  tr.dataset['categoryId'] = category.Id;
-
-  let td = document.createElement('td');
-  const checkbox = document.createElement('input');
-  checkbox.type = 'checkbox';
+  const tr = createElement('tr', { dataset: { categoryId: category.Id } });
+  
+  const checkbox = createElement('input', { type: 'checkbox' });
   setCheckboxState(checkbox, wrapper.live);
+  
   const onchange = () => {
-    if (checkbox.checked) {
-      wrapper.live = [];
-    } else {
-      wrapper.live = undefined;
-    }
+    wrapper.live = checkbox.checked ? [] : undefined;
   };
   checkbox.onchange = onchange;
-  td.appendChild(checkbox);
-  tr.appendChild(td);
+  tr.appendChild(createElement('td', {}, [checkbox]));
 
   const _wrapper = {
     get live() { return wrapper.live; },
@@ -110,15 +104,14 @@ const createCategoryRow = (wrapper, category, loadItems) => {
     },
   }
 
-  td = document.createElement('td');
-  td.innerHTML = category.Name;
-  tr.appendChild(td);
+  tr.appendChild(createElement('td', { innerHTML: category.Name }));
 
-  td = document.createElement('td');
-  const expand = document.createElement('button');
-  expand.type = 'button';
-  expand.classList.add('paper-icon-button-light');
-  expand.appendChild(htmlExpand.cloneNode(true));
+  const td = document.createElement('td');
+  const expand = createElement('button', { 
+    type: 'button', 
+    classList: 'paper-icon-button-light' 
+  }, [htmlExpand.cloneNode(true)]);
+  
   expand.onclick = (e) => {
     e.preventDefault();
     const originalClick = expand.onclick;
@@ -175,10 +168,11 @@ const populateCategoriesTable = (table, loadConfig, loadCategories, loadItems) =
     });
 }
 
-const fetchJson = (url) => ApiClient.fetch({
+const fetchJson = (url, options = {}) => ApiClient.fetch({
   dataType: 'json',
-  type: 'GET',
+  type: options.method || 'GET',
   url: ApiClient.getUrl(url),
+  ...options,
 });
 
 const filter = (obj, predicate) => Object.keys(obj)
@@ -187,8 +181,16 @@ const filter = (obj, predicate) => Object.keys(obj)
 
 const tabs = [
   {
-    href: tab('XtreamCredentials'),
-    name: 'Credentials'
+    href: tab('XtreamMigration'),
+    name: 'Setup'
+  },
+  {
+    href: tab('XtreamProviders'),
+    name: 'Providers'
+  },
+  {
+    href: tab('XtreamAdvanced'),
+    name: 'Advanced Settings'
   },
   {
     href: tab('XtreamLive'),
@@ -206,21 +208,155 @@ const tabs = [
     href: tab('XtreamSeries'),
     name: 'Series',
   },
+  {
+    href: tab('XtreamEpgTest'),
+    name: 'EPG Test',
+  },
+  {
+    href: tab('XtreamStreams'),
+    name: 'Active Streams',
+  },
 ];
 
-const setTabs = (index) => {
-  const name = tabs[index].name;
-  LibraryMenu.setTabs(name, index, () => tabs);
+const setTabs = (pageName) => {
+  // If pageName is a number (legacy), use it directly as index
+  if (typeof pageName === 'number') {
+    const name = tabs[pageName].name;
+    LibraryMenu.setTabs(name, pageName, () => tabs);
+    return;
+  }
+  
+  // Find the tab index based on the page name
+  const index = tabs.findIndex(tab => tab.href.includes(pageName));
+  if (index !== -1) {
+    LibraryMenu.setTabs(tabs[index].name, index, () => tabs);
+  }
 }
 
 const pluginConfig = {
   UniqueId: '5d774c35-8567-46d3-a950-9bb8227a0c5d'
 };
 
+// Helper to create a toggle visibility function
+const createToggleFn = (checkbox, element) => () => {
+  element.style.display = checkbox.checked ? 'block' : 'none';
+};
+
+// Helper to load config fields from configuration
+const loadConfigFields = (view, config, fieldMappings) => {
+  for (const [selector, configKey, defaultValue, isCheckbox] of fieldMappings) {
+    const element = view.querySelector(selector);
+    if (element) {
+      if (isCheckbox) {
+        element.checked = defaultValue !== undefined ? 
+          (config[configKey] ?? defaultValue) : 
+          (config[configKey] || false);
+      } else {
+        element.value = config[configKey] ?? defaultValue ?? '';
+      }
+    }
+  }
+};
+
+// Helper to save config fields to configuration
+const saveConfigFields = (view, config, fieldMappings) => {
+  for (const [selector, configKey, _, isCheckbox, parser] of fieldMappings) {
+    const element = view.querySelector(selector);
+    if (element) {
+      if (isCheckbox) {
+        config[configKey] = element.checked;
+      } else {
+        const value = parser ? parser(element.value) : element.value;
+        config[configKey] = value;
+      }
+    }
+  }
+};
+
+// Helper to create form submit handler
+const createFormSubmitHandler = (pluginId, onBeforeSave, onAfterSave) => (e) => {
+  e.preventDefault();
+  
+  // Optional validation callback
+  if (onBeforeSave && onBeforeSave() === false) {
+    return false;
+  }
+  
+  Dashboard.showLoadingMsg();
+  
+  ApiClient.getPluginConfiguration(pluginId).then((config) => {
+    // Save configuration callback
+    if (onAfterSave) {
+      onAfterSave(config);
+    }
+    
+    ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
+      Dashboard.processPluginConfigurationUpdateResult(result);
+    });
+  });
+  
+  return false;
+};
+
+// Helper to perform API requests with any HTTP method
+const apiRequest = (endpoint, options = {}) => {
+  const url = ApiClient.getUrl(endpoint);
+
+  return fetch(url, {
+    method: options.method || 'GET',
+    headers: {
+      'X-Emby-Token': ApiClient.accessToken(),
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  }).then(response => {
+    if (response.ok) {
+      // Handle empty responses (204 No Content)
+      const contentLength = response.headers.get('content-length');
+      if (contentLength === '0' || response.status === 204) {
+        return { success: true };
+      }
+      return response.json();
+    }
+    return response.text().then(text => {
+      throw new Error(`HTTP ${response.status}: ${text}`);
+    });
+  });
+};
+
+// Helper to perform API POST request (legacy, uses apiRequest)
+const apiPost = (endpoint, params = {}) => {
+  const url = params ?
+    `${ApiClient.getUrl(endpoint)}?${new URLSearchParams(params)}` :
+    ApiClient.getUrl(endpoint);
+
+  return fetch(url, {
+    method: 'POST',
+    headers: {
+      'X-Emby-Token': ApiClient.accessToken()
+    }
+  }).then(response => {
+    if (response.ok) {
+      return response.json();
+    }
+    return response.text().then(text => {
+      throw new Error(`HTTP ${response.status}: ${text}`);
+    });
+  });
+};
+
 export default {
+  apiPost,
+  apiRequest,
+  createElement,
+  createFormSubmitHandler,
+  createToggleFn,
   fetchJson,
   filter,
+  loadConfigFields,
   pluginConfig,
   populateCategoriesTable,
+  saveConfigFields,
   setTabs,
 }

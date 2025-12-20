@@ -1,5 +1,5 @@
 <div id="XtreamLivePage" data-role="page" class="page type-interior pluginConfigurationPage withTabs"
-  data-require="emby-input,emby-button" data-controller="__plugin/XtreamLive.js">
+  data-require="emby-input,emby-button,emby-select" data-controller="__plugin/XtreamLive.js">
   <div data-role="content">
     <div class="content-primary">
       <form id="XtreamLiveForm">
@@ -9,22 +9,83 @@
             <span>Show the catch-up channel to users</span>
           </label>
         </div>
-        <div class="sectionTitleContainer flex align-items-center">
-          <h2 class="sectionTitle">Channel selection</h2>
-        </div>
-        <div class="inputContainer">
-          <table class="categories-table">
-            <thead>
-              <tr>
-                <th colspan="2">Category</th>
-                <th>Display</th>
-              </tr>
-            </thead>
-            <tbody id="LiveContent">
 
-            </tbody>
-          </table>
+        <div class="verticalSection verticalSection-extrabottompadding">
+          <div class="sectionTitleContainer flex align-items-center">
+            <h2 class="sectionTitle">Multi-Provider Settings</h2>
+          </div>
+          <p class="fieldDescription">
+            Configure how channels from multiple providers are handled.
+          </p>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" id="MergeDuplicateChannels" name="MergeDuplicateChannels" type="checkbox" />
+              <span>Merge Duplicate Channels</span>
+            </label>
+            <div class="fieldDescription">
+              When enabled, channels with the same name from different providers are merged into one.
+              The best quality stream is shown, with automatic failover to other providers if it fails.
+              <br><strong>Recommended when using multiple providers with overlapping channels.</strong>
+            </div>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" id="EnableProviderFailover" name="EnableProviderFailover" type="checkbox" />
+              <span>Enable Provider Failover</span>
+            </label>
+            <div class="fieldDescription">
+              Automatically switch to another provider if the current stream fails.
+              Requires "Merge Duplicate Channels" to be enabled.
+            </div>
+          </div>
+
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="MaxFailoverAttempts">Max Failover Attempts</label>
+            <input id="MaxFailoverAttempts" name="MaxFailoverAttempts" type="number" min="1" max="10" is="emby-input" />
+            <div class="fieldDescription">
+              Maximum number of providers to try before giving up (1-10). Default: 3.
+            </div>
+          </div>
         </div>
+
+        <div class="sectionTitleContainer flex align-items-center">
+          <h2 class="sectionTitle">Provider</h2>
+        </div>
+        <div class="selectContainer">
+          <select is="emby-select" id="ProviderSelect" label="Select Provider">
+            <option value="">Loading providers...</option>
+          </select>
+          <div class="fieldDescription">Select a provider to configure its Live TV channel selection.</div>
+        </div>
+
+        <div id="NoProviderMessage" class="hide" style="padding: 20px; text-align: center; color: #888;">
+          <p>No providers configured. Please add a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab first.</p>
+        </div>
+
+        <div id="ProviderContent" class="hide">
+          <div class="sectionTitleContainer flex align-items-center">
+            <h2 class="sectionTitle">Channel selection</h2>
+            <button is="emby-button" type="button" id="RefreshChannels" class="fab btnRefresh" title="Refresh channels">
+              <span class="material-icons refresh"></span>
+            </button>
+          </div>
+          <div class="inputContainer">
+            <table class="categories-table">
+              <thead>
+                <tr>
+                  <th colspan="2">Category</th>
+                  <th>Display</th>
+                </tr>
+              </thead>
+              <tbody id="LiveContent">
+
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div>
           <button is="emby-button" type="submit" class="raised button-submit block emby-button">
             <span>Save</span>

@@ -1,0 +1,72 @@
+<div id="XtreamProvidersPage" data-role="page" class="page type-interior pluginConfigurationPage withTabs"
+  data-require="emby-input,emby-button,emby-checkbox" data-controller="__plugin/XtreamProviders.js">
+  <div data-role="content">
+    <div class="content-primary">
+      <div class="sectionTitleContainer flex align-items-center">
+        <h2 class="sectionTitle">Xtream Providers</h2>
+        <div style="margin-left: auto; display: flex; gap: 8px;">
+          <button is="emby-button" type="button" id="MigrateLegacyBtn" class="fab emby-button hide" title="Migrate Legacy Configuration" style="background: rgba(255, 193, 7, 0.2);">
+            <span class="material-icons history"></span>
+          </button>
+          <button is="emby-button" type="button" id="AddProviderBtn" class="fab emby-button" title="Add Provider">
+            <span class="material-icons add"></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="fieldDescription" style="margin-bottom: 16px;">
+        Configure one or more Xtream IPTV providers. Channels from all enabled providers will be aggregated in the Live TV guide.
+      </div>
+
+      <div id="ProvidersContainer">
+        <!-- Provider cards will be dynamically inserted here -->
+      </div>
+
+      <!-- Add/Edit Provider Dialog -->
+      <div id="ProviderDialog" class="dialog hide" style="display: none;">
+        <div class="dialog-content" style="max-width: 500px; margin: 50px auto; background: var(--theme-card-background-color, #1c1c1e); padding: 24px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+          <h2 id="ProviderDialogTitle" style="margin-top: 0;">Add Provider</h2>
+          <form id="ProviderForm">
+            <input type="hidden" id="ProviderId" name="ProviderId" />
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ProviderName">Provider Name</label>
+              <input id="ProviderName" name="ProviderName" type="text" is="emby-input" required />
+              <div class="fieldDescription">A friendly name for this provider.</div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ProviderBaseUrl">Base URL</label>
+              <input id="ProviderBaseUrl" name="ProviderBaseUrl" type="text" is="emby-input" required />
+              <div class="fieldDescription">The base URL including protocol without trailing slash (e.g., http://example.com:8080).</div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ProviderUsername">Username</label>
+              <input id="ProviderUsername" name="ProviderUsername" type="text" is="emby-input" required />
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ProviderPassword">Password</label>
+              <input id="ProviderPassword" name="ProviderPassword" type="password" is="emby-input" required />
+            </div>
+            <div class="checkboxContainer" style="margin: 16px 0;">
+              <label>
+                <input type="checkbox" id="ProviderEnabled" is="emby-checkbox" checked />
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 24px;">
+              <button is="emby-button" type="submit" class="raised button-submit emby-button">
+                <span id="ProviderDialogSaveText">Save</span>
+              </button>
+              <button is="emby-button" type="button" id="CancelProviderBtn" class="raised emby-button">
+                <span>Cancel</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Test Connection Result -->
+      <div id="TestResultPanel" class="hide" style="margin-top: 20px; padding: 12px; border-radius: 4px;">
+      </div>
+    </div>
+  </div>
+</div>

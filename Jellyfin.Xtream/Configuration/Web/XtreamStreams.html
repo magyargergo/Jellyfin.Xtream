@@ -1,0 +1,163 @@
+<div id="XtreamStreamsPage" data-role="page" class="page type-interior pluginConfigurationPage withTabs"
+  data-require="emby-input,emby-button,emby-select" data-controller="__plugin/XtreamStreams.js">
+  <div data-role="content">
+    <div class="content-primary">
+      <div class="sectionTitleContainer flex align-items-center">
+        <h2 class="sectionTitle">Active Streams</h2>
+        <button is="emby-button" id="RefreshBtn" type="button" class="fab mini autoSize" title="Refresh" style="margin-left: 1em;">
+          <span class="material-icons refresh"></span>
+        </button>
+      </div>
+      <p class="fieldDescription">
+        Monitor and manage active IPTV streams. You can view buffer health, statistics, and terminate streams if needed.
+      </p>
+
+      <div id="StreamStatus" class="stream-status" style="display: none;"></div>
+
+      <div class="inputContainer" style="margin-bottom: 1em;">
+        <button is="emby-button" id="KillAllBtn" type="button" class="raised button-cancel emby-button">
+          <span class="material-icons close"></span>
+          <span>Kill All Streams</span>
+        </button>
+        <span id="StreamCount" class="stream-count" style="margin-left: 1em;"></span>
+      </div>
+
+      <div id="StreamsContainer" class="streams-container">
+        <div class="no-streams" id="NoStreamsMessage">
+          <span class="material-icons" style="font-size: 48px; opacity: 0.5;">live_tv</span>
+          <p>No active streams</p>
+        </div>
+      </div>
+
+      <style>
+        .stream-status {
+          padding: 15px;
+          margin: 15px 0;
+          border-radius: 4px;
+          font-weight: bold;
+        }
+        .stream-status.success {
+          background: rgba(76, 175, 80, 0.1);
+          border-left: 4px solid #4caf50;
+          color: #4caf50;
+        }
+        .stream-status.error {
+          background: rgba(244, 67, 54, 0.1);
+          border-left: 4px solid #f44336;
+          color: #f44336;
+        }
+        .stream-count {
+          color: #888;
+          font-size: 0.9em;
+        }
+        .streams-container {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .no-streams {
+          text-align: center;
+          padding: 40px;
+          color: #888;
+        }
+        .stream-card {
+          background: rgba(255, 255, 255, 0.05);
+          border-radius: 8px;
+          padding: 16px;
+          border-left: 4px solid #00a4dc;
+        }
+        .stream-card.healthy {
+          border-left-color: #4caf50;
+        }
+        .stream-card.ok {
+          border-left-color: #ff9800;
+        }
+        .stream-card.lagging {
+          border-left-color: #f44336;
+        }
+        .stream-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 12px;
+        }
+        .stream-title {
+          font-weight: bold;
+          font-size: 1.1em;
+        }
+        .stream-status-badge {
+          padding: 4px 8px;
+          border-radius: 4px;
+          font-size: 0.8em;
+          font-weight: bold;
+        }
+        .stream-status-badge.healthy {
+          background: #4caf50;
+          color: white;
+        }
+        .stream-status-badge.ok {
+          background: #ff9800;
+          color: white;
+        }
+        .stream-status-badge.lagging {
+          background: #f44336;
+          color: white;
+        }
+        .stream-stats {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+          gap: 12px;
+          margin-bottom: 12px;
+        }
+        .stat-item {
+          background: rgba(0, 0, 0, 0.2);
+          padding: 8px 12px;
+          border-radius: 4px;
+        }
+        .stat-label {
+          font-size: 0.75em;
+          color: #888;
+          text-transform: uppercase;
+        }
+        .stat-value {
+          font-size: 1.1em;
+          font-weight: bold;
+        }
+        .stream-id {
+          font-size: 0.75em;
+          color: #666;
+          font-family: monospace;
+          word-break: break-all;
+        }
+        .stream-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 8px;
+          margin-top: 12px;
+          padding-top: 12px;
+          border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .progress-bar {
+          height: 6px;
+          background: rgba(0, 0, 0, 0.3);
+          border-radius: 3px;
+          overflow: hidden;
+          margin-top: 8px;
+        }
+        .progress-fill {
+          height: 100%;
+          transition: width 0.3s ease;
+        }
+        .progress-fill.healthy {
+          background: #4caf50;
+        }
+        .progress-fill.ok {
+          background: #ff9800;
+        }
+        .progress-fill.lagging {
+          background: #f44336;
+        }
+      </style>
+    </div>
+  </div>
+</div>

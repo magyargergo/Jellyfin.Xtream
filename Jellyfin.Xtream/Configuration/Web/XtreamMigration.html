@@ -1,0 +1,105 @@
+<div id="XtreamMigrationPage" data-role="page" class="page type-interior pluginConfigurationPage"
+  data-require="emby-input,emby-button,emby-checkbox" data-controller="__plugin/XtreamMigration.js">
+  <div data-role="content">
+    <div class="content-primary">
+      <div class="sectionTitleContainer flex align-items-center">
+        <h2 class="sectionTitle">Xtream Plugin Setup</h2>
+      </div>
+
+      <!-- Step 1: Welcome / Detection -->
+      <div id="MigrationStep1" class="migration-step">
+        <div class="migration-card" style="background: var(--theme-card-background-color, #1c1c1e); border-radius: 8px; padding: 24px; margin-bottom: 20px;">
+          <h3 style="margin-top: 0; display: flex; align-items: center; gap: 8px;">
+            <span class="material-icons" style="color: #ffc107;">update</span>
+            Configuration Migration Required
+          </h3>
+          <p>We detected an existing configuration from a previous version of the Xtream plugin. The plugin now supports multiple IPTV providers, which requires updating your configuration.</p>
+
+          <div id="LegacyConfigInfo" style="background: rgba(255, 193, 7, 0.1); border-left: 3px solid #ffc107; padding: 12px; margin: 16px 0; border-radius: 4px;">
+            <p style="margin: 0;"><strong>Existing Configuration Found:</strong></p>
+            <ul id="LegacyConfigDetails" style="margin: 8px 0 0 0; padding-left: 20px;">
+              <!-- Populated by JS -->
+            </ul>
+          </div>
+
+          <p>Click "Migrate Configuration" to convert your existing settings to the new format. Your credentials and channel selections will be preserved.</p>
+
+          <div style="display: flex; gap: 12px; margin-top: 20px;">
+            <button is="emby-button" type="button" id="MigrateBtn" class="raised button-submit emby-button">
+              <span class="material-icons" style="margin-right: 8px;">upgrade</span>
+              Migrate Configuration
+            </button>
+            <button is="emby-button" type="button" id="SkipMigrationBtn" class="raised emby-button">
+              <span>Skip & Start Fresh</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2: No Legacy Config Found -->
+      <div id="MigrationStepNoLegacy" class="migration-step hide">
+        <div class="migration-card" style="background: var(--theme-card-background-color, #1c1c1e); border-radius: 8px; padding: 24px; margin-bottom: 20px;">
+          <h3 style="margin-top: 0; display: flex; align-items: center; gap: 8px;">
+            <span class="material-icons" style="color: #4caf50;">check_circle</span>
+            Ready to Configure
+          </h3>
+          <p>No existing configuration was found. You can start by adding your first IPTV provider.</p>
+
+          <div style="margin-top: 20px;">
+            <button is="emby-button" type="button" id="GoToProvidersBtn" class="raised button-submit emby-button">
+              <span class="material-icons" style="margin-right: 8px;">add</span>
+              Add Provider
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3: Migration Result -->
+      <div id="MigrationStepResult" class="migration-step hide">
+        <div id="MigrationSuccess" class="migration-card hide" style="background: var(--theme-card-background-color, #1c1c1e); border-radius: 8px; padding: 24px; margin-bottom: 20px;">
+          <h3 style="margin-top: 0; display: flex; align-items: center; gap: 8px;">
+            <span class="material-icons" style="color: #4caf50;">check_circle</span>
+            Migration Complete
+          </h3>
+          <p>Your configuration has been successfully migrated to the new format.</p>
+
+          <div id="MigratedProviderInfo" style="background: rgba(76, 175, 80, 0.1); border-left: 3px solid #4caf50; padding: 12px; margin: 16px 0; border-radius: 4px;">
+            <!-- Populated by JS -->
+          </div>
+
+          <p>You can now manage your providers and add additional IPTV sources.</p>
+
+          <div style="margin-top: 20px;">
+            <button is="emby-button" type="button" id="GoToProvidersAfterMigrationBtn" class="raised button-submit emby-button">
+              <span class="material-icons" style="margin-right: 8px;">settings</span>
+              Go to Providers
+            </button>
+          </div>
+        </div>
+
+        <div id="MigrationError" class="migration-card hide" style="background: var(--theme-card-background-color, #1c1c1e); border-radius: 8px; padding: 24px; margin-bottom: 20px;">
+          <h3 style="margin-top: 0; display: flex; align-items: center; gap: 8px;">
+            <span class="material-icons" style="color: #f44336;">error</span>
+            Migration Failed
+          </h3>
+          <p id="MigrationErrorMessage">An error occurred during migration.</p>
+
+          <div style="display: flex; gap: 12px; margin-top: 20px;">
+            <button is="emby-button" type="button" id="RetryMigrationBtn" class="raised button-submit emby-button">
+              <span>Retry Migration</span>
+            </button>
+            <button is="emby-button" type="button" id="SkipAfterErrorBtn" class="raised emby-button">
+              <span>Skip & Configure Manually</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div id="MigrationLoading" class="migration-step hide" style="text-align: center; padding: 40px;">
+        <div class="loading-spinner"></div>
+        <p style="color: #888; margin-top: 16px;">Checking configuration...</p>
+      </div>
+    </div>
+  </div>
+</div>
