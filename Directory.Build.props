@@ -1,0 +1,73 @@
+<Project>
+  <!--
+    Solution-wide build properties for static analysis and code quality.
+    This file is automatically imported by all projects in the solution.
+  -->
+
+  <PropertyGroup>
+    <!-- Enable all .NET analyzers by default -->
+    <AnalysisMode>AllEnabledByDefault</AnalysisMode>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+
+    <!-- Treat warnings as errors in Release builds for CI enforcement -->
+    <TreatWarningsAsErrors Condition="'$(Configuration)' == 'Release'">true</TreatWarningsAsErrors>
+
+    <!-- Enable nullable reference types -->
+    <Nullable>enable</Nullable>
+
+    <!-- Generate XML documentation -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- Code analysis output -->
+    <CodeAnalysisLogFile>$(MSBuildProjectDirectory)/bin/$(Configuration)/CodeAnalysis.sarif</CodeAnalysisLogFile>
+    <ErrorLog>$(CodeAnalysisLogFile)</ErrorLog>
+
+    <!-- Enforce code style on build -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <!-- Report all diagnostics -->
+    <ReportAnalyzer>true</ReportAnalyzer>
+  </PropertyGroup>
+
+  <!-- Common analyzer packages for all projects -->
+  <ItemGroup>
+    <!-- Microsoft .NET Analyzers (included in SDK, but explicit for clarity) -->
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="9.0.0" PrivateAssets="all" />
+
+    <!-- StyleCop for code style consistency -->
+    <PackageReference Include="StyleCop.Analyzers" Version="1.2.0-beta.556" PrivateAssets="all" />
+
+    <!-- Threading/async analysis -->
+    <PackageReference Include="Microsoft.VisualStudio.Threading.Analyzers" Version="17.12.19" PrivateAssets="all" />
+    <PackageReference Include="SmartAnalyzers.MultithreadingAnalyzer" Version="1.1.31" PrivateAssets="all" />
+
+    <!-- Serilog logging analysis -->
+    <PackageReference Include="SerilogAnalyzer" Version="0.15.0" PrivateAssets="all" />
+
+    <!-- Security analyzers -->
+    <PackageReference Include="SecurityCodeScan.VS2019" Version="5.6.7" PrivateAssets="all" />
+
+    <!-- Meziantou's analyzer (comprehensive .NET best practices) -->
+    <PackageReference Include="Meziantou.Analyzer" Version="2.0.182" PrivateAssets="all" />
+
+    <!-- Roslynator for additional code analysis -->
+    <PackageReference Include="Roslynator.Analyzers" Version="4.12.10" PrivateAssets="all" />
+
+    <!-- IDisposable analysis -->
+    <PackageReference Include="IDisposableAnalyzers" Version="4.0.8" PrivateAssets="all" />
+
+    <!-- Async best practices -->
+    <PackageReference Include="AsyncFixer" Version="1.6.0" PrivateAssets="all" />
+
+    <!-- CSharpier for code formatting -->
+    <PackageReference Include="CSharpier.MsBuild" Version="1.2.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Additional files for StyleCop configuration -->
+  <ItemGroup>
+    <AdditionalFiles
+      Include="$(MSBuildThisFileDirectory)stylecop.json"
+      Condition="Exists('$(MSBuildThisFileDirectory)stylecop.json')"
+    />
+  </ItemGroup>
+</Project>
