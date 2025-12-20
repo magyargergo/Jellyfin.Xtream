@@ -1,0 +1,23 @@
+# BenchmarkDotNet artifacts
+BenchmarkDotNet.Artifacts/
+
+# Build output
+bin/
+obj/
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# VS Code
+.vscode/
+
+# Rider
+.idea/
+
+# Results backup
+results-backup/
+baseline/
+
