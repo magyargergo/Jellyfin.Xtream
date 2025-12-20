@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -20,7 +20,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Client.Models;
-using Jellyfin.Xtream.Providers;
+using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Providers;
@@ -34,7 +34,7 @@ namespace Jellyfin.Xtream;
 /// <summary>
 /// The Xtream Codes API channel.
 /// </summary>
-/// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
+/// <param name="logger">Instance of the <see cref="ILogger{TCategoryName}"/> interface.</param>
 public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSourceDisplay
 {
     /// <inheritdoc />
@@ -55,38 +55,30 @@ public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSou
     /// <inheritdoc />
     public InternalChannelFeatures GetChannelFeatures()
     {
-        return new()
+        return new InternalChannelFeatures
         {
-            ContentTypes = [
-                ChannelMediaContentType.Movie,
-            ],
-            MediaTypes = [
-                ChannelMediaType.Video
-            ],
+            ContentTypes = new List<ChannelMediaContentType> { ChannelMediaContentType.Movie },
+            MediaTypes = new List<ChannelMediaType> { ChannelMediaType.Video },
         };
     }
 
     /// <inheritdoc />
     public Task<DynamicImageResponse> GetChannelImage(ImageType type, CancellationToken cancellationToken)
     {
-        switch (type)
-        {
-            default:
-                throw new ArgumentException("Unsupported image type: " + type);
-        }
+        throw new ArgumentException("Unsupported image type: " + type);
     }
 
     /// <inheritdoc />
     public IEnumerable<ImageType> GetSupportedChannelImages()
     {
-        return new List<ImageType>
-        {
-            // ImageType.Primary
-        };
+        return new List<ImageType>();
     }
 
     /// <inheritdoc />
-    public async Task<ChannelItemResult> GetChannelItems(InternalChannelItemQuery query, CancellationToken cancellationToken)
+    public async Task<ChannelItemResult> GetChannelItems(
+        InternalChannelItemQuery query,
+        CancellationToken cancellationToken
+    )
     {
         try
         {
@@ -96,16 +88,20 @@ public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSou
             }
 
             Guid guid = Guid.Parse(query.FolderId);
-            StreamService.FromGuid(guid, out int prefix, out int categoryId, out int _, out int _);
-            if (prefix == StreamService.VodCategoryPrefix)
+            StreamService.FromGuid(guid, out var prefix, out var categoryId, out var _, out var _);
+            XtreamProvider? provider = StreamService.FindProviderForGuid(guid);
+
+            if (provider == null)
             {
-                return await GetStreams(categoryId, cancellationToken).ConfigureAwait(false);
+                throw new ArgumentException("Provider not found for category");
             }
 
-            return new ChannelItemResult()
+            if (prefix == StreamService.VodCategoryPrefix)
             {
-                TotalRecordCount = 0,
-            };
+                return await GetStreams(provider, categoryId, cancellationToken).ConfigureAwait(false);
+            }
+
+            return new ChannelItemResult { TotalRecordCount = 0 };
         }
         catch (Exception ex)
         {
@@ -114,24 +110,27 @@ public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSou
         }
     }
 
-    private Task<ChannelItemInfo> CreateChannelItemInfo(StreamInfo stream)
+    private Task<ChannelItemInfo> CreateChannelItemInfo(XtreamProvider provider, StreamInfo stream)
     {
         long added = long.Parse(stream.Added, CultureInfo.InvariantCulture);
         ParsedName parsedName = StreamService.ParseName(stream.Name);
 
-        List<MediaSourceInfo> sources =
-        [
+        List<MediaSourceInfo> sources = new List<MediaSourceInfo>
+        {
             Plugin.Instance.StreamService.GetMediaSourceInfo(
+                provider,
                 StreamType.Vod,
                 stream.StreamId,
-                stream.ContainerExtension)
-        ];
+                stream.Name,
+                stream.ContainerExtension
+            ),
+        };
 
-        ChannelItemInfo result = new ChannelItemInfo()
+        ChannelItemInfo result = new ChannelItemInfo
         {
             ContentType = ChannelMediaContentType.Movie,
             DateCreated = DateTimeOffset.FromUnixTimeSeconds(added).DateTime,
-            Id = $"{StreamService.StreamPrefix}{stream.StreamId}",
+            Id = StreamService.ToProviderGuid(StreamService.StreamPrefix, provider, stream.StreamId).ToString(),
             ImageUrl = stream.StreamIcon,
             IsLiveStream = false,
             MediaSources = sources,
@@ -139,7 +138,7 @@ public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSou
             Name = parsedName.Title,
             Tags = new List<string>(parsedName.Tags),
             Type = ChannelItemType.Media,
-            ProviderIds = { { XtreamVodProvider.ProviderName, stream.StreamId.ToString(CultureInfo.InvariantCulture) } },
+            ProviderIds = { { "XtreamVodProvider", stream.StreamId.ToString(CultureInfo.InvariantCulture) } },
         };
 
         return Task.FromResult(result);
@@ -147,26 +146,33 @@ public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSou
 
     private async Task<ChannelItemResult> GetCategories(CancellationToken cancellationToken)
     {
-        IEnumerable<Category> categories = await Plugin.Instance.StreamService.GetVodCategories(cancellationToken).ConfigureAwait(false);
         List<ChannelItemInfo> items = new List<ChannelItemInfo>(
-            categories.Select((Category category) => StreamService.CreateChannelItemInfo(StreamService.VodCategoryPrefix, category)));
-        return new()
-        {
-            Items = items,
-            TotalRecordCount = items.Count
-        };
+            (await StreamService.GetAllVodCategories(cancellationToken).ConfigureAwait(false)).Select(pc =>
+                StreamService.CreateChannelItemInfo(StreamService.VodCategoryPrefix, pc.Category)
+            )
+        );
+
+        return new ChannelItemResult { Items = items, TotalRecordCount = items.Count };
     }
 
-    private async Task<ChannelItemResult> GetStreams(int categoryId, CancellationToken cancellationToken)
+    private async Task<ChannelItemResult> GetStreams(
+        XtreamProvider provider,
+        int categoryId,
+        CancellationToken cancellationToken
+    )
     {
-        IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetVodStreams(categoryId, cancellationToken).ConfigureAwait(false);
-        List<ChannelItemInfo> items = [.. await Task.WhenAll(streams.Select(CreateChannelItemInfo)).ConfigureAwait(false)];
-        ChannelItemResult result = new ChannelItemResult()
-        {
-            Items = items,
-            TotalRecordCount = items.Count
-        };
-        return result;
+        List<ChannelItemInfo> items = (
+            await Task.WhenAll(
+                    (
+                        await StreamService
+                            .GetVodStreamsForProvider(provider, categoryId, cancellationToken)
+                            .ConfigureAwait(false)
+                    ).Select(s => CreateChannelItemInfo(provider, s))
+                )
+                .ConfigureAwait(false)
+        ).ToList();
+
+        return new ChannelItemResult { Items = items, TotalRecordCount = items.Count };
     }
 
     /// <inheritdoc />

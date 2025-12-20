@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -21,6 +21,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
+using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Providers;
@@ -34,7 +35,7 @@ namespace Jellyfin.Xtream;
 /// <summary>
 /// The Xtream Codes API channel.
 /// </summary>
-/// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
+/// <param name="logger">Instance of the <see cref="ILogger{TCategoryName}"/> interface.</param>
 public class CatchupChannel(ILogger<CatchupChannel> logger) : IChannel, IDisableMediaSourceDisplay
 {
     private readonly ILogger<CatchupChannel> _logger = logger;
@@ -59,33 +60,28 @@ public class CatchupChannel(ILogger<CatchupChannel> logger) : IChannel, IDisable
     {
         return new InternalChannelFeatures
         {
-            ContentTypes = [
-                ChannelMediaContentType.TvExtra,
-            ],
-            MediaTypes = [
-                ChannelMediaType.Video
-            ],
+            ContentTypes = new List<ChannelMediaContentType> { ChannelMediaContentType.TvExtra },
+            MediaTypes = new List<ChannelMediaType> { ChannelMediaType.Video },
         };
     }
 
     /// <inheritdoc />
     public Task<DynamicImageResponse> GetChannelImage(ImageType type, CancellationToken cancellationToken)
     {
-        switch (type)
-        {
-            default:
-                throw new ArgumentException("Unsupported image type: " + type);
-        }
+        throw new ArgumentException("Unsupported image type: " + type);
     }
 
     /// <inheritdoc />
-    public IEnumerable<ImageType> GetSupportedChannelImages() => new List<ImageType>
+    public IEnumerable<ImageType> GetSupportedChannelImages()
     {
-        // ImageType.Primary
-    };
+        return new List<ImageType>();
+    }
 
     /// <inheritdoc />
-    public async Task<ChannelItemResult> GetChannelItems(InternalChannelItemQuery query, CancellationToken cancellationToken)
+    public async Task<ChannelItemResult> GetChannelItems(
+        InternalChannelItemQuery query,
+        CancellationToken cancellationToken
+    )
     {
         try
         {
@@ -95,14 +91,20 @@ public class CatchupChannel(ILogger<CatchupChannel> logger) : IChannel, IDisable
             }
 
             Guid guid = Guid.Parse(query.FolderId);
-            StreamService.FromGuid(guid, out int prefix, out int categoryId, out int channelId, out int date);
+            StreamService.FromGuid(guid, out var _, out var channelId, out var _, out var date);
+            XtreamProvider? provider = StreamService.FindProviderForGuid(guid);
+
+            if (provider == null)
+            {
+                throw new ArgumentException("Provider not found for channel");
+            }
 
             if (date == 0)
             {
-                return await GetDays(categoryId, channelId, cancellationToken).ConfigureAwait(false);
+                return await GetDays(provider, channelId, cancellationToken).ConfigureAwait(false);
             }
 
-            return await GetStreams(categoryId, channelId, date, cancellationToken).ConfigureAwait(false);
+            return await GetStreams(provider, channelId, date, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -113,139 +115,181 @@ public class CatchupChannel(ILogger<CatchupChannel> logger) : IChannel, IDisable
 
     private async Task<ChannelItemResult> GetChannels(CancellationToken cancellationToken)
     {
-        Plugin plugin = Plugin.Instance;
-        List<ChannelItemInfo> items = [];
-        foreach (StreamInfo channel in await plugin.StreamService.GetLiveStreamsWithOverrides(cancellationToken).ConfigureAwait(false))
+        List<ChannelItemInfo> items = new List<ChannelItemInfo>();
+
+        foreach (
+            ProviderStreamInfo ps in await StreamService.GetAllLiveStreams(cancellationToken).ConfigureAwait(false)
+        )
         {
+            StreamInfo channel = ps.Stream;
+            XtreamProvider provider = ps.Provider;
+
             if (!channel.TvArchive)
             {
-                // Channel has no catch-up support.
                 continue;
             }
 
             ParsedName parsedName = StreamService.ParseName(channel.Name);
-            items.Add(new ChannelItemInfo()
-            {
-                Id = StreamService.ToGuid(StreamService.CatchupPrefix, channel.CategoryId ?? 0, channel.StreamId, 0).ToString(),
-                ImageUrl = channel.StreamIcon,
-                Name = parsedName.Title,
-                Tags = new List<string>(parsedName.Tags),
-                Type = ChannelItemType.Folder,
-            });
+            items.Add(
+                new ChannelItemInfo
+                {
+                    Id = StreamService
+                        .ToProviderGuid(StreamService.CatchupPrefix, provider, channel.StreamId)
+                        .ToString(),
+                    ImageUrl = channel.StreamIcon,
+                    Name = parsedName.Title,
+                    Tags = new List<string>(parsedName.Tags),
+                    Type = ChannelItemType.Folder,
+                }
+            );
         }
 
-        ChannelItemResult result = new ChannelItemResult()
-        {
-            Items = items,
-            TotalRecordCount = items.Count
-        };
-        return result;
+        return new ChannelItemResult { Items = items, TotalRecordCount = items.Count };
     }
 
-    private async Task<ChannelItemResult> GetDays(int categoryId, int channelId, CancellationToken cancellationToken)
+    private async Task<ChannelItemResult> GetDays(
+        XtreamProvider provider,
+        int channelId,
+        CancellationToken cancellationToken
+    )
     {
         Plugin plugin = Plugin.Instance;
-        using XtreamClient client = new XtreamClient();
+        using XtreamClient client = plugin.CreateXtreamClient();
 
-        List<StreamInfo> streams = await client.GetLiveStreamsByCategoryAsync(plugin.Creds, categoryId, cancellationToken).ConfigureAwait(false);
-        StreamInfo channel = streams.FirstOrDefault(s => s.StreamId == channelId)
-            ?? throw new ArgumentException($"Channel with id {channelId} not found in category {categoryId}");
+        StreamInfo channel =
+            (
+                await client.GetLiveStreamsAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
+            ).FirstOrDefault(s => s.StreamId == channelId)
+            ?? throw new ArgumentException($"Channel with id {channelId} not found for provider {provider.Name}");
+
         ParsedName parsedName = StreamService.ParseName(channel.Name);
+        List<ChannelItemInfo> items = new List<ChannelItemInfo>();
 
-        List<ChannelItemInfo> items = [];
         for (int i = 0; i <= channel.TvArchiveDuration; i++)
         {
             DateTime channelDay = DateTime.Today.AddDays(-i);
             int day = (int)(channelDay - DateTime.UnixEpoch).TotalDays;
-            items.Add(new()
-            {
-                Id = StreamService.ToGuid(StreamService.CatchupPrefix, channel.CategoryId ?? 0, channel.StreamId, day).ToString(),
-                ImageUrl = channel.StreamIcon,
-                Name = channelDay.ToLocalTime().ToString("ddd dd'-'MM'-'yyyy", CultureInfo.InvariantCulture),
-                Tags = new List<string>(parsedName.Tags),
-                Type = ChannelItemType.Folder,
-            });
+
+            items.Add(
+                new ChannelItemInfo
+                {
+                    Id = StreamService
+                        .ToGuid(StreamService.CatchupPrefix, channel.StreamId, provider.GetIdHash(), day)
+                        .ToString(),
+                    ImageUrl = channel.StreamIcon,
+                    Name = channelDay.ToLocalTime().ToString("ddd dd'-'MM'-'yyyy", CultureInfo.InvariantCulture),
+                    Tags = new List<string>(parsedName.Tags),
+                    Type = ChannelItemType.Folder,
+                }
+            );
         }
 
-        ChannelItemResult result = new()
-        {
-            Items = items,
-            TotalRecordCount = items.Count
-        };
-        return result;
+        return new ChannelItemResult { Items = items, TotalRecordCount = items.Count };
     }
 
-    private async Task<ChannelItemResult> GetStreams(int categoryId, int channelId, int day, CancellationToken cancellationToken)
+    private async Task<ChannelItemResult> GetStreams(
+        XtreamProvider provider,
+        int channelId,
+        int day,
+        CancellationToken cancellationToken
+    )
     {
         DateTime start = DateTime.UnixEpoch.AddDays(day);
         DateTime end = start.AddDays(1);
+
         Plugin plugin = Plugin.Instance;
-        using XtreamClient client = new XtreamClient();
+        using XtreamClient client = plugin.CreateXtreamClient();
 
-        List<StreamInfo> streams = await client.GetLiveStreamsByCategoryAsync(plugin.Creds, categoryId, cancellationToken).ConfigureAwait(false);
-        StreamInfo channel = streams.FirstOrDefault(s => s.StreamId == channelId)
-            ?? throw new ArgumentException($"Channel with id {channelId} not found in category {categoryId}");
-        EpgListings epgs = await client.GetEpgInfoAsync(plugin.Creds, channelId, cancellationToken).ConfigureAwait(false);
-        List<ChannelItemInfo> items = [];
+        StreamInfo channel =
+            (
+                await client.GetLiveStreamsAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
+            ).FirstOrDefault(s => s.StreamId == channelId)
+            ?? throw new ArgumentException($"Channel with id {channelId} not found for provider {provider.Name}");
 
-        // Create fallback single-stream catch-up if no EPG is available.
+        EpgListings epgs = await client
+            .GetEpgInfoAsync(provider.ToConnectionInfo(), channelId, cancellationToken)
+            .ConfigureAwait(false);
+        List<ChannelItemInfo> items = new List<ChannelItemInfo>();
+
         if (epgs.Listings.Count == 0)
         {
-            int durationMinutes = 24 * 60;
-            return new()
+            int durationMinutes = 1440;
+            return new ChannelItemResult
             {
-                Items = new List<ChannelItemInfo>()
+                Items = new List<ChannelItemInfo>
+                {
+                    new ChannelItemInfo
                     {
-                        new()
+                        ContentType = ChannelMediaContentType.TvExtra,
+                        Id = StreamService
+                            .ToGuid(StreamService.CatchupStreamPrefix, channelId, provider.GetIdHash(), day)
+                            .ToString(),
+                        IsLiveStream = false,
+                        MediaSources = new List<MediaSourceInfo>
                         {
-                            ContentType = ChannelMediaContentType.TvExtra,
-                            Id = StreamService.ToGuid(StreamService.CatchupStreamPrefix, channelId, 0, day).ToString(),
-                            IsLiveStream = false,
-                            MediaSources = [
-                                plugin.StreamService.GetMediaSourceInfo(StreamType.CatchUp, channelId, start: start, durationMinutes: durationMinutes)
-                            ],
-                            MediaType = ChannelMediaType.Video,
-                            Name = $"No EPG available",
-                            RunTimeTicks = durationMinutes * TimeSpan.TicksPerMinute,
-                            Type = ChannelItemType.Media,
-                        }
+                            plugin.StreamService.GetMediaSourceInfo(
+                                provider,
+                                StreamType.CatchUp,
+                                channelId,
+                                null,
+                                null,
+                                restream: false,
+                                start,
+                                durationMinutes
+                            ),
+                        },
+                        MediaType = ChannelMediaType.Video,
+                        Name = "No EPG available",
+                        RunTimeTicks = (long)durationMinutes * TimeSpan.TicksPerMinute,
+                        Type = ChannelItemType.Media,
                     },
-                TotalRecordCount = 1
+                },
+                TotalRecordCount = 1,
             };
         }
 
-        foreach (EpgInfo epg in epgs.Listings.Where(epg => epg.Start <= end && epg.End >= start))
+        foreach (EpgInfo epg in epgs.Listings.Where(epgInfo => epgInfo.Start <= end && epgInfo.End >= start))
         {
             ParsedName parsedName = StreamService.ParseName(epg.Title);
             int durationMinutes = (int)Math.Ceiling((epg.End - epg.Start).TotalMinutes);
             string dateTitle = epg.Start.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
-            List<MediaSourceInfo> sources = [
-                plugin.StreamService.GetMediaSourceInfo(StreamType.CatchUp, channelId, start: epg.StartLocalTime, durationMinutes: durationMinutes)
-            ];
 
-            items.Add(new()
+            List<MediaSourceInfo> sources = new List<MediaSourceInfo>
             {
-                ContentType = ChannelMediaContentType.TvExtra,
-                DateCreated = epg.Start,
-                Id = StreamService.ToGuid(StreamService.CatchupStreamPrefix, channel.StreamId, epg.Id, day).ToString(),
-                IsLiveStream = false,
-                MediaSources = sources,
-                MediaType = ChannelMediaType.Video,
-                Name = $"{dateTitle} - {parsedName.Title}",
-                Overview = epg.Description,
-                PremiereDate = epg.Start,
-                RunTimeTicks = durationMinutes * TimeSpan.TicksPerMinute,
-                Tags = new List<string>(parsedName.Tags),
-                Type = ChannelItemType.Media,
-            });
+                plugin.StreamService.GetMediaSourceInfo(
+                    provider,
+                    StreamType.CatchUp,
+                    channelId,
+                    null,
+                    null,
+                    restream: false,
+                    epg.StartLocalTime,
+                    durationMinutes
+                ),
+            };
+
+            items.Add(
+                new ChannelItemInfo
+                {
+                    ContentType = ChannelMediaContentType.TvExtra,
+                    DateCreated = epg.Start,
+                    Id = StreamService
+                        .ToGuid(StreamService.CatchupStreamPrefix, channel.StreamId, epg.Id, day)
+                        .ToString(),
+                    IsLiveStream = false,
+                    MediaSources = sources,
+                    MediaType = ChannelMediaType.Video,
+                    Name = dateTitle + " - " + parsedName.Title,
+                    Overview = epg.Description,
+                    PremiereDate = epg.Start,
+                    RunTimeTicks = (long)durationMinutes * TimeSpan.TicksPerMinute,
+                    Tags = new List<string>(parsedName.Tags),
+                    Type = ChannelItemType.Media,
+                }
+            );
         }
 
-        ChannelItemResult result = new()
-        {
-            Items = items,
-            TotalRecordCount = items.Count
-        };
-        return result;
+        return new ChannelItemResult { Items = items, TotalRecordCount = items.Count };
     }
 
     /// <inheritdoc />

@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -14,9 +14,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,11 +26,9 @@ using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using MediaBrowser.Controller.Channels;
-using MediaBrowser.Controller.Entities;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
-using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -123,7 +123,8 @@ public partial class StreamService
                 }
 
                 return string.Empty;
-            });
+            }
+        );
 
         // Tag prefixes separated by the a character in the unicode Block Elements range
         int stripLength = 0;
@@ -137,52 +138,143 @@ public partial class StreamService
             }
         }
 
-        return new ParsedName
-        {
-            Title = title[stripLength..].Trim(),
-            Tags = [.. tags],
-        };
+        return new ParsedName { Title = title[stripLength..].Trim(), Tags = [.. tags] };
     }
 
-    private bool IsConfigured(SerializableDictionary<int, HashSet<int>> config, int category, int id)
+    private static bool IsConfigured(SerializableDictionary<int, HashSet<int>> config, int category, int id)
     {
         return config.TryGetValue(category, out var values) && (values.Count == 0 || values.Contains(id));
     }
 
     /// <summary>
-    /// Gets an async iterator for the configured channels.
+    /// Gets live streams for a specific provider.
     /// </summary>
+    /// <param name="provider">The provider to fetch streams from.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<StreamInfo>> GetLiveStreams(CancellationToken cancellationToken)
+    /// <returns>Filtered streams based on provider configuration.</returns>
+    public static async Task<IEnumerable<StreamInfo>> GetLiveStreamsForProvider(
+        XtreamProvider provider,
+        CancellationToken cancellationToken
+    )
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        using XtreamClient client = new XtreamClient();
-
-        IEnumerable<StreamInfo> streams = await client.GetLiveStreamsAsync(Plugin.Instance.Creds, cancellationToken).ConfigureAwait(false);
-        return streams.Where((StreamInfo channel) => channel.CategoryId.HasValue && IsConfigured(config.LiveTv, channel.CategoryId.Value, channel.StreamId));
+        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        return (
+            await client.GetLiveStreamsAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
+        ).Where(
+            (StreamInfo channel) =>
+                channel.CategoryId.HasValue && IsConfigured(provider.LiveTv, channel.CategoryId.Value, channel.StreamId)
+        );
     }
 
     /// <summary>
-    /// Gets an async iterator for the configured channels after applying the configured overrides.
+    /// Gets live streams for a specific provider with overrides applied.
     /// </summary>
+    /// <param name="provider">The provider to fetch streams from.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<StreamInfo>> GetLiveStreamsWithOverrides(CancellationToken cancellationToken)
+    /// <returns>Filtered streams with overrides applied.</returns>
+    public static async Task<IEnumerable<StreamInfo>> GetLiveStreamsWithOverridesForProvider(
+        XtreamProvider provider,
+        CancellationToken cancellationToken
+    )
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        IEnumerable<StreamInfo> streams = await GetLiveStreams(cancellationToken).ConfigureAwait(false);
-        return streams.Select((StreamInfo stream) =>
+        return (await GetLiveStreamsForProvider(provider, cancellationToken).ConfigureAwait(false)).Select(stream =>
         {
-            if (config.LiveTvOverrides.TryGetValue(stream.StreamId, out ChannelOverrides? overrides))
+            if (provider.LiveTvOverrides.TryGetValue(stream.StreamId, out ChannelOverrides? value))
             {
-                stream.Num = overrides.Number ?? stream.Num;
-                stream.Name = overrides.Name ?? stream.Name;
-                stream.StreamIcon = overrides.LogoUrl ?? stream.StreamIcon;
+                stream.Num = value.Number ?? stream.Num;
+                stream.Name = value.Name ?? stream.Name;
+                stream.StreamIcon = value.LogoUrl ?? stream.StreamIcon;
             }
 
             return stream;
         });
+    }
+
+    /// <summary>
+    /// Gets all live streams from all enabled providers.
+    /// Fetches from multiple providers in parallel for improved performance.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>All streams from all enabled providers with provider info.</returns>
+    public static async Task<IEnumerable<ProviderStreamInfo>> GetAllLiveStreams(CancellationToken cancellationToken)
+    {
+        PluginConfiguration config = Plugin.Instance.Configuration;
+        List<XtreamProvider> providers = config.GetEnabledProviders().ToList();
+
+        if (providers.Count == 0)
+        {
+            return Array.Empty<ProviderStreamInfo>();
+        }
+
+        if (providers.Count == 1)
+        {
+            XtreamProvider provider = providers[0];
+            IEnumerable<StreamInfo> streams = await GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
+                .ConfigureAwait(false);
+            IList<StreamInfo> streamList = streams as IList<StreamInfo> ?? streams.ToList();
+            List<ProviderStreamInfo> result = new List<ProviderStreamInfo>(streamList.Count);
+
+            foreach (StreamInfo s in streamList)
+            {
+                result.Add(new ProviderStreamInfo(provider, s));
+            }
+
+            return result;
+        }
+
+        Task<List<ProviderStreamInfo>>[] tasks = new Task<List<ProviderStreamInfo>>[providers.Count];
+
+        for (int i = 0; i < providers.Count; i++)
+        {
+            XtreamProvider provider = providers[i];
+            tasks[i] = FetchProviderStreamsAsync(provider, cancellationToken);
+        }
+
+        List<ProviderStreamInfo>[] results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        int totalCount = 0;
+
+        foreach (List<ProviderStreamInfo> result in results)
+        {
+            totalCount += result.Count;
+        }
+
+        List<ProviderStreamInfo> combined = new List<ProviderStreamInfo>(totalCount);
+
+        foreach (List<ProviderStreamInfo> result in results)
+        {
+            combined.AddRange(result);
+        }
+
+        return combined;
+    }
+
+    private static async Task<List<ProviderStreamInfo>> FetchProviderStreamsAsync(
+        XtreamProvider provider,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            IEnumerable<StreamInfo> streams = await GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
+                .ConfigureAwait(false);
+            IList<StreamInfo> streamList = streams as IList<StreamInfo> ?? streams.ToList();
+            List<ProviderStreamInfo> result = new List<ProviderStreamInfo>(streamList.Count);
+
+            foreach (StreamInfo s in streamList)
+            {
+                result.Add(new ProviderStreamInfo(provider, s));
+            }
+
+            return result;
+        }
+        catch (HttpRequestException)
+        {
+            return [];
+        }
+        catch (OperationCanceledException)
+        {
+            return [];
+        }
     }
 
     /// <summary>
@@ -204,112 +296,189 @@ public partial class StreamService
     }
 
     /// <summary>
-    /// Gets an iterator for the configured VOD categories.
+    /// Gets VOD categories for a specific provider.
     /// </summary>
+    /// <param name="provider">The provider to fetch from.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<Category>> GetVodCategories(CancellationToken cancellationToken)
+    /// <returns>Filtered categories based on provider configuration.</returns>
+    public static async Task<IEnumerable<Category>> GetVodCategoriesForProvider(
+        XtreamProvider provider,
+        CancellationToken cancellationToken
+    )
     {
-        using XtreamClient client = new XtreamClient();
-        List<Category> categories = await client.GetVodCategoryAsync(Plugin.Instance.Creds, cancellationToken).ConfigureAwait(false);
-        return categories.Where((Category category) => Plugin.Instance.Configuration.Vod.ContainsKey(category.CategoryId));
+        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        return (
+            await client.GetVodCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
+        ).Where((Category category) => provider.Vod.ContainsKey(category.CategoryId));
     }
 
     /// <summary>
-    /// Gets an iterator for the configured VOD streams.
+    /// Gets all VOD categories from all enabled providers.
     /// </summary>
-    /// <param name="categoryId">The Xtream id of the category.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<StreamInfo>> GetVodStreams(int categoryId, CancellationToken cancellationToken)
+    /// <returns>All categories from all enabled providers.</returns>
+    public static async Task<IEnumerable<ProviderCategory>> GetAllVodCategories(CancellationToken cancellationToken)
     {
-        if (!Plugin.Instance.Configuration.Vod.ContainsKey(categoryId))
+        List<ProviderCategory> results = [];
+        PluginConfiguration config = Plugin.Instance.Configuration;
+
+        foreach (XtreamProvider provider in config.GetEnabledProviders())
         {
-            return new List<StreamInfo>();
+            results.AddRange(
+                (await GetVodCategoriesForProvider(provider, cancellationToken).ConfigureAwait(false)).Select(
+                    (Category c) => new ProviderCategory(provider, c)
+                )
+            );
         }
 
-        using XtreamClient client = new XtreamClient();
-        List<StreamInfo> streams = await client.GetVodStreamsByCategoryAsync(Plugin.Instance.Creds, categoryId, cancellationToken).ConfigureAwait(false);
-        return streams.Where((StreamInfo stream) => IsConfigured(Plugin.Instance.Configuration.Vod, categoryId, stream.StreamId));
+        return results;
     }
 
     /// <summary>
-    /// Gets an iterator for the configured Series categories.
+    /// Gets VOD streams for a specific provider and category.
     /// </summary>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<Category>> GetSeriesCategories(CancellationToken cancellationToken)
-    {
-        using XtreamClient client = new XtreamClient();
-        List<Category> categories = await client.GetSeriesCategoryAsync(Plugin.Instance.Creds, cancellationToken).ConfigureAwait(false);
-        return categories.Where((Category category) => Plugin.Instance.Configuration.Series.ContainsKey(category.CategoryId));
-    }
-
-    /// <summary>
-    /// Gets an iterator for the configured Series.
-    /// </summary>
+    /// <param name="provider">The provider to fetch from.</param>
     /// <param name="categoryId">The Xtream id of the category.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<Series>> GetSeries(int categoryId, CancellationToken cancellationToken)
+    /// <returns>Filtered streams based on provider configuration.</returns>
+    public static async Task<IEnumerable<StreamInfo>> GetVodStreamsForProvider(
+        XtreamProvider provider,
+        int categoryId,
+        CancellationToken cancellationToken
+    )
     {
-        if (!Plugin.Instance.Configuration.Series.ContainsKey(categoryId))
+        if (!provider.Vod.ContainsKey(categoryId))
         {
-            return new List<Series>();
+            return [];
         }
 
-        using XtreamClient client = new XtreamClient();
-        List<Series> series = await client.GetSeriesByCategoryAsync(Plugin.Instance.Creds, categoryId, cancellationToken).ConfigureAwait(false);
-        return series.Where((Series series) => IsConfigured(Plugin.Instance.Configuration.Series, series.CategoryId, series.SeriesId));
+        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        return (
+            await client
+                .GetVodStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
+                .ConfigureAwait(false)
+        ).Where((StreamInfo stream) => IsConfigured(provider.Vod, categoryId, stream.StreamId));
     }
 
     /// <summary>
-    /// Gets an iterator for the configured seasons in the Series.
+    /// Gets Series categories for a specific provider.
     /// </summary>
+    /// <param name="provider">The provider to fetch from.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>Filtered categories based on provider configuration.</returns>
+    public static async Task<IEnumerable<Category>> GetSeriesCategoriesForProvider(
+        XtreamProvider provider,
+        CancellationToken cancellationToken
+    )
+    {
+        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        return (
+            await client.GetSeriesCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
+        ).Where((Category category) => provider.Series.ContainsKey(category.CategoryId));
+    }
+
+    /// <summary>
+    /// Gets all Series categories from all enabled providers.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>All categories from all enabled providers.</returns>
+    public static async Task<IEnumerable<ProviderCategory>> GetAllSeriesCategories(CancellationToken cancellationToken)
+    {
+        List<ProviderCategory> results = [];
+        PluginConfiguration config = Plugin.Instance.Configuration;
+
+        foreach (XtreamProvider provider in config.GetEnabledProviders())
+        {
+            results.AddRange(
+                (await GetSeriesCategoriesForProvider(provider, cancellationToken).ConfigureAwait(false)).Select(
+                    (Category c) => new ProviderCategory(provider, c)
+                )
+            );
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Gets Series for a specific provider and category.
+    /// </summary>
+    /// <param name="provider">The provider to fetch from.</param>
+    /// <param name="categoryId">The Xtream id of the category.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>Filtered series based on provider configuration.</returns>
+    public static async Task<IEnumerable<Series>> GetSeriesForProvider(
+        XtreamProvider provider,
+        int categoryId,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!provider.Series.ContainsKey(categoryId))
+        {
+            return [];
+        }
+
+        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        return (
+            await client
+                .GetSeriesByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
+                .ConfigureAwait(false)
+        ).Where((Series s) => IsConfigured(provider.Series, s.CategoryId, s.SeriesId));
+    }
+
+    /// <summary>
+    /// Gets seasons for a specific provider and series.
+    /// </summary>
+    /// <param name="provider">The provider to fetch from.</param>
     /// <param name="seriesId">The Xtream id of the Series.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<Tuple<SeriesStreamInfo, int>>> GetSeasons(int seriesId, CancellationToken cancellationToken)
+    /// <returns>Seasons with series info.</returns>
+    public static async Task<IEnumerable<Tuple<SeriesStreamInfo, int>>> GetSeasonsForProvider(
+        XtreamProvider provider,
+        int seriesId,
+        CancellationToken cancellationToken
+    )
     {
-        using XtreamClient client = new XtreamClient();
-        SeriesStreamInfo series = await client.GetSeriesStreamsBySeriesAsync(Plugin.Instance.Creds, seriesId, cancellationToken).ConfigureAwait(false);
-        int categoryId = series.Info.CategoryId;
-        if (!IsConfigured(Plugin.Instance.Configuration.Series, categoryId, seriesId))
+        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        SeriesStreamInfo series = await client
+            .GetSeriesStreamsBySeriesAsync(provider.ToConnectionInfo(), seriesId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!IsConfigured(provider.Series, series.Info.CategoryId, seriesId))
         {
-            return new List<Tuple<SeriesStreamInfo, int>>();
+            return [];
         }
 
         return series.Episodes.Keys.Select((int seasonId) => new Tuple<SeriesStreamInfo, int>(series, seasonId));
     }
 
     /// <summary>
-    /// Gets an iterator for the configured seasons in the Series.
+    /// Gets episodes for a specific provider, series, and season.
     /// </summary>
+    /// <param name="provider">The provider to fetch from.</param>
     /// <param name="seriesId">The Xtream id of the Series.</param>
     /// <param name="seasonId">The Xtream id of the Season.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<Tuple<SeriesStreamInfo, Season?, Episode>>> GetEpisodes(int seriesId, int seasonId, CancellationToken cancellationToken)
+    /// <returns>Episodes with series and season info.</returns>
+    public static async Task<IEnumerable<Tuple<SeriesStreamInfo, Season?, Episode>>> GetEpisodesForProvider(
+        XtreamProvider provider,
+        int seriesId,
+        int seasonId,
+        CancellationToken cancellationToken
+    )
     {
-        using XtreamClient client = new XtreamClient();
-        SeriesStreamInfo series = await client.GetSeriesStreamsBySeriesAsync(Plugin.Instance.Creds, seriesId, cancellationToken).ConfigureAwait(false);
-        Season? season = series.Seasons.FirstOrDefault(s => s.SeasonId == seasonId);
-        return series.Episodes[seasonId].Select((Episode episode) => new Tuple<SeriesStreamInfo, Season?, Episode>(series, season, episode));
-    }
-
-    private static void StoreBytes(byte[] dst, int offset, int i)
-    {
-        byte[] intBytes = BitConverter.GetBytes(i);
-        if (BitConverter.IsLittleEndian)
-        {
-            Array.Reverse(intBytes);
-        }
-
-        Buffer.BlockCopy(intBytes, 0, dst, offset, 4);
+        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        SeriesStreamInfo series = await client
+            .GetSeriesStreamsBySeriesAsync(provider.ToConnectionInfo(), seriesId, cancellationToken)
+            .ConfigureAwait(false);
+        Season? season = series.Seasons.FirstOrDefault((Season s) => s.SeasonId == seasonId);
+        return series
+            .Episodes[seasonId]
+            .Select((Episode episode) => new Tuple<SeriesStreamInfo, Season?, Episode>(series, season, episode));
     }
 
     /// <summary>
     /// Gets a GUID representing the four 32-bit integers.
+    /// Optimized using BinaryPrimitives and stackalloc for zero-allocation performance.
     /// </summary>
     /// <param name="i0">Bytes 0-3.</param>
     /// <param name="i1">Bytes 4-7.</param>
@@ -318,16 +487,30 @@ public partial class StreamService
     /// <returns>Guid.</returns>
     public static Guid ToGuid(int i0, int i1, int i2, int i3)
     {
-        byte[] guid = new byte[16];
-        StoreBytes(guid, 0, i0);
-        StoreBytes(guid, 4, i1);
-        StoreBytes(guid, 8, i2);
-        StoreBytes(guid, 12, i3);
-        return new Guid(guid);
+        Span<byte> guidBytes = stackalloc byte[16];
+        BinaryPrimitives.WriteInt32BigEndian(guidBytes, i0);
+        BinaryPrimitives.WriteInt32BigEndian(guidBytes.Slice(4), i1);
+        BinaryPrimitives.WriteInt32BigEndian(guidBytes.Slice(8), i2);
+        BinaryPrimitives.WriteInt32BigEndian(guidBytes.Slice(12), i3);
+        return new Guid(guidBytes);
+    }
+
+    /// <summary>
+    /// Gets a GUID representing a stream from a specific provider.
+    /// The provider ID is stored in the third slot (i2) as a hash.
+    /// </summary>
+    /// <param name="prefix">The ID prefix (e.g., LiveTvPrefix).</param>
+    /// <param name="provider">The provider this stream belongs to.</param>
+    /// <param name="streamId">The stream ID from the provider.</param>
+    /// <returns>A unique GUID combining provider and stream information.</returns>
+    public static Guid ToProviderGuid(int prefix, XtreamProvider provider, int streamId)
+    {
+        return ToGuid(prefix, streamId, provider.GetIdHash(), 0);
     }
 
     /// <summary>
     /// Gets the four 32-bit integers represented in the GUID.
+    /// Optimized using BinaryPrimitives and Span for high-performance decoding.
     /// </summary>
     /// <param name="id">The input GUID.</param>
     /// <param name="i0">Bytes 0-3.</param>
@@ -336,76 +519,160 @@ public partial class StreamService
     /// <param name="i3">Bytes 12-15.</param>
     public static void FromGuid(Guid id, out int i0, out int i1, out int i2, out int i3)
     {
-        byte[] tmp = id.ToByteArray();
+        Span<byte> guidBytes = stackalloc byte[16];
+
+        if (!id.TryWriteBytes(guidBytes))
+        {
+            throw new InvalidOperationException("Failed to write GUID bytes");
+        }
+
         if (BitConverter.IsLittleEndian)
         {
-            Array.Reverse(tmp);
-            i0 = BitConverter.ToInt32(tmp, 12);
-            i1 = BitConverter.ToInt32(tmp, 8);
-            i2 = BitConverter.ToInt32(tmp, 4);
-            i3 = BitConverter.ToInt32(tmp, 0);
+            guidBytes.Reverse();
+            i0 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes.Slice(12));
+            i1 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes.Slice(8));
+            i2 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes.Slice(4));
+            i3 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes);
         }
         else
         {
-            i0 = BitConverter.ToInt32(tmp, 0);
-            i1 = BitConverter.ToInt32(tmp, 4);
-            i2 = BitConverter.ToInt32(tmp, 8);
-            i3 = BitConverter.ToInt32(tmp, 12);
+            i0 = BinaryPrimitives.ReadInt32BigEndian(guidBytes);
+            i1 = BinaryPrimitives.ReadInt32BigEndian(guidBytes.Slice(4));
+            i2 = BinaryPrimitives.ReadInt32BigEndian(guidBytes.Slice(8));
+            i3 = BinaryPrimitives.ReadInt32BigEndian(guidBytes.Slice(12));
         }
+    }
+
+    /// <summary>
+    /// Parses a GUID to extract provider and stream information.
+    /// </summary>
+    /// <param name="id">The GUID to parse.</param>
+    /// <returns>A ParsedStreamId containing prefix, provider ID, and stream ID.</returns>
+    public static ParsedStreamId ParseProviderGuid(Guid id)
+    {
+        FromGuid(id, out var prefix, out var streamId, out var providerHash, out _);
+        PluginConfiguration? config = Plugin.Instance?.Configuration;
+        string providerId = string.Empty;
+
+        if (config != null)
+        {
+            foreach (XtreamProvider provider in config.Providers)
+            {
+                if (provider.GetIdHash() == providerHash)
+                {
+                    providerId = provider.Id;
+                    break;
+                }
+            }
+        }
+
+        return new ParsedStreamId(prefix, providerId, streamId);
+    }
+
+    /// <summary>
+    /// Finds the provider for a given GUID by matching the provider hash.
+    /// </summary>
+    /// <param name="id">The GUID to parse.</param>
+    /// <returns>The matching provider, or null if not found.</returns>
+    public static XtreamProvider? FindProviderForGuid(Guid id)
+    {
+        FromGuid(id, out _, out _, out var providerHash, out _);
+        PluginConfiguration? config = Plugin.Instance?.Configuration;
+
+        if (config == null)
+        {
+            return null;
+        }
+
+        foreach (XtreamProvider provider in config.Providers)
+        {
+            if (provider.GetIdHash() == providerHash)
+            {
+                return provider;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the provider for a given GUID string by matching the provider hash.
+    /// </summary>
+    /// <param name="guidString">The GUID string to parse.</param>
+    /// <returns>The matching provider, or null if not found or invalid GUID.</returns>
+    public static XtreamProvider? FindProviderForGuid(string guidString)
+    {
+        if (Guid.TryParse(guidString, out var guid))
+        {
+            return FindProviderForGuid(guid);
+        }
+
+        return null;
     }
 
     /// <summary>
     /// Gets the media source information for the given Xtream stream.
     /// </summary>
+    /// <param name="provider">The provider this stream belongs to.</param>
     /// <param name="type">The stream media type.</param>
     /// <param name="id">The unique identifier of the stream.</param>
+    /// <param name="name">The display name of the stream/channel.</param>
     /// <param name="extension">The container extension of the stream.</param>
     /// <param name="restream">Boolean indicating whether or not restreaming is used.</param>
-    /// <param name="start">The datetime representing the start time of catcup TV.</param>
-    /// <param name="durationMinutes">The duration in minutes of the catcup TV stream.</param>
+    /// <param name="start">The datetime representing the start time of catchup TV.</param>
+    /// <param name="durationMinutes">The duration in minutes of the catchup TV stream.</param>
     /// <param name="videoInfo">The Xtream video info if known.</param>
     /// <param name="audioInfo">The Xtream audio info if known.</param>
     /// <returns>The media source info as <see cref="MediaSourceInfo"/> class.</returns>
     public MediaSourceInfo GetMediaSourceInfo(
+        XtreamProvider provider,
         StreamType type,
         int id,
+        string? name = null,
         string? extension = null,
         bool restream = false,
         DateTime? start = null,
         int durationMinutes = 0,
         VideoInfo? videoInfo = null,
-        AudioInfo? audioInfo = null)
+        AudioInfo? audioInfo = null
+    )
     {
-        string prefix = string.Empty;
+        string pathPrefix = string.Empty;
+
         switch (type)
         {
+            case StreamType.Live:
+                pathPrefix = "/live";
+                break;
             case StreamType.Series:
-                prefix = "/series";
+                pathPrefix = "/series";
                 break;
             case StreamType.Vod:
-                prefix = "/movie";
+                pathPrefix = "/movie";
                 break;
         }
 
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        string uri = $"{config.BaseUrl}{prefix}/{config.Username}/{config.Password}/{id}";
+        string uri = $"{provider.BaseUrl}{pathPrefix}/{provider.Username}/{provider.Password}/{id}";
+
         if (!string.IsNullOrEmpty(extension))
         {
-            uri += $".{extension}";
+            uri = uri + "." + extension;
         }
 
         if (type == StreamType.CatchUp)
         {
             string? startString = start?.ToString("yyyy'-'MM'-'dd':'HH'-'mm", CultureInfo.InvariantCulture);
-            uri = $"{config.BaseUrl}/streaming/timeshift.php?username={config.Username}&password={config.Password}&stream={id}&start={startString}&duration={durationMinutes}";
+            uri =
+                $"{provider.BaseUrl}/streaming/timeshift.php?username={provider.Username}&password={provider.Password}&stream={id}&start={startString}&duration={durationMinutes}";
         }
 
         bool isLive = type == StreamType.Live;
+
         return new MediaSourceInfo()
         {
             Container = extension,
             EncoderProtocol = MediaProtocol.Http,
-            Id = ToGuid(MediaSourcePrefix, (int)type, id, 0).ToString(),
+            Id = ToProviderGuid(MediaSourcePrefix, provider, id).ToString(),
             IsInfiniteStream = isLive,
             IsRemote = true,
             MediaStreams =
@@ -439,9 +706,9 @@ public partial class StreamService
                     Profile = audioInfo?.Profile,
                     SampleRate = audioInfo?.SampleRate,
                     Type = MediaStreamType.Audio,
-                }
+                },
             ],
-            Name = "default",
+            Name = name ?? "default",
             Path = uri,
             Protocol = MediaProtocol.Http,
             RequiresClosing = restream,
@@ -449,7 +716,33 @@ public partial class StreamService
             SupportsDirectPlay = true,
             SupportsDirectStream = true,
             SupportsProbing = true,
+            SupportsTranscoding = true,
+            TranscodingContainer = extension,
+            TranscodingUrl = uri,
+            AnalyzeDurationMs = 0,
+            ReadAtNativeFramerate = false,
         };
+    }
+
+    /// <summary>
+    /// Gets all live streams with channel deduplication and quality-based provider selection.
+    /// Channels with the same name are merged, keeping only the highest quality variant.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A map of channels to their providers, supporting failover.</returns>
+    public static async Task<ChannelProviderMap> GetDeduplicatedChannelMap(CancellationToken cancellationToken)
+    {
+        return ChannelProviderMap.Build(await GetAllLiveStreams(cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Normalizes a channel name for comparison and deduplication.
+    /// </summary>
+    /// <param name="name">The channel name to normalize.</param>
+    /// <returns>The normalized channel name (uppercase, trimmed, tags removed).</returns>
+    public static string NormalizeChannelName(string name)
+    {
+        return ParseName(name).Title.ToUpperInvariant().Trim();
     }
 
     [GeneratedRegex(@"\[([^\]]+)\]|\|([^\|]+)\|")]

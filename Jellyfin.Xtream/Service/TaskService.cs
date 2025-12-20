@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -27,10 +27,11 @@ public class TaskService(ITaskManager taskManager)
 {
     private static Type? FindType(string assembly, string fullName)
     {
-        return AppDomain.CurrentDomain.GetAssemblies()
+        return AppDomain
+            .CurrentDomain.GetAssemblies()
             .Where(a =>
-                !a.IsDynamic &&
-                (a.FullName?.StartsWith($"{assembly},", StringComparison.InvariantCulture) ?? false))
+                !a.IsDynamic && (a.FullName?.StartsWith($"{assembly},", StringComparison.InvariantCulture) ?? false)
+            )
             .SelectMany(a => a.GetTypes())
             .FirstOrDefault(t => t?.FullName == fullName);
     }
@@ -47,8 +48,8 @@ public class TaskService(ITaskManager taskManager)
 
         // As the type is not publicly visible, use reflection.
         typeof(ITaskManager)
-            .GetMethod(nameof(ITaskManager.CancelIfRunningAndQueue), 1, [])?
-            .MakeGenericMethod(refreshType)?
-            .Invoke(taskManager, []);
+            .GetMethod(nameof(ITaskManager.CancelIfRunningAndQueue), 1, [])
+            ?.MakeGenericMethod(refreshType)
+            ?.Invoke(taskManager, []);
     }
 }
