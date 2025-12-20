@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -16,32 +16,58 @@
 using System;
 using Newtonsoft.Json;
 
-#pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents a TV series season from the Xtream API.
+/// </summary>
 public class Season
 {
+    /// <summary>
+    /// Gets or sets the air date of the season.
+    /// </summary>
     [JsonProperty("air_date")]
     public DateTime AirDate { get; set; }
 
+    /// <summary>
+    /// Gets or sets the number of episodes in the season.
+    /// </summary>
     [JsonProperty("episode_count")]
     public int EpisodeCount { get; set; }
 
+    /// <summary>
+    /// Gets or sets the season identifier.
+    /// </summary>
     [JsonProperty("id")]
     public int SeasonId { get; set; }
 
+    /// <summary>
+    /// Gets or sets the season name.
+    /// </summary>
     [JsonProperty("name")]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the season overview.
+    /// </summary>
     [JsonProperty("overview")]
     public string Overview { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the season number.
+    /// </summary>
     [JsonProperty("season_number")]
     public int Cast { get; set; }
 
+    /// <summary>
+    /// Gets or sets the cover image URL.
+    /// </summary>
     [JsonProperty("cover")]
     public string Cover { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the large cover image URL.
+    /// </summary>
     [JsonProperty("cover_big")]
     public string CoverBig { get; set; } = string.Empty;
 }

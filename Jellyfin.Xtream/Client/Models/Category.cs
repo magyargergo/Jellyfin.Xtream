@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,17 +15,28 @@
 
 using Newtonsoft.Json;
 
-#pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents a category from the Xtream API.
+/// </summary>
 public class Category
 {
+    /// <summary>
+    /// Gets or sets the category identifier.
+    /// </summary>
     [JsonProperty("category_id")]
     public int CategoryId { get; set; }
 
+    /// <summary>
+    /// Gets or sets the category name.
+    /// </summary>
     [JsonProperty("category_name")]
     public string CategoryName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the parent category identifier.
+    /// </summary>
     [JsonProperty("parent_id")]
     public int ParentId { get; set; }
 }

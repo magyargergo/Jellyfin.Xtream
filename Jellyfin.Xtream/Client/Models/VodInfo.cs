@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -16,42 +16,77 @@
 using System;
 using Newtonsoft.Json;
 
-#pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents VOD information from the Xtream API.
+/// </summary>
 public class VodInfo
 {
+    /// <summary>
+    /// Gets or sets the movie image URL.
+    /// </summary>
     [JsonProperty("movie_image")]
     public string? MovieImage { get; set; }
 
+    /// <summary>
+    /// Gets or sets the genre.
+    /// </summary>
     [JsonProperty("genre")]
     public string? Genre { get; set; }
 
+    /// <summary>
+    /// Gets or sets the plot summary.
+    /// </summary>
     [JsonProperty("plot")]
     public string? Plot { get; set; }
 
+    /// <summary>
+    /// Gets or sets the director name.
+    /// </summary>
     [JsonProperty("director")]
     public string? Director { get; set; }
 
+    /// <summary>
+    /// Gets or sets the rating.
+    /// </summary>
     [JsonProperty("rating")]
     public decimal? Rating { get; set; }
 
+    /// <summary>
+    /// Gets or sets the release date.
+    /// </summary>
     [JsonProperty("releasedate")]
     public DateTime? ReleaseDate { get; set; }
 
+    /// <summary>
+    /// Gets or sets the duration in seconds.
+    /// </summary>
     [JsonProperty("duration_secs")]
     public int? DurationSecs { get; set; }
 
+    /// <summary>
+    /// Gets or sets the TMDB identifier.
+    /// </summary>
     [JsonProperty("tmdb_id")]
     public int? TmdbId { get; set; }
 
+    /// <summary>
+    /// Gets or sets the bitrate.
+    /// </summary>
     [JsonProperty("bitrate")]
     public int Bitrate { get; set; }
 
+    /// <summary>
+    /// Gets or sets the video information.
+    /// </summary>
     [JsonProperty("video")]
     [JsonConverter(typeof(OnlyObjectConverter<VideoInfo>))]
     public VideoInfo? Video { get; set; }
 
+    /// <summary>
+    /// Gets or sets the audio information.
+    /// </summary>
     [JsonProperty("audio")]
     [JsonConverter(typeof(OnlyObjectConverter<AudioInfo>))]
     public AudioInfo? Audio { get; set; }

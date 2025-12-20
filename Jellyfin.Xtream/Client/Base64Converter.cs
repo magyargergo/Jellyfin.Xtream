@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -31,15 +31,34 @@ public class Base64Converter : JsonConverter
     }
 
     /// <inheritdoc />
-    public override object ReadJson(JsonReader reader, Type objectType, object? existingValue, JsonSerializer serializer)
+    public override object ReadJson(
+        JsonReader reader,
+        Type objectType,
+        object? existingValue,
+        JsonSerializer serializer
+    )
     {
         if (reader.Value == null)
         {
-            throw new ArgumentException("Value cannot be null.");
+            return string.Empty;
         }
 
-        byte[] bytes = Convert.FromBase64String((string)reader.Value);
-        return Encoding.UTF8.GetString(bytes);
+        string value = (string)reader.Value;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            byte[] bytes = Convert.FromBase64String(value);
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch (FormatException)
+        {
+            // If the value isn't valid base64, return it as-is
+            return value;
+        }
     }
 
     /// <inheritdoc />
