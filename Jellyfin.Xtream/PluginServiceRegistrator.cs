@@ -16,6 +16,7 @@
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Providers;
 using Jellyfin.Xtream.Service;
+using Jellyfin.Xtream.Service.Discovery;
 using Jellyfin.Xtream.Service.Epg;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
@@ -78,5 +79,10 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
 
         // Register VOD metadata provider
         serviceCollection.AddSingleton<IPreRefreshProvider, XtreamVodProvider>();
+
+        // Register provider discovery services
+        serviceCollection.AddSingleton<ICredentialParser, CredentialParser>();
+        serviceCollection.AddSingleton<IProviderTester, ProviderTester>();
+        serviceCollection.AddSingleton<IProviderDiscoveryService, ProviderDiscoveryService>();
     }
 }

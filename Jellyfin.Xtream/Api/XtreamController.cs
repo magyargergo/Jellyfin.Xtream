@@ -18,6 +18,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
+using System.Net.WebSockets;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Api.Models;
@@ -25,9 +27,11 @@ using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
+using Jellyfin.Xtream.Service.Discovery;
 using Jellyfin.Xtream.Service.Epg;
 using Jellyfin.Xtream.Utility;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -878,5 +882,545 @@ public class XtreamController : ControllerBase
     {
         _logger.LogDebugIfEnabled("Refreshing Discord notification service configuration");
         return Ok(new { success = true, message = "Discord configuration refreshed" });
+    }
+
+    /// <summary>
+    /// Discover and test provider credentials.
+    /// </summary>
+    /// <remarks>
+    /// This endpoint uses CancellationToken.None to prevent the operation from being cancelled
+    /// when the HTTP connection drops. The discovery operation can take several minutes, and
+    /// browsers/proxies may timeout before it completes. Use the CancelDiscovery endpoint to
+    /// explicitly cancel the operation.
+    /// </remarks>
+    /// <param name="request">The discovery request options.</param>
+    /// <param name="discoveryService">The discovery service.</param>
+    /// <returns>The discovery results.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("DiscoverProviders")]
+    public async Task<ActionResult<DiscoveryResponse>> DiscoverProviders(
+        [FromBody] DiscoveryRequest? request,
+        [FromServices] IProviderDiscoveryService discoveryService
+    )
+    {
+        var options = new DiscoveryOptions
+        {
+            MaxPages = request?.MaxPages ?? 5,
+            MaxDiscoveryWorkers = request?.MaxDiscoveryWorkers ?? 5,
+            MaxTestWorkers = request?.MaxTestWorkers ?? 10,
+            TestStream = request?.TestStream ?? true,
+            TestEpg = request?.TestEpg ?? true,
+            PolishOnly = request?.PolishOnly ?? true,
+        };
+
+        _logger.LogInformation(
+            "Starting provider discovery: Pages={Pages}, DiscoveryWorkers={DiscoveryWorkers}, TestWorkers={TestWorkers}",
+            options.MaxPages,
+            options.MaxDiscoveryWorkers,
+            options.MaxTestWorkers
+        );
+
+        try
+        {
+            // Use CancellationToken.None to prevent HTTP connection drops from cancelling the operation.
+            // The operation can be explicitly cancelled via the CancelDiscovery endpoint.
+            var result = await discoveryService
+                .DiscoverAndTestAsync(options, null, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var response = new DiscoveryResponse
+            {
+                Success = result.Success,
+                ErrorMessage = result.ErrorMessage,
+                PagesProcessed = result.DiscoveryResult?.PagesProcessed ?? 0,
+                TotalCredentialsFound = result.DiscoveryResult?.Credentials.Count ?? 0,
+                TotalCredentialsTested = result.TestResults.Count,
+                WorkingProviderCount = result.WorkingProviders.Count,
+                WorkingWithEpgCount = result.WorkingWithEpgProviders.Count,
+                FullyWorkingCount = result.FullyWorkingProviders.Count,
+                WorkingProviders = result.WorkingProviders.Select(MapToDiscoveryResponse).ToList(),
+                FullyWorkingProviders = result.FullyWorkingProviders.Select(MapToDiscoveryResponse).ToList(),
+            };
+
+            return Ok(response);
+        }
+        catch (OperationCanceledException)
+        {
+            return Ok(new DiscoveryResponse { Success = false, ErrorMessage = "Discovery was cancelled" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Provider discovery failed");
+            return Ok(new DiscoveryResponse { Success = false, ErrorMessage = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get the current discovery status and progress.
+    /// </summary>
+    /// <param name="discoveryService">The discovery service.</param>
+    /// <returns>The current discovery status with progress.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("DiscoveryStatus")]
+    public ActionResult<DiscoveryStatusResponse> GetDiscoveryStatus(
+        [FromServices] IProviderDiscoveryService discoveryService
+    )
+    {
+        var progress = discoveryService.GetCurrentProgress();
+        return Ok(
+            new DiscoveryStatusResponse
+            {
+                IsRunning = discoveryService.IsRunning,
+                Progress =
+                    progress != null
+                        ? new DiscoveryProgressResponse
+                        {
+                            Phase = progress.Phase.ToString(),
+                            CurrentItem = progress.CurrentItem,
+                            TotalItems = progress.TotalItems,
+                            CredentialsFound = progress.CredentialsFound,
+                            WorkingProviders = progress.WorkingProviders,
+                            WorkingWithEpg = progress.WorkingWithEpg,
+                            FullyWorking = progress.FullyWorking,
+                            Message = progress.Message,
+                        }
+                        : null,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Start a discovery operation in the background.
+    /// Use DiscoveryProgress SSE endpoint to receive real-time updates.
+    /// </summary>
+    /// <param name="request">The discovery request options.</param>
+    /// <param name="discoveryService">The discovery service.</param>
+    /// <returns>Result indicating if the operation was started.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("StartDiscovery")]
+    public ActionResult<object> StartDiscovery(
+        [FromBody] DiscoveryRequest? request,
+        [FromServices] IProviderDiscoveryService discoveryService
+    )
+    {
+        var options = new DiscoveryOptions
+        {
+            MaxPages = request?.MaxPages ?? 5,
+            MaxDiscoveryWorkers = request?.MaxDiscoveryWorkers ?? 5,
+            MaxTestWorkers = request?.MaxTestWorkers ?? 10,
+            TestStream = request?.TestStream ?? true,
+            TestEpg = request?.TestEpg ?? true,
+            PolishOnly = request?.PolishOnly ?? true,
+        };
+
+        _logger.LogInformation(
+            "Starting background discovery: Pages={Pages}, DiscoveryWorkers={DiscoveryWorkers}, TestWorkers={TestWorkers}",
+            options.MaxPages,
+            options.MaxDiscoveryWorkers,
+            options.MaxTestWorkers
+        );
+
+        var started = discoveryService.StartDiscoveryAsync(options);
+
+        if (!started)
+        {
+            return Ok(new { success = false, message = "A discovery operation is already in progress" });
+        }
+
+        return Ok(new { success = true, message = "Discovery started. Use /DiscoveryProgress for real-time updates." });
+    }
+
+    /// <summary>
+    /// Get real-time discovery progress updates via Server-Sent Events (SSE).
+    /// </summary>
+    /// <param name="discoveryService">The discovery service.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>SSE stream of progress updates.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("DiscoveryProgress")]
+    public async Task DiscoveryProgress(
+        [FromServices] IProviderDiscoveryService discoveryService,
+        CancellationToken cancellationToken
+    )
+    {
+        Response.ContentType = "text/event-stream";
+        Response.Headers["Cache-Control"] = "no-cache";
+        Response.Headers["Connection"] = "keep-alive";
+
+        await foreach (
+            var progress in discoveryService.GetProgressUpdatesAsync(cancellationToken).ConfigureAwait(false)
+        )
+        {
+            var data = System.Text.Json.JsonSerializer.Serialize(
+                new DiscoveryProgressResponse
+                {
+                    Phase = progress.Phase.ToString(),
+                    CurrentItem = progress.CurrentItem,
+                    TotalItems = progress.TotalItems,
+                    CredentialsFound = progress.CredentialsFound,
+                    WorkingProviders = progress.WorkingProviders,
+                    WorkingWithEpg = progress.WorkingWithEpg,
+                    FullyWorking = progress.FullyWorking,
+                    Message = progress.Message,
+                }
+            );
+
+            var bytes = Encoding.UTF8.GetBytes($"data: {data}\n\n");
+            await Response.Body.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+            await Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Send completion event
+        var completeBytes = Encoding.UTF8.GetBytes("event: complete\ndata: {}\n\n");
+        await Response.Body.WriteAsync(completeBytes, cancellationToken).ConfigureAwait(false);
+        await Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Get real-time discovery progress updates via WebSocket.
+    /// This is the preferred method over SSE as it works better with Jellyfin's infrastructure.
+    /// </summary>
+    /// <param name="discoveryService">The discovery service.</param>
+    /// <returns>WebSocket connection for progress updates.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("DiscoveryProgressWs")]
+    public async Task DiscoveryProgressWebSocket([FromServices] IProviderDiscoveryService discoveryService)
+    {
+        if (!HttpContext.WebSockets.IsWebSocketRequest)
+        {
+            HttpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        // Configure WebSocket with keep-alive
+        var wsOptions = new WebSocketAcceptContext { KeepAliveInterval = TimeSpan.FromSeconds(30) };
+        using var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync(wsOptions).ConfigureAwait(false);
+        _logger.LogDebug("WebSocket connection established for discovery progress");
+
+        try
+        {
+            using var cts = new CancellationTokenSource();
+
+            // Start receiving messages (handles ping/pong and close frames)
+            var receiveTask = ReceiveWebSocketMessagesAsync(webSocket, cts);
+
+            // Send progress updates with heartbeat
+            var lastProgressTime = DateTime.UtcNow;
+            const int HeartbeatIntervalSeconds = 15;
+
+            await foreach (var progress in discoveryService.GetProgressUpdatesAsync(cts.Token).ConfigureAwait(false))
+            {
+                if (webSocket.State != WebSocketState.Open || cts.Token.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                var response = new DiscoveryProgressResponse
+                {
+                    Phase = progress.Phase.ToString(),
+                    CurrentItem = progress.CurrentItem,
+                    TotalItems = progress.TotalItems,
+                    CredentialsFound = progress.CredentialsFound,
+                    WorkingProviders = progress.WorkingProviders,
+                    WorkingWithEpg = progress.WorkingWithEpg,
+                    FullyWorking = progress.FullyWorking,
+                    Message = progress.Message,
+                };
+
+                var json = System.Text.Json.JsonSerializer.Serialize(response);
+                var bytes = Encoding.UTF8.GetBytes(json);
+
+                try
+                {
+                    await webSocket
+                        .SendAsync(
+                            new ArraySegment<byte>(bytes),
+                            WebSocketMessageType.Text,
+                            endOfMessage: true,
+                            cts.Token
+                        )
+                        .ConfigureAwait(false);
+                    lastProgressTime = DateTime.UtcNow;
+                }
+                catch (WebSocketException)
+                {
+                    _logger.LogDebug("WebSocket send failed, connection may be closed");
+                    break;
+                }
+
+                // Send heartbeat if no progress update for a while
+                if ((DateTime.UtcNow - lastProgressTime).TotalSeconds > HeartbeatIntervalSeconds)
+                {
+                    var heartbeat = "{\"type\":\"heartbeat\"}";
+                    var heartbeatBytes = Encoding.UTF8.GetBytes(heartbeat);
+                    try
+                    {
+                        await webSocket
+                            .SendAsync(
+                                new ArraySegment<byte>(heartbeatBytes),
+                                WebSocketMessageType.Text,
+                                endOfMessage: true,
+                                cts.Token
+                            )
+                            .ConfigureAwait(false);
+                    }
+                    catch (WebSocketException)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            // Send completion message
+            if (webSocket.State == WebSocketState.Open && !cts.Token.IsCancellationRequested)
+            {
+                var completeJson = "{\"Phase\":\"Complete\",\"Message\":\"Operation finished\"}";
+                var completeBytes = Encoding.UTF8.GetBytes(completeJson);
+                try
+                {
+                    await webSocket
+                        .SendAsync(
+                            new ArraySegment<byte>(completeBytes),
+                            WebSocketMessageType.Text,
+                            endOfMessage: true,
+                            CancellationToken.None
+                        )
+                        .ConfigureAwait(false);
+
+                    await webSocket
+                        .CloseAsync(WebSocketCloseStatus.NormalClosure, "Complete", CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (WebSocketException)
+                {
+                    // Client already disconnected
+                }
+            }
+
+            await cts.CancelAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogDebug("WebSocket connection cancelled");
+        }
+        catch (WebSocketException ex)
+        {
+            _logger.LogDebug(ex, "WebSocket error during discovery progress");
+        }
+    }
+
+    private static async Task ReceiveWebSocketMessagesAsync(WebSocket webSocket, CancellationTokenSource cts)
+    {
+        var buffer = new byte[1024];
+        try
+        {
+            while (webSocket.State == WebSocketState.Open && !cts.Token.IsCancellationRequested)
+            {
+                var result = await webSocket
+                    .ReceiveAsync(new ArraySegment<byte>(buffer), cts.Token)
+                    .ConfigureAwait(false);
+
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    await cts.CancelAsync().ConfigureAwait(false);
+                    break;
+                }
+
+                // Handle ping from client (respond with pong) - this is automatic in .NET WebSockets
+                // Handle text messages (e.g., client heartbeat/ping)
+                if (result.MessageType == WebSocketMessageType.Text)
+                {
+                    var message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    if (message.Contains("ping", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Respond with pong
+                        var pong = Encoding.UTF8.GetBytes("{\"type\":\"pong\"}");
+                        if (webSocket.State == WebSocketState.Open)
+                        {
+                            await webSocket
+                                .SendAsync(
+                                    new ArraySegment<byte>(pong),
+                                    WebSocketMessageType.Text,
+                                    endOfMessage: true,
+                                    cts.Token
+                                )
+                                .ConfigureAwait(false);
+                        }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when cancellation is requested
+        }
+        catch (WebSocketException)
+        {
+            // Connection closed
+            await cts.CancelAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Get the result of the last completed discovery operation.
+    /// </summary>
+    /// <param name="discoveryService">The discovery service.</param>
+    /// <returns>The discovery result or null if no operation has completed.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("DiscoveryResult")]
+    public ActionResult<DiscoveryResponse> GetDiscoveryResult([FromServices] IProviderDiscoveryService discoveryService)
+    {
+        var result = discoveryService.GetLastResult();
+
+        if (result == null)
+        {
+            return Ok(
+                new DiscoveryResponse
+                {
+                    Success = false,
+                    ErrorMessage = "No cached results available. Run a discovery first.",
+                }
+            );
+        }
+
+        return Ok(
+            new DiscoveryResponse
+            {
+                Success = result.Success,
+                ErrorMessage = result.ErrorMessage,
+                PagesProcessed = result.DiscoveryResult?.PagesProcessed ?? 0,
+                TotalCredentialsFound = result.DiscoveryResult?.Credentials.Count ?? 0,
+                TotalCredentialsTested = result.TestResults.Count,
+                WorkingProviderCount = result.WorkingProviders.Count,
+                WorkingWithEpgCount = result.WorkingWithEpgProviders.Count,
+                FullyWorkingCount = result.FullyWorkingProviders.Count,
+                WorkingProviders = result.WorkingProviders.Select(MapToDiscoveryResponse).ToList(),
+                FullyWorkingProviders = result.FullyWorkingProviders.Select(MapToDiscoveryResponse).ToList(),
+            }
+        );
+    }
+
+    /// <summary>
+    /// Cancel the current discovery operation.
+    /// </summary>
+    /// <param name="discoveryService">The discovery service.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("CancelDiscovery")]
+    public ActionResult<object> CancelDiscovery([FromServices] IProviderDiscoveryService discoveryService)
+    {
+        discoveryService.Cancel();
+        _logger.LogInformation("Discovery operation cancelled by user");
+        return Ok(new { success = true, message = "Discovery cancelled" });
+    }
+
+    /// <summary>
+    /// Clear the cached discovery results.
+    /// </summary>
+    /// <param name="discoveryService">The discovery service.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("ClearDiscoveryCache")]
+    public ActionResult<object> ClearDiscoveryCache([FromServices] IProviderDiscoveryService discoveryService)
+    {
+        var cleared = discoveryService.ClearCache();
+        _logger.LogInformation("Discovery cache cleared by user");
+        return Ok(
+            new
+            {
+                success = true,
+                cleared,
+                message = cleared ? "Cache cleared" : "No cache to clear",
+            }
+        );
+    }
+
+    /// <summary>
+    /// Import a discovered provider as a configured provider.
+    /// </summary>
+    /// <param name="provider">The provider to import.</param>
+    /// <returns>Result with the new provider ID.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("ImportDiscoveredProvider")]
+    public ActionResult<object> ImportDiscoveredProvider([FromBody] DiscoveredProviderResponse provider)
+    {
+        if (string.IsNullOrEmpty(provider.Server) || string.IsNullOrEmpty(provider.Username))
+        {
+            return BadRequest(new { success = false, message = "Server and username are required" });
+        }
+
+        var config = Plugin.Instance.Configuration;
+
+        // Check for duplicate
+        var existingProvider = config.Providers.FirstOrDefault(p =>
+            p.BaseUrl.Contains(provider.Server, StringComparison.OrdinalIgnoreCase)
+            && p.Username.Equals(provider.Username, StringComparison.OrdinalIgnoreCase)
+        );
+
+        if (existingProvider != null)
+        {
+            return Ok(
+                new
+                {
+                    success = false,
+                    message = $"Provider already exists: {existingProvider.Name}",
+                    providerId = existingProvider.Id,
+                }
+            );
+        }
+
+        var newProvider = new XtreamProvider
+        {
+            Id = Guid.NewGuid().ToString("N")[..8],
+            Name = $"Discovered - {provider.Server}",
+            BaseUrl = $"http://{provider.Server}:{provider.Port}",
+            Username = provider.Username,
+            Password = provider.Password,
+            Enabled = true,
+        };
+
+        config.Providers.Add(newProvider);
+        Plugin.Instance.SaveConfiguration();
+
+        _logger.LogInformation(
+            "Imported discovered provider: {Name} ({Username}@{Server})",
+            newProvider.Name,
+            newProvider.Username,
+            provider.Server
+        );
+
+        return Ok(
+            new
+            {
+                success = true,
+                message = "Provider imported successfully",
+                providerId = newProvider.Id,
+                providerName = newProvider.Name,
+            }
+        );
+    }
+
+    private static DiscoveredProviderResponse MapToDiscoveryResponse(ProviderTestResult result)
+    {
+        return new DiscoveredProviderResponse
+        {
+            Server = result.Credential.Server,
+            Port = result.Credential.Port,
+            Username = result.Credential.Username,
+            Password = result.Credential.Password,
+            Status = result.Status.ToString(),
+            ExpirationDate = result.ExpirationDate,
+            MaxConnections = result.MaxConnections,
+            HasPolishChannels = result.HasPolishChannels,
+            PolishChannelCount = result.PolishChannelCount,
+            TotalChannelCount = result.TotalChannelCount,
+            StreamWorks = result.StreamWorks,
+            StreamStatus = result.StreamStatus,
+            HasEpg = result.HasEpg,
+            EpgProgramCount = result.EpgProgramCount,
+            IsFullyWorking = result.IsFullyWorking,
+            ErrorMessage = result.ErrorMessage,
+            PolishChannelNames = result.PolishChannelNames,
+        };
     }
 }

@@ -110,10 +110,19 @@ public sealed class XtreamClient : IDisposable
             }
             catch (HttpRequestException exception)
             {
-                _logger?.LogError(
-                    exception,
-                    "Failed to validate Xtream credentials. This will likely cause 406 errors."
-                );
+                // Log without stack trace for expected connection failures
+                if (IsExpectedConnectionFailure(exception))
+                {
+                    _logger?.LogDebug("Failed to validate Xtream credentials: {Message}", exception.Message);
+                }
+                else
+                {
+                    _logger?.LogWarning(
+                        exception,
+                        "Failed to validate Xtream credentials. This will likely cause 406 errors."
+                    );
+                }
+
                 _lastAuthSuccess = false;
                 _lastAuthCheck = now;
                 return false;
@@ -406,5 +415,35 @@ public sealed class XtreamClient : IDisposable
     {
         _authLock.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    private static bool IsExpectedConnectionFailure(HttpRequestException ex)
+    {
+        // Check for common expected failures that don't need stack traces
+        var message = ex.Message.ToUpperInvariant();
+
+        // Connection refused, host not found, network unreachable
+        if (
+            message.Contains("CONNECTION REFUSED", StringComparison.Ordinal)
+            || message.Contains("NO SUCH HOST", StringComparison.Ordinal)
+            || message.Contains("HOST NOT FOUND", StringComparison.Ordinal)
+            || message.Contains("NAME OR SERVICE NOT KNOWN", StringComparison.Ordinal)
+            || message.Contains("NETWORK IS UNREACHABLE", StringComparison.Ordinal)
+            || message.Contains("NODENAME NOR SERVNAME", StringComparison.Ordinal)
+            || message.Contains("ACTIVELY REFUSED", StringComparison.Ordinal)
+        )
+        {
+            return true;
+        }
+
+        // Check HTTP status codes that are expected failures
+        if (ex.StatusCode.HasValue)
+        {
+            var code = (int)ex.StatusCode.Value;
+            // 404 Not Found, 401 Unauthorized, 403 Forbidden are expected for invalid providers
+            return code is 404 or 401 or 403 or 406;
+        }
+
+        return false;
     }
 }

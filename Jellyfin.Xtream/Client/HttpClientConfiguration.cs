@@ -22,7 +22,6 @@ using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Polly;
 
 namespace Jellyfin.Xtream.Client;
 
@@ -52,8 +51,8 @@ public static class HttpClientConfiguration
             .AddHttpMessageHandler(sp => CreateRateLimitingHandler(getConfiguration, sp))
             // Add User-Agent rotation handler (rotates UA per-request when enabled)
             .AddHttpMessageHandler(sp => CreateUserAgentHandler(getConfiguration, sp))
-            // Add Polly retry policy for transient errors and Cloudflare-specific issues
-            .AddPolicyHandler((sp, request) => CreateRetryPolicy(sp))
+            // Add retry handler for transient errors and Cloudflare-specific issues
+            .AddHttpMessageHandler(sp => new RetryHandler(CreateLogger(sp, "Jellyfin.Xtream.Retry")))
             .ConfigureHttpClient((sp, client) => ConfigureHttpClient(client, sp))
             // Performance: Set handler lifetime to match pooled connection lifetime (5 minutes)
             // This ensures handlers are recycled regularly for DNS updates and connection health
@@ -77,103 +76,6 @@ public static class HttpClientConfiguration
         }
 
         return new UserAgentHandler(userAgentProvider, getConfiguration, logger);
-    }
-
-    /// <summary>
-    /// Creates a Polly retry policy for handling transient errors and Cloudflare-specific issues.
-    /// Implements exponential backoff with jitter and respects Retry-After headers.
-    /// </summary>
-    private static Polly.Retry.AsyncRetryPolicy<HttpResponseMessage> CreateRetryPolicy(IServiceProvider serviceProvider)
-    {
-        var logger = CreateLogger(serviceProvider, "Jellyfin.Xtream.Retry");
-
-        return Policy<HttpResponseMessage>
-            .Handle<HttpRequestException>()
-            .OrResult(ShouldRetryResponse)
-            .WaitAndRetryAsync(
-                retryCount: 3,
-                sleepDurationProvider: (retryAttempt, result, context) =>
-                {
-                    // Check for Retry-After header (Cloudflare may send this)
-                    if (result.Result?.Headers.RetryAfter?.Delta.HasValue == true)
-                    {
-                        var retryAfter = result.Result.Headers.RetryAfter.Delta.Value;
-                        logger?.LogDebugIfEnabled(
-                            "Using Retry-After header value: {RetryAfter}s",
-                            retryAfter.TotalSeconds
-                        );
-                        return retryAfter;
-                    }
-
-                    // Exponential backoff with jitter: 2s, 4s, 8s, 16s...
-                    var exponentialDelay = TimeSpan.FromSeconds(Math.Pow(2, retryAttempt));
-
-                    // Add jitter (±25%) to avoid thundering herd
-                    var jitterFactor = 0.75 + (Random.Shared.NextDouble() * 0.5); // 0.75 to 1.25
-                    var delayWithJitter = TimeSpan.FromMilliseconds(exponentialDelay.TotalMilliseconds * jitterFactor);
-
-                    // Cap at 30 seconds max
-                    return delayWithJitter > TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30) : delayWithJitter;
-                },
-                onRetryAsync: (outcome, timespan, retryAttempt, context) =>
-                {
-                    if (outcome.Exception != null)
-                    {
-                        logger?.LogWarning(
-                            outcome.Exception,
-                            "Request failed with exception. Attempt {Attempt}/3. Retrying in {Delay}ms...",
-                            retryAttempt,
-                            timespan.TotalMilliseconds
-                        );
-                    }
-                    else if (outcome.Result != null)
-                    {
-                        logger?.LogWarning(
-                            "Request failed with status {StatusCode} ({StatusCodeInt}). "
-                                + "Attempt {Attempt}/3. Retrying in {Delay}ms...",
-                            outcome.Result.StatusCode,
-                            (int)outcome.Result.StatusCode,
-                            retryAttempt,
-                            timespan.TotalMilliseconds
-                        );
-                    }
-
-                    return System.Threading.Tasks.Task.CompletedTask;
-                }
-            );
-    }
-
-    /// <summary>
-    /// Determines if an HTTP response warrants a retry.
-    /// </summary>
-    private static bool ShouldRetryResponse(HttpResponseMessage response)
-    {
-        // IMPORTANT: Do NOT retry streaming connections (video/mp2t content type)
-        // Retrying a live stream causes playback issues (jumping/repeating)
-        var contentType = response.Content?.Headers?.ContentType?.MediaType;
-        if (
-            contentType != null
-            && (
-                contentType.Contains("video", StringComparison.OrdinalIgnoreCase)
-                || contentType.Contains("octet-stream", StringComparison.OrdinalIgnoreCase)
-                || contentType.Contains("mpegurl", StringComparison.OrdinalIgnoreCase)
-            )
-        )
-        {
-            return false; // Never retry streaming responses
-        }
-
-        // Retry on Cloudflare-specific and transient errors (for API calls only)
-        return response.StatusCode switch
-        {
-            (HttpStatusCode)522 => true, // Connection timed out (Cloudflare)
-            (HttpStatusCode)524 => true, // A timeout occurred (Cloudflare)
-            (HttpStatusCode)429 => true, // Too Many Requests (rate limit)
-            HttpStatusCode.ServiceUnavailable => true, // 503
-            HttpStatusCode.BadGateway => true, // 502
-            HttpStatusCode.GatewayTimeout => true, // 504
-            _ => false,
-        };
     }
 
     private static RateLimitingHandler CreateRateLimitingHandler(

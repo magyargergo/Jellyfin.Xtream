@@ -5,6 +5,9 @@
       <div class="sectionTitleContainer flex align-items-center">
         <h2 class="sectionTitle">Xtream Providers</h2>
         <div style="margin-left: auto; display: flex; gap: 8px;">
+          <button is="emby-button" type="button" id="ScrapeProvidersBtn" class="fab emby-button" title="Discover Providers" style="background: rgba(156, 39, 176, 0.2);">
+            <span class="material-icons cloud_download"></span>
+          </button>
           <button is="emby-button" type="button" id="MigrateLegacyBtn" class="fab emby-button hide" title="Migrate Legacy Configuration" style="background: rgba(255, 193, 7, 0.2);">
             <span class="material-icons history"></span>
           </button>
@@ -66,6 +69,103 @@
 
       <!-- Test Connection Result -->
       <div id="TestResultPanel" class="hide" style="margin-top: 20px; padding: 12px; border-radius: 4px;">
+      </div>
+
+      <!-- Discover Providers Dialog -->
+      <div id="ScrapeDialog" class="dialog hide" style="display: none;">
+        <div class="dialog-content" style="max-width: 800px; margin: 30px auto; background: var(--theme-card-background-color, #1c1c1e); padding: 24px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto;">
+          <h2 style="margin-top: 0;">Discover Polish TV Providers</h2>
+          <div class="fieldDescription" style="margin-bottom: 16px;">
+            Automatically discover and test Xtream providers with Polish TV channels from online sources.
+          </div>
+
+          <!-- Discovery Options -->
+          <div id="ScrapeOptions">
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ScrapeMaxPages">Pages to Search</label>
+              <input id="ScrapeMaxPages" type="number" is="emby-input" value="5" min="1" max="20" />
+              <div class="fieldDescription">Number of pages to search (more pages = more providers found, but slower).</div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ScrapeWorkers">Parallel Workers</label>
+              <input id="ScrapeWorkers" type="number" is="emby-input" value="10" min="1" max="20" />
+              <div class="fieldDescription">Number of parallel connections for testing providers.</div>
+            </div>
+            <div class="checkboxContainer" style="margin: 16px 0;">
+              <label>
+                <input type="checkbox" id="ScrapeTestStream" is="emby-checkbox" checked />
+                <span>Test stream playback</span>
+              </label>
+            </div>
+            <div class="checkboxContainer" style="margin: 16px 0;">
+              <label>
+                <input type="checkbox" id="ScrapeTestEpg" is="emby-checkbox" checked />
+                <span>Test EPG availability</span>
+              </label>
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 24px;">
+              <button is="emby-button" type="button" id="StartScrapeBtn" class="raised button-submit emby-button">
+                <span class="material-icons" style="margin-right: 4px;">search</span>
+                <span>Start Discovery</span>
+              </button>
+              <button is="emby-button" type="button" id="LoadLastResultsBtn" class="raised emby-button" style="background: rgba(33, 150, 243, 0.2);">
+                <span class="material-icons" style="margin-right: 4px;">history</span>
+                <span>Load Last Results</span>
+              </button>
+              <button is="emby-button" type="button" id="ClearCacheBtn" class="raised emby-button" style="background: rgba(244, 67, 54, 0.2);">
+                <span class="material-icons" style="margin-right: 4px;">delete_sweep</span>
+                <span>Clear Cache</span>
+              </button>
+              <button is="emby-button" type="button" id="CloseScrapeDialogBtn" class="raised emby-button">
+                <span>Close</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Discovery Progress -->
+          <div id="ScrapeProgress" class="hide">
+            <div style="margin-bottom: 16px;">
+              <div id="ScrapeProgressPhase" style="font-weight: bold; margin-bottom: 8px;">Initializing...</div>
+              <div style="background: #333; border-radius: 4px; height: 8px; overflow: hidden;">
+                <div id="ScrapeProgressBar" style="background: #9c27b0; height: 100%; width: 0%; transition: width 0.3s;"></div>
+              </div>
+              <div id="ScrapeProgressText" style="font-size: 0.85em; color: #888; margin-top: 8px;">0 / 0</div>
+            </div>
+            <div id="ScrapeStats" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
+              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 4px; text-align: center;">
+                <div style="font-size: 1.5em; font-weight: bold; color: #4caf50;" id="StatWorking">0</div>
+                <div style="font-size: 0.85em; color: #888;">Working</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 4px; text-align: center;">
+                <div style="font-size: 1.5em; font-weight: bold; color: #2196f3;" id="StatWithEpg">0</div>
+                <div style="font-size: 0.85em; color: #888;">+ EPG</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 4px; text-align: center;">
+                <div style="font-size: 1.5em; font-weight: bold; color: #9c27b0;" id="StatFullyWorking">0</div>
+                <div style="font-size: 0.85em; color: #888;">+ Polish</div>
+              </div>
+            </div>
+            <button is="emby-button" type="button" id="CancelScrapeBtn" class="raised emby-button" style="background: rgba(244, 67, 54, 0.2);">
+              <span class="material-icons" style="margin-right: 4px;">cancel</span>
+              <span>Cancel</span>
+            </button>
+          </div>
+
+          <!-- Discovery Results -->
+          <div id="ScrapeResults" class="hide">
+            <div id="ScrapeResultsSummary" style="margin-bottom: 16px; padding: 12px; background: rgba(76, 175, 80, 0.1); border-radius: 4px; border-left: 3px solid #4caf50;"></div>
+            <div id="ScrapeResultsList" style="max-height: 400px; overflow-y: auto;"></div>
+            <div style="display: flex; gap: 8px; margin-top: 16px;">
+              <button is="emby-button" type="button" id="ScrapeAgainBtn" class="raised emby-button">
+                <span class="material-icons" style="margin-right: 4px;">refresh</span>
+                <span>Discover Again</span>
+              </button>
+              <button is="emby-button" type="button" id="CloseScrapeResultsBtn" class="raised emby-button">
+                <span>Close</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

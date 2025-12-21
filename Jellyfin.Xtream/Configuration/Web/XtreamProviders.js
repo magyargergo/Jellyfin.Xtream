@@ -232,10 +232,18 @@ export default function (view) {
           testResultPanel.style.borderLeft = '3px solid #4caf50';
 
           let expInfo = '';
+          let expWarning = '';
           if (result.expDate) {
             const expDate = new Date(result.expDate);
             const daysLeft = Math.ceil((expDate - new Date()) / (1000 * 60 * 60 * 24));
-            expInfo = daysLeft > 0 ? ` (${daysLeft} days left)` : ' (EXPIRED)';
+            if (daysLeft <= 0) {
+              expInfo = ' <span style="background: rgba(244, 67, 54, 0.2); color: #f44336; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; font-weight: bold;">EXPIRED</span>';
+            } else if (daysLeft <= 7) {
+              expInfo = ` <span style="background: rgba(255, 152, 0, 0.2); color: #ff9800; padding: 2px 6px; border-radius: 3px; font-size: 0.85em;">Expires in ${daysLeft} days</span>`;
+              expWarning = '<div style="grid-column: span 2; background: rgba(255, 152, 0, 0.1); padding: 8px; border-radius: 4px; margin-top: 4px;"><span class="material-icons" style="font-size: 16px; vertical-align: middle; color: #ff9800;">warning</span> <span style="color: #ff9800;">This account is expiring soon!</span></div>';
+            } else {
+              expInfo = ` (${daysLeft} days left)`;
+            }
           }
 
           testResultPanel.innerHTML = `
@@ -245,6 +253,7 @@ export default function (view) {
               <div><strong>Account:</strong> ${result.username || 'N/A'}${result.isTrial ? ' (Trial)' : ''}</div>
               <div><strong>Max Connections:</strong> ${result.maxConnections || 'N/A'}</div>
               <div style="grid-column: span 2;"><strong>Expires:</strong> ${result.expDate ? new Date(result.expDate).toLocaleDateString() + expInfo : 'N/A'}</div>
+              ${expWarning}
             </div>
           `;
         } else {
@@ -357,6 +366,350 @@ export default function (view) {
     dialog.addEventListener('click', (e) => {
       if (e.target === dialog) {
         hideDialog();
+      }
+    });
+
+    // =====================================================
+    // DISCOVERY FUNCTIONALITY
+    // =====================================================
+    const scrapeDialog = view.querySelector('#ScrapeDialog');
+    const scrapeOptions = view.querySelector('#ScrapeOptions');
+    const scrapeProgress = view.querySelector('#ScrapeProgress');
+    const scrapeResults = view.querySelector('#ScrapeResults');
+
+    // Simple polling-based progress tracking
+    // Polling is more reliable than WebSocket for this use case and provides smooth updates
+    let pollInterval = null;
+    let isDiscoveryActive = false;
+    const POLL_INTERVAL_MS = 1000; // Poll every second for smooth updates
+
+    const stopPolling = () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+      isDiscoveryActive = false;
+    };
+
+    const showScrapeDialog = () => {
+      scrapeDialog.style.display = 'block';
+      scrapeDialog.classList.remove('hide');
+      scrapeOptions.classList.remove('hide');
+      scrapeProgress.classList.add('hide');
+      scrapeResults.classList.add('hide');
+    };
+
+    const hideScrapeDialog = () => {
+      stopPolling();
+      scrapeDialog.style.display = 'none';
+      scrapeDialog.classList.add('hide');
+    };
+
+    const showScrapeProgress = () => {
+      scrapeOptions.classList.add('hide');
+      scrapeProgress.classList.remove('hide');
+      scrapeResults.classList.add('hide');
+    };
+
+    const showScrapeResults = (result) => {
+      scrapeOptions.classList.add('hide');
+      scrapeProgress.classList.add('hide');
+      scrapeResults.classList.remove('hide');
+
+      const summary = view.querySelector('#ScrapeResultsSummary');
+      const list = view.querySelector('#ScrapeResultsList');
+
+      if (result.Success) {
+        summary.style.background = 'rgba(76, 175, 80, 0.1)';
+        summary.style.borderLeftColor = '#4caf50';
+        summary.innerHTML = `
+          <strong>Discovery Complete!</strong><br>
+          Found ${result.TotalCredentialsFound} providers, tested ${result.TotalCredentialsTested}.<br>
+          Working: ${result.WorkingProviderCount} | + EPG: ${result.WorkingWithEpgCount} | + Polish: ${result.FullyWorkingCount}
+        `;
+      } else {
+        summary.style.background = 'rgba(244, 67, 54, 0.1)';
+        summary.style.borderLeftColor = '#f44336';
+        summary.innerHTML = `<strong>Discovery Failed:</strong> ${result.ErrorMessage || 'Unknown error'}`;
+      }
+
+      list.innerHTML = '';
+
+      // Show fully working providers first, then working
+      const providersToShow = result.FullyWorkingProviders?.length > 0
+        ? result.FullyWorkingProviders
+        : result.WorkingProviders || [];
+
+      if (providersToShow.length === 0) {
+        list.innerHTML = '<div style="color: #888; text-align: center; padding: 20px;">No working providers found.</div>';
+        return;
+      }
+
+      providersToShow.forEach(provider => {
+        const card = document.createElement('div');
+        card.style.cssText = 'padding: 12px; margin-bottom: 8px; background: rgba(255,255,255,0.05); border-radius: 4px; border-left: 3px solid ' + (provider.IsFullyWorking ? '#4caf50' : '#2196f3') + ';';
+
+        const statusBadges = [];
+        if (provider.StreamWorks) {
+          const streamLabel = provider.StreamStatus || 'Stream OK';
+          statusBadges.push('<span style="background: rgba(76, 175, 80, 0.2); color: #4caf50; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">' + streamLabel + '</span>');
+        }
+        if (provider.HasEpg) statusBadges.push('<span style="background: rgba(33, 150, 243, 0.2); color: #2196f3; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">EPG (' + provider.EpgProgramCount + ')</span>');
+        if (provider.HasPolishChannels) statusBadges.push('<span style="background: rgba(156, 39, 176, 0.2); color: #9c27b0; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">Polish: ' + provider.PolishChannelCount + '</span>');
+
+        let expInfo = '';
+        let daysLeft = null;
+        if (provider.ExpirationDate) {
+          const expDate = new Date(provider.ExpirationDate);
+          daysLeft = Math.ceil((expDate - new Date()) / (1000 * 60 * 60 * 24));
+          if (daysLeft <= 0) {
+            expInfo = ' <span style="background: rgba(244, 67, 54, 0.2); color: #f44336; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">EXPIRED</span>';
+          } else if (daysLeft <= 7) {
+            expInfo = ` <span style="background: rgba(255, 152, 0, 0.2); color: #ff9800; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">Expires in ${daysLeft}d</span>`;
+          } else {
+            expInfo = ` (${daysLeft} days)`;
+          }
+        }
+
+        card.innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div>
+              <div style="font-weight: bold;">${provider.Server}:${provider.Port}</div>
+              <div style="font-size: 0.9em; color: #aaa;">User: ${provider.Username} | Channels: ${provider.TotalChannelCount}${expInfo}</div>
+              <div style="margin-top: 6px;">${statusBadges.join(' ')}</div>
+            </div>
+            <button is="emby-button" class="fab emby-button import-provider-btn" title="Import Provider" style="background: rgba(76, 175, 80, 0.2);"
+              data-server="${provider.Server}" data-port="${provider.Port}" data-username="${provider.Username}" data-password="${provider.Password}">
+              <span class="material-icons">add</span>
+            </button>
+          </div>
+        `;
+        list.appendChild(card);
+      });
+
+      // Attach import handlers
+      list.querySelectorAll('.import-provider-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const providerData = {
+            Server: btn.dataset.server,
+            Port: parseInt(btn.dataset.port),
+            Username: btn.dataset.username,
+            Password: btn.dataset.password
+          };
+
+          try {
+            const result = await Xtream.apiRequest('Xtream/ImportDiscoveredProvider', {
+              method: 'POST',
+              body: providerData
+            });
+
+            if (result.success) {
+              btn.innerHTML = '<span class="material-icons">check</span>';
+              btn.style.background = 'rgba(76, 175, 80, 0.5)';
+              btn.disabled = true;
+              loadProviders();
+            } else {
+              alert(result.message || 'Import failed');
+            }
+          } catch (err) {
+            alert('Import failed: ' + err.message);
+          }
+        });
+      });
+    };
+
+    const updateProgress = (progress) => {
+      const progressBar = view.querySelector('#ScrapeProgressBar');
+      const progressPhase = view.querySelector('#ScrapeProgressPhase');
+      const progressText = view.querySelector('#ScrapeProgressText');
+
+      // Update phase display
+      const phaseLabels = {
+        'Scraping': 'Discovering providers...',
+        'Discovering': 'Discovering providers...',
+        'Testing': 'Testing providers...',
+        'Completed': 'Complete!',
+        'Failed': 'Failed'
+      };
+      progressPhase.textContent = phaseLabels[progress.Phase] || progress.Phase;
+
+      // Update progress bar
+      if (progress.TotalItems > 0) {
+        const percent = Math.round((progress.CurrentItem / progress.TotalItems) * 100);
+        progressBar.style.width = percent + '%';
+      }
+
+      // Update message
+      if (progress.Message) {
+        progressText.textContent = progress.Message;
+      }
+
+      // Update stats (funnel: Working -> +EPG -> +Polish)
+      if (progress.WorkingProviders !== undefined) {
+        view.querySelector('#StatWorking').textContent = progress.WorkingProviders;
+      }
+      if (progress.WorkingWithEpg !== undefined) {
+        view.querySelector('#StatWithEpg').textContent = progress.WorkingWithEpg;
+      }
+      if (progress.FullyWorking !== undefined) {
+        view.querySelector('#StatFullyWorking').textContent = progress.FullyWorking;
+      }
+    };
+
+    const startScraping = async () => {
+      showScrapeProgress();
+
+      const maxPages = parseInt(view.querySelector('#ScrapeMaxPages').value) || 5;
+      const maxWorkers = parseInt(view.querySelector('#ScrapeWorkers').value) || 10;
+      const testStream = view.querySelector('#ScrapeTestStream').checked;
+      const testEpg = view.querySelector('#ScrapeTestEpg').checked;
+
+      view.querySelector('#ScrapeProgressPhase').textContent = 'Starting...';
+      view.querySelector('#ScrapeProgressBar').style.width = '0%';
+      view.querySelector('#ScrapeProgressText').textContent = 'Initializing...';
+      view.querySelector('#StatWorking').textContent = '0';
+      view.querySelector('#StatWithEpg').textContent = '0';
+      view.querySelector('#StatFullyWorking').textContent = '0';
+
+      try {
+        // First, start the discovery operation
+        const startResult = await Xtream.apiRequest('Xtream/StartDiscovery', {
+          method: 'POST',
+          body: {
+            MaxPages: maxPages,
+            MaxDiscoveryWorkers: 5,
+            MaxTestWorkers: maxWorkers,
+            TestStream: testStream,
+            TestEpg: testEpg,
+            PolishOnly: true
+          }
+        });
+
+        if (!startResult.success) {
+          showScrapeResults({
+            Success: false,
+            ErrorMessage: startResult.message || 'Failed to start discovery'
+          });
+          return;
+        }
+
+        // Start polling for progress updates
+        startProgressPolling();
+
+      } catch (err) {
+        showScrapeResults({
+          Success: false,
+          ErrorMessage: err.message
+        });
+      }
+    };
+
+    const startProgressPolling = () => {
+      isDiscoveryActive = true;
+
+      // Poll immediately, then every second
+      pollProgress();
+      pollInterval = setInterval(pollProgress, POLL_INTERVAL_MS);
+    };
+
+    const pollProgress = async () => {
+      if (!isDiscoveryActive) {
+        stopPolling();
+        return;
+      }
+
+      try {
+        const status = await Xtream.apiRequest('Xtream/DiscoveryStatus');
+        const isRunning = status.IsRunning ?? status.isRunning;
+        const progress = status.Progress || status.progress;
+
+        if (progress) {
+          updateProgress(progress);
+        }
+
+        // Check if operation completed
+        if (!isRunning) {
+          console.log('[Discovery] Operation completed');
+          stopPolling();
+          fetchResults();
+        }
+      } catch (err) {
+        console.error('[Discovery] Status poll failed:', err);
+        // Don't stop polling on error - server might be temporarily busy
+      }
+    };
+
+    const fetchResults = async () => {
+      try {
+        const result = await Xtream.apiRequest('Xtream/DiscoveryResult');
+        view.querySelector('#ScrapeProgressBar').style.width = '100%';
+        showScrapeResults(result);
+      } catch (err) {
+        showScrapeResults({
+          Success: false,
+          ErrorMessage: 'Failed to fetch results: ' + err.message
+        });
+      }
+    };
+
+    const cancelScraping = async () => {
+      stopPolling();
+      try {
+        await Xtream.apiRequest('Xtream/CancelDiscovery', { method: 'POST' });
+        view.querySelector('#ScrapeProgressPhase').textContent = 'Cancelled';
+        view.querySelector('#ScrapeProgressText').textContent = 'Operation cancelled by user';
+      } catch (err) {
+        console.error('[Discovery] Cancel failed:', err);
+      }
+    };
+
+    const loadLastResults = async () => {
+      try {
+        const result = await Xtream.apiRequest('Xtream/DiscoveryResult');
+        if (result.Success || result.success) {
+          showScrapeResults(result);
+        } else {
+          const errorMsg = result.ErrorMessage || result.errorMessage || 'No cached results available';
+          alert(errorMsg);
+        }
+      } catch (err) {
+        alert('Failed to load last results: ' + err.message);
+      }
+    };
+
+    const clearCache = async () => {
+      if (!confirm('Clear the cached discovery results?\n\nYou will need to run a new discovery to see providers.')) {
+        return;
+      }
+
+      try {
+        const result = await Xtream.apiRequest('Xtream/ClearDiscoveryCache', { method: 'POST' });
+        if (result.success) {
+          alert(result.message);
+        } else {
+          alert('Failed to clear cache');
+        }
+      } catch (err) {
+        alert('Failed to clear cache: ' + err.message);
+      }
+    };
+
+    // Discovery event handlers
+    view.querySelector('#ScrapeProvidersBtn').addEventListener('click', showScrapeDialog);
+    view.querySelector('#CloseScrapeDialogBtn').addEventListener('click', hideScrapeDialog);
+    view.querySelector('#StartScrapeBtn').addEventListener('click', startScraping);
+    view.querySelector('#LoadLastResultsBtn').addEventListener('click', loadLastResults);
+    view.querySelector('#ClearCacheBtn').addEventListener('click', clearCache);
+    view.querySelector('#CancelScrapeBtn').addEventListener('click', cancelScraping);
+    view.querySelector('#ScrapeAgainBtn').addEventListener('click', () => {
+      scrapeOptions.classList.remove('hide');
+      scrapeResults.classList.add('hide');
+    });
+    view.querySelector('#CloseScrapeResultsBtn').addEventListener('click', hideScrapeDialog);
+
+    scrapeDialog.addEventListener('click', (e) => {
+      if (e.target === scrapeDialog) {
+        hideScrapeDialog();
       }
     });
 

@@ -22,7 +22,7 @@ namespace Jellyfin.Xtream.Tests;
 /// <summary>
 /// Unit tests for ProgramInfo PMT interval monitoring and continuity counter validation.
 /// </summary>
-public class ProgramInfoTests
+public sealed class ProgramInfoTests
 {
     /// <summary>
     /// Tests that PMT reception within 500ms does not count as a violation.

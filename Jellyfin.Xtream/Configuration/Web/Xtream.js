@@ -299,8 +299,16 @@ const createFormSubmitHandler = (pluginId, onBeforeSave, onAfterSave) => (e) => 
 };
 
 // Helper to perform API requests with any HTTP method
+// Options: method, headers, body, timeout (in ms, default none)
 const apiRequest = (endpoint, options = {}) => {
   const url = ApiClient.getUrl(endpoint);
+
+  // Set up abort controller for timeout if specified
+  const controller = new AbortController();
+  let timeoutId = null;
+  if (options.timeout) {
+    timeoutId = setTimeout(() => controller.abort(), options.timeout);
+  }
 
   return fetch(url, {
     method: options.method || 'GET',
@@ -310,7 +318,9 @@ const apiRequest = (endpoint, options = {}) => {
       ...options.headers,
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: controller.signal,
   }).then(response => {
+    if (timeoutId) clearTimeout(timeoutId);
     if (response.ok) {
       // Handle empty responses (204 No Content)
       const contentLength = response.headers.get('content-length');
@@ -322,6 +332,12 @@ const apiRequest = (endpoint, options = {}) => {
     return response.text().then(text => {
       throw new Error(`HTTP ${response.status}: ${text}`);
     });
+  }).catch(err => {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out');
+    }
+    throw err;
   });
 };
 

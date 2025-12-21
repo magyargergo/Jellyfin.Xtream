@@ -24,7 +24,7 @@ namespace Jellyfin.Xtream.Tests;
 /// <summary>
 /// Unit tests for TsIndexer MPEG-TS parsing functionality.
 /// </summary>
-public class TsIndexerTests
+public sealed class TsIndexerTests
 {
     private const int DefaultBufferSize = 1024 * 1024; // 1MB
 

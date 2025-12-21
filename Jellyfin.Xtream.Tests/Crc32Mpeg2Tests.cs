@@ -22,7 +22,7 @@ namespace Jellyfin.Xtream.Tests;
 /// Unit tests for MPEG-2 CRC-32 calculation per ISO/IEC 13818-1.
 /// Test vectors derived from known-good PAT/PMT sections.
 /// </summary>
-public class Crc32Mpeg2Tests
+public sealed class Crc32Mpeg2Tests
 {
     /// <summary>
     /// Tests CRC-32 computation on empty data.
