@@ -1,10 +1,12 @@
 export default function (view) {
-  view.addEventListener("viewshow", () => import(
-    ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     Xtream.setTabs('XtreamStreams');
 
     const refreshBtn = view.querySelector('#RefreshBtn');

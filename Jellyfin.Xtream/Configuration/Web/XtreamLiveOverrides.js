@@ -10,53 +10,109 @@ export default function (view) {
   };
 
   const createChannelRow = (channel, overrides) => {
-    const tr = document.createElement('tr');
-    tr.dataset['channelId'] = channel.Id;
+    const div = document.createElement('div');
+    div.className = 'override-row';
+    div.dataset['channelId'] = channel.Id;
+    div.dataset['channelName'] = channel.Name.toLowerCase();
 
+    // Number input
+    const numberContainer = document.createElement('div');
     const numberInput = createInputField(
       'number',
       channel.Number,
       overrides.Number,
       () => numberInput.value ? overrides.Number = parseInt(numberInput.value) : delete overrides.Number
     );
-    tr.appendChild(document.createElement('td')).appendChild(numberInput);
+    numberContainer.appendChild(numberInput);
+    div.appendChild(numberContainer);
 
+    // Name input with original name below
+    const nameContainer = document.createElement('div');
     const nameInput = createInputField(
       'text',
       channel.Name,
       overrides.Name,
       () => nameInput.value ? overrides.Name = nameInput.value : delete overrides.Name
     );
-    tr.appendChild(document.createElement('td')).appendChild(nameInput);
+    nameContainer.appendChild(nameInput);
+    const originalName = document.createElement('div');
+    originalName.className = 'channel-original';
+    originalName.textContent = channel.Name;
+    nameContainer.appendChild(originalName);
+    div.appendChild(nameContainer);
 
+    // Logo URL input
+    const logoContainer = document.createElement('div');
     const imageInput = createInputField(
       'text',
-      channel.LogoUrl,
+      channel.LogoUrl || 'Logo URL',
       overrides.LogoUrl,
       () => imageInput.value ? overrides.LogoUrl = imageInput.value : delete overrides.LogoUrl
     );
-    tr.appendChild(document.createElement('td')).appendChild(imageInput);
+    logoContainer.appendChild(imageInput);
+    div.appendChild(logoContainer);
 
-    return tr;
+    return div;
   };
 
-  view.addEventListener("viewshow", () => import(
-    ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     const pluginId = Xtream.pluginConfig.UniqueId;
     Xtream.setTabs('XtreamLiveOverrides');
 
     const providerSelect = view.querySelector("#ProviderSelect");
     const noProviderMessage = view.querySelector("#NoProviderMessage");
     const providerContent = view.querySelector("#ProviderContent");
-    const table = view.querySelector('#LiveChannels');
+    const channelList = view.querySelector('#LiveChannels');
+    const searchInput = view.querySelector('#OverrideSearch');
+    const clearSearchBtn = view.querySelector('#ClearSearch');
+    const overrideCountEl = view.querySelector('#OverrideCount');
+    const channelCountEl = view.querySelector('#ChannelCount');
 
     let providers = [];
     let currentProviderId = null;
     let currentData = {};
+    let channelRows = [];
+
+    // Search functionality
+    let debounceTimer;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      clearSearchBtn.classList.toggle('hide', !searchInput.value);
+      debounceTimer = setTimeout(() => {
+        filterChannels(searchInput.value.toLowerCase().trim());
+      }, 150);
+    });
+
+    clearSearchBtn.addEventListener('click', () => {
+      searchInput.value = '';
+      clearSearchBtn.classList.add('hide');
+      filterChannels('');
+      searchInput.focus();
+    });
+
+    const filterChannels = (term) => {
+      channelRows.forEach(row => {
+        const name = row.dataset.channelName;
+        const matches = !term || name.includes(term);
+        row.style.display = matches ? '' : 'none';
+      });
+    };
+
+    const updateStats = () => {
+      let overrideCount = 0;
+      Object.values(currentData).forEach(overrides => {
+        if (Object.keys(overrides).length > 0) overrideCount++;
+      });
+      overrideCountEl.textContent = overrideCount;
+      channelCountEl.textContent = `${channelRows.length} channels`;
+    };
 
     // Load providers into dropdown
     const loadProviders = async () => {
@@ -79,7 +135,7 @@ export default function (view) {
 
       if (enabledProviders.length === 0) {
         noProviderMessage.classList.remove('hide');
-        noProviderMessage.innerHTML = '<p>No enabled providers. Please enable a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab.</p>';
+        noProviderMessage.innerHTML = '<span class="material-icons">cloud_off</span><p>No enabled providers. Please enable a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab.</p>';
         providerContent.classList.add('hide');
         providerSelect.innerHTML = '<option value="">No enabled providers</option>';
         return;
@@ -109,15 +165,15 @@ export default function (view) {
       if (!providerId) return;
 
       currentProviderId = providerId;
-      table.innerHTML = '';
-      Dashboard.showLoadingMsg();
+      channelList.innerHTML = '<div class="loading-overlay"><div class="loading-spinner"></div><span>Loading channels...</span></div>';
+      channelRows = [];
 
       try {
         const config = await ApiClient.getPluginConfiguration(pluginId);
         const provider = config.Providers.find(p => p.Id === providerId);
 
         if (!provider) {
-          Dashboard.hideLoadingMsg();
+          channelList.innerHTML = '<div class="empty-state"><span class="material-icons">error</span><p>Provider not found</p></div>';
           return;
         }
 
@@ -127,17 +183,31 @@ export default function (view) {
         // Fetch live TV channels for this provider
         const channels = await Xtream.fetchJson(`Xtream/LiveTv?providerId=${providerId}`);
 
+        channelList.innerHTML = '';
+
+        if (channels.length === 0) {
+          channelList.innerHTML = '<div class="empty-state"><span class="material-icons">inbox</span><p>No channels available</p></div>';
+          updateStats();
+          return;
+        }
+
         for (const channel of channels) {
           currentData[channel.Id] ??= {};
           const row = createChannelRow(channel, currentData[channel.Id]);
-          table.appendChild(row);
+          channelRows.push(row);
+          channelList.appendChild(row);
         }
 
-        Dashboard.hideLoadingMsg();
+        updateStats();
+
+        // Re-apply search filter if active
+        if (searchInput.value) {
+          filterChannels(searchInput.value.toLowerCase().trim());
+        }
+
       } catch (err) {
         console.error('Failed to load overrides:', err);
-        Dashboard.hideLoadingMsg();
-        table.innerHTML = '<tr><td colspan="3" style="color: #f44; padding: 20px;">Failed to load channels. Check provider credentials.</td></tr>';
+        channelList.innerHTML = '<div class="empty-state"><span class="material-icons">error</span><p>Failed to load channels. Check provider credentials.</p></div>';
       }
     };
 
@@ -168,6 +238,7 @@ export default function (view) {
 
         ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
           Dashboard.processPluginConfigurationUpdateResult(result);
+          updateStats();
         });
       });
 

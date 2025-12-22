@@ -107,6 +107,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             CreateStatic("XtreamAdvanced.js"),
             CreateStatic("Xtream.css"),
             CreateStatic("Xtream.js"),
+            CreateStatic("XtreamStyles.js"),
             CreateStatic("XtreamLive.html"),
             CreateStatic("XtreamLive.js"),
             CreateStatic("XtreamLiveOverrides.html"),

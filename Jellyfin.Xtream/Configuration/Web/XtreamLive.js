@@ -1,13 +1,16 @@
 export default function (view) {
-  view.addEventListener("viewshow", () => import(
-    ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     const pluginId = Xtream.pluginConfig.UniqueId;
     Xtream.setTabs('XtreamLive');
 
+    // DOM Elements
     const visible = view.querySelector("#Visible");
     const mergeDuplicateChannels = view.querySelector("#MergeDuplicateChannels");
     const enableProviderFailover = view.querySelector("#EnableProviderFailover");
@@ -15,15 +18,28 @@ export default function (view) {
     const providerSelect = view.querySelector("#ProviderSelect");
     const noProviderMessage = view.querySelector("#NoProviderMessage");
     const providerContent = view.querySelector("#ProviderContent");
-    const table = view.querySelector('#LiveContent');
+    const liveContent = view.querySelector('#LiveContent');
     const copyFromProviderSection = view.querySelector("#CopyFromProviderSection");
     const copyFromProviderSelect = view.querySelector("#CopyFromProviderSelect");
     const copyChannelsBtn = view.querySelector("#CopyChannelsBtn");
     const copyResultMessage = view.querySelector("#CopyResultMessage");
+    const multiProviderSettingsHeader = view.querySelector("#MultiProviderSettingsHeader");
+    const multiProviderSettingsContent = view.querySelector("#MultiProviderSettingsContent");
 
+    // State
     let providers = [];
     let currentProviderId = null;
     let currentData = {};
+    let categoryUI = null;
+
+    // Toggle multi-provider settings section
+    let settingsExpanded = true;
+    multiProviderSettingsHeader.addEventListener('click', () => {
+      settingsExpanded = !settingsExpanded;
+      multiProviderSettingsContent.style.display = settingsExpanded ? 'block' : 'none';
+      multiProviderSettingsHeader.querySelector('.material-icons').textContent =
+        settingsExpanded ? 'expand_less' : 'expand_more';
+    });
 
     // Load providers into dropdown
     const loadProviders = async () => {
@@ -50,7 +66,7 @@ export default function (view) {
 
       if (enabledProviders.length === 0) {
         noProviderMessage.classList.remove('hide');
-        noProviderMessage.innerHTML = '<p>No enabled providers. Please enable a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab.</p>';
+        noProviderMessage.innerHTML = '<span class="material-icons">cloud_off</span><p>No enabled providers. Please enable a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab.</p>';
         providerContent.classList.add('hide');
         providerSelect.innerHTML = '<option value="">No enabled providers</option>';
         return;
@@ -101,38 +117,44 @@ export default function (view) {
       });
     };
 
-    // Load channels for a specific provider
+    // Load channels for a specific provider using the new card-based UI
     const loadChannelsForProvider = async (providerId) => {
       if (!providerId) return;
 
       currentProviderId = providerId;
-      table.innerHTML = '';
-      Dashboard.showLoadingMsg();
+      liveContent.innerHTML = '';
+      liveContent.appendChild(XtreamStyles.createLoadingSpinner('Loading channels...'));
 
       try {
         const config = await ApiClient.getPluginConfiguration(pluginId);
         const provider = config.Providers.find(p => p.Id === providerId);
 
         if (!provider) {
-          Dashboard.hideLoadingMsg();
+          liveContent.innerHTML = '';
+          liveContent.appendChild(XtreamStyles.createErrorState('Provider not found'));
           return;
         }
 
         // Get the provider's current LiveTv configuration
-        const providerLiveTv = provider.LiveTv || {};
+        currentData = provider.LiveTv || {};
 
-        currentData = await Xtream.populateCategoriesTable(
-          table,
-          () => Promise.resolve(providerLiveTv),
+        // Create the searchable categories UI
+        categoryUI = await Xtream.createSearchableCategories(
+          liveContent,
+          currentData,
           () => Xtream.fetchJson(`Xtream/LiveCategories?providerId=${providerId}`),
           (categoryId) => Xtream.fetchJson(`Xtream/LiveCategories/${categoryId}?providerId=${providerId}`),
+          {
+            icon: 'live_tv',
+            searchPlaceholder: 'Search channels...',
+            emptyMessage: 'No Live TV categories available'
+          }
         );
 
-        Dashboard.hideLoadingMsg();
       } catch (err) {
         console.error('Failed to load channels:', err);
-        Dashboard.hideLoadingMsg();
-        table.innerHTML = '<tr><td colspan="3" style="color: #f44; padding: 20px;">Failed to load channels. Check provider credentials.</td></tr>';
+        liveContent.innerHTML = '';
+        liveContent.appendChild(XtreamStyles.createErrorState('Failed to load channels. Check provider credentials.'));
       }
     };
 
@@ -141,6 +163,10 @@ export default function (view) {
       const selectedId = providerSelect.value;
       if (selectedId && selectedId !== currentProviderId) {
         loadChannelsForProvider(selectedId);
+        // Update copy dropdown
+        const enabledProviders = providers.filter(p => p.Enabled);
+        updateCopyFromProviderSelect(enabledProviders);
+        copyResultMessage.classList.add('hide');
       }
     });
 
@@ -229,9 +255,8 @@ export default function (view) {
     // Show copy result message
     const showCopyResult = (message, success) => {
       copyResultMessage.textContent = message;
-      copyResultMessage.style.background = success ? 'rgba(76, 175, 80, 0.2)' : 'rgba(244, 67, 54, 0.2)';
-      copyResultMessage.style.color = success ? '#4caf50' : '#f44336';
-      copyResultMessage.style.border = `1px solid ${success ? '#4caf50' : '#f44336'}`;
+      copyResultMessage.classList.remove('success', 'error');
+      copyResultMessage.classList.add(success ? 'success' : 'error');
       copyResultMessage.classList.remove('hide');
 
       // Auto-hide after 5 seconds
@@ -239,13 +264,6 @@ export default function (view) {
         copyResultMessage.classList.add('hide');
       }, 5000);
     };
-
-    // Update copy dropdown when provider changes
-    providerSelect.addEventListener('change', () => {
-      const enabledProviders = providers.filter(p => p.Enabled);
-      updateCopyFromProviderSelect(enabledProviders);
-      copyResultMessage.classList.add('hide');
-    });
 
     // Initial load
     loadProviders();

@@ -1,10 +1,12 @@
 export default function (view) {
-  view.addEventListener("viewshow", () => import(
-    ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     Xtream.setTabs('XtreamEpgTest');
 
     const channelSelect = view.querySelector('#ChannelSelect');
@@ -13,18 +15,35 @@ export default function (view) {
     const refreshStatus = view.querySelector('#RefreshStatus');
     const resultsDiv = view.querySelector('#EpgResults');
     const timelineDiv = view.querySelector('#EpgTimeline');
-    const summaryDiv = view.querySelector('#EpgSummary');
     const resultsTitle = view.querySelector('#ResultsTitle');
-    const providerStatus = view.querySelector('#EpgProviderStatus');
+    const programCountEl = view.querySelector('#ProgramCount');
+    const providerInfoEl = view.querySelector('#ProviderInfo');
+    const providerNameEl = view.querySelector('#EpgProviderName');
+    const providerStatusEl = view.querySelector('#EpgProviderStatus');
+    const providerStatusCard = view.querySelector('#ProviderStatusCard');
 
     // Load provider status
     Xtream.fetchJson('Xtream/EpgStatus').then((status) => {
-      providerStatus.querySelector('.provider-name').textContent = `Provider: ${status.providerName}`;
-      const availability = providerStatus.querySelector('.provider-availability');
-      availability.textContent = status.isAvailable ? 'Available' : 'Unavailable';
-      availability.classList.add(status.isAvailable ? 'available' : 'unavailable');
+      providerNameEl.textContent = status.providerName || 'Unknown Provider';
+
+      providerStatusEl.className = 'status-badge ' + (status.isAvailable ? 'available' : 'unavailable');
+      providerStatusEl.innerHTML = `
+        <span class="material-icons" style="font-size: 14px;">${status.isAvailable ? 'check_circle' : 'error'}</span>
+        <span>${status.isAvailable ? 'Available' : 'Unavailable'}</span>
+      `;
+
+      if (status.isAvailable) {
+        providerStatusCard.style.borderLeftColor = '#4caf50';
+      } else {
+        providerStatusCard.style.borderLeftColor = '#f44336';
+      }
     }).catch(() => {
-      providerStatus.querySelector('.provider-name').textContent = 'Provider: Unknown';
+      providerNameEl.textContent = 'Unknown Provider';
+      providerStatusEl.className = 'status-badge unavailable';
+      providerStatusEl.innerHTML = `
+        <span class="material-icons" style="font-size: 14px;">error</span>
+        <span>Error</span>
+      `;
     });
 
     // Load channels
@@ -45,7 +64,7 @@ export default function (view) {
     // Enable button when channel selected
     channelSelect.addEventListener('change', () => {
       loadBtn.disabled = !channelSelect.value;
-      resultsDiv.style.display = 'none';
+      XtreamStyles.setVisible(resultsDiv, false);
     });
 
     // Load EPG data
@@ -59,7 +78,7 @@ export default function (view) {
       Xtream.fetchJson(`Xtream/EpgTest/${streamId}`).then((result) => {
         Dashboard.hideLoadingMsg();
         loadBtn.disabled = false;
-        resultsDiv.style.display = 'block';
+        XtreamStyles.setVisible(resultsDiv, true);
 
         // Handle both PascalCase and camelCase property names
         const success = result.Success ?? result.success;
@@ -70,35 +89,31 @@ export default function (view) {
         const resultStreamId = result.StreamId ?? result.streamId;
 
         if (!success) {
-          timelineDiv.innerHTML = `<div class="epg-error">Error: ${errorMessage || 'Unknown error'}</div>`;
-          summaryDiv.innerHTML = '';
+          timelineDiv.innerHTML = `<div class="empty-state" style="text-align:center;padding:50px 40px;color:#888;"><span class="material-icons" style="font-size:48px;opacity:0.5;display:block;margin-bottom:12px;">error</span><p>${errorMessage || 'Unknown error'}</p></div>`;
+          programCountEl.textContent = '0 programs';
+          providerInfoEl.textContent = '-';
           return;
         }
 
-        resultsTitle.textContent = `Program Schedule - ${channelName}`;
+        resultsTitle.textContent = channelName || 'Program Schedule';
+        programCountEl.textContent = `${programs.length} programs`;
+        providerInfoEl.textContent = `${provider} (ID: ${resultStreamId})`;
 
         if (programs.length === 0) {
-          timelineDiv.innerHTML = '<div class="epg-no-data">No EPG data available for this channel</div>';
-          summaryDiv.innerHTML = `<strong>Provider:</strong> ${provider} | <strong>Programs:</strong> 0`;
+          timelineDiv.innerHTML = '<div class="empty-state" style="text-align:center;padding:50px 40px;color:#888;"><span class="material-icons" style="font-size:48px;opacity:0.5;display:block;margin-bottom:12px;">event_busy</span><p>No EPG data available for this channel</p></div>';
           return;
         }
-
-        summaryDiv.innerHTML = `
-          <strong>Provider:</strong> ${provider} |
-          <strong>Programs:</strong> ${programs.length} |
-          <strong>Channel ID:</strong> ${resultStreamId}
-        `;
 
         const now = new Date();
         timelineDiv.innerHTML = programs.map((program) => {
           const start = new Date(program.StartUtc ?? program.startUtc);
           const end = new Date(program.EndUtc ?? program.endUtc);
 
-          let statusClass = '';
+          let cardStyle = 'background:rgba(255,255,255,0.04);border-radius:8px;padding:16px;margin-bottom:12px;border-left:4px solid #00a4dc;';
           if (end < now) {
-            statusClass = 'past';
+            cardStyle = 'background:rgba(255,255,255,0.02);border-radius:8px;padding:16px;margin-bottom:12px;border-left:4px solid #555;opacity:0.6;';
           } else if (start <= now && end >= now) {
-            statusClass = 'current';
+            cardStyle = 'background:rgba(76,175,80,0.15);border-radius:8px;padding:16px;margin-bottom:12px;border-left:4px solid #4caf50;';
           }
 
           const formatTime = (date) => {
@@ -119,12 +134,12 @@ export default function (view) {
           const description = program.Description ?? program.description;
 
           return `
-            <div class="epg-program ${statusClass}">
-              <div class="epg-program-title">${escapeHtml(title || 'No Title')}</div>
-              <div class="epg-program-time">
+            <div class="epg-program-card" style="${cardStyle}">
+              <div class="program-title" style="font-weight:600;font-size:15px;margin-bottom:6px;">${escapeHtml(title || 'No Title')}</div>
+              <div class="program-time" style="color:#888;font-size:13px;">
                 ${formatTime(start)} - ${formatTime(end)}${durationStr}
               </div>
-              ${description ? `<div class="epg-program-description">${escapeHtml(description)}</div>` : ''}
+              ${description ? `<div class="program-description" style="color:#aaa;font-size:13px;margin-top:8px;line-height:1.4;">${escapeHtml(description)}</div>` : ''}
             </div>
           `;
         }).join('');
@@ -132,8 +147,9 @@ export default function (view) {
         Dashboard.hideLoadingMsg();
         loadBtn.disabled = false;
         resultsDiv.style.display = 'block';
-        timelineDiv.innerHTML = `<div class="epg-error">Failed to load EPG: ${err.message}</div>`;
-        summaryDiv.innerHTML = '';
+        timelineDiv.innerHTML = `<div class="empty-state" style="text-align:center;padding:50px 40px;color:#888;"><span class="material-icons" style="font-size:48px;opacity:0.5;display:block;margin-bottom:12px;">error</span><p>Failed to load EPG: ${err.message}</p></div>`;
+        programCountEl.textContent = '0 programs';
+        providerInfoEl.textContent = '-';
       });
     });
 
@@ -141,7 +157,7 @@ export default function (view) {
     refreshAllBtn.addEventListener('click', () => {
       refreshAllBtn.disabled = true;
       refreshStatus.style.display = 'block';
-      refreshStatus.className = 'refresh-status loading';
+      refreshStatus.style.cssText = 'display:block;padding:12px 16px;border-radius:8px;background:rgba(255,152,0,0.15);color:#ffb74d;';
       refreshStatus.textContent = 'Refreshing EPG data for all channels... This may take a while.';
 
       Xtream.fetchJson('Xtream/RefreshEpg', { method: 'POST' }).then((result) => {
@@ -150,10 +166,10 @@ export default function (view) {
         const message = result.message ?? result.Message;
 
         if (success) {
-          refreshStatus.className = 'refresh-status success';
+          refreshStatus.style.cssText = 'display:block;padding:12px 16px;border-radius:8px;background:rgba(76,175,80,0.15);color:#81c784;';
           refreshStatus.textContent = message;
         } else {
-          refreshStatus.className = 'refresh-status error';
+          refreshStatus.style.cssText = 'display:block;padding:12px 16px;border-radius:8px;background:rgba(244,67,54,0.15);color:#e57373;';
           refreshStatus.textContent = message || 'Refresh failed';
         }
 
@@ -163,7 +179,7 @@ export default function (view) {
         }, 10000);
       }).catch((err) => {
         refreshAllBtn.disabled = false;
-        refreshStatus.className = 'refresh-status error';
+        refreshStatus.style.cssText = 'display:block;padding:12px 16px;border-radius:8px;background:rgba(244,67,54,0.15);color:#e57373;';
         refreshStatus.textContent = `Failed to refresh EPG: ${err.message}`;
       });
     });

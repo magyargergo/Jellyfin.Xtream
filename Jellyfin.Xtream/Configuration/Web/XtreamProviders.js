@@ -1,10 +1,12 @@
 export default function (view) {
-  view.addEventListener("viewshow", () => import(
-    window.ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(window.ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(window.ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     const pluginId = Xtream.pluginConfig.UniqueId;
     Xtream.setTabs('XtreamProviders');
 

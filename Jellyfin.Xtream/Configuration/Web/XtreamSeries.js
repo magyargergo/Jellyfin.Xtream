@@ -1,19 +1,23 @@
 export default function (view) {
-  view.addEventListener("viewshow", () => import(
-    ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     const pluginId = Xtream.pluginConfig.UniqueId;
     Xtream.setTabs('XtreamSeries');
 
+    // DOM Elements
     const visible = view.querySelector("#Visible");
     const providerSelect = view.querySelector("#ProviderSelect");
     const noProviderMessage = view.querySelector("#NoProviderMessage");
     const providerContent = view.querySelector("#ProviderContent");
-    const table = view.querySelector('#SeriesContent');
+    const seriesContent = view.querySelector('#SeriesContent');
 
+    // State
     let providers = [];
     let currentProviderId = null;
     let currentData = {};
@@ -40,7 +44,7 @@ export default function (view) {
 
       if (enabledProviders.length === 0) {
         noProviderMessage.classList.remove('hide');
-        noProviderMessage.innerHTML = '<p>No enabled providers. Please enable a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab.</p>';
+        noProviderMessage.innerHTML = '<span class="material-icons">cloud_off</span><p>No enabled providers. Please enable a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab.</p>';
         providerContent.classList.add('hide');
         providerSelect.innerHTML = '<option value="">No enabled providers</option>';
         return;
@@ -65,38 +69,44 @@ export default function (view) {
       await loadSeriesForProvider(currentProviderId);
     };
 
-    // Load Series for a specific provider
+    // Load Series for a specific provider using the new card-based UI
     const loadSeriesForProvider = async (providerId) => {
       if (!providerId) return;
 
       currentProviderId = providerId;
-      table.innerHTML = '';
-      Dashboard.showLoadingMsg();
+      seriesContent.innerHTML = '';
+      seriesContent.appendChild(XtreamStyles.createLoadingSpinner('Loading series categories...'));
 
       try {
         const config = await ApiClient.getPluginConfiguration(pluginId);
         const provider = config.Providers.find(p => p.Id === providerId);
 
         if (!provider) {
-          Dashboard.hideLoadingMsg();
+          seriesContent.innerHTML = '';
+          seriesContent.appendChild(XtreamStyles.createErrorState('Provider not found'));
           return;
         }
 
         // Get the provider's current Series configuration
-        const providerSeries = provider.Series || {};
+        currentData = provider.Series || {};
 
-        currentData = await Xtream.populateCategoriesTable(
-          table,
-          () => Promise.resolve(providerSeries),
+        // Create the searchable categories UI
+        await Xtream.createSearchableCategories(
+          seriesContent,
+          currentData,
           () => Xtream.fetchJson(`Xtream/SeriesCategories?providerId=${providerId}`),
           (categoryId) => Xtream.fetchJson(`Xtream/SeriesCategories/${categoryId}?providerId=${providerId}`),
+          {
+            icon: 'tv',
+            searchPlaceholder: 'Search series...',
+            emptyMessage: 'No Series categories available'
+          }
         );
 
-        Dashboard.hideLoadingMsg();
       } catch (err) {
         console.error('Failed to load Series:', err);
-        Dashboard.hideLoadingMsg();
-        table.innerHTML = '<tr><td colspan="3" style="color: #f44; padding: 20px;">Failed to load Series. Check provider credentials.</td></tr>';
+        seriesContent.innerHTML = '';
+        seriesContent.appendChild(XtreamStyles.createErrorState('Failed to load Series. Check provider credentials.'));
       }
     };
 

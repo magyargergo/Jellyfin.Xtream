@@ -1,20 +1,24 @@
 export default function (view) {
-  view.addEventListener("viewshow", () => import(
-    ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     const pluginId = Xtream.pluginConfig.UniqueId;
     Xtream.setTabs('XtreamVod');
 
+    // DOM Elements
     const visible = view.querySelector("#Visible");
     const tmdbOverride = view.querySelector("#TmdbOverride");
     const providerSelect = view.querySelector("#ProviderSelect");
     const noProviderMessage = view.querySelector("#NoProviderMessage");
     const providerContent = view.querySelector("#ProviderContent");
-    const table = view.querySelector('#VodContent');
+    const vodContent = view.querySelector('#VodContent');
 
+    // State
     let providers = [];
     let currentProviderId = null;
     let currentData = {};
@@ -42,7 +46,7 @@ export default function (view) {
 
       if (enabledProviders.length === 0) {
         noProviderMessage.classList.remove('hide');
-        noProviderMessage.innerHTML = '<p>No enabled providers. Please enable a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab.</p>';
+        noProviderMessage.innerHTML = '<span class="material-icons">cloud_off</span><p>No enabled providers. Please enable a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab.</p>';
         providerContent.classList.add('hide');
         providerSelect.innerHTML = '<option value="">No enabled providers</option>';
         return;
@@ -67,38 +71,44 @@ export default function (view) {
       await loadVodForProvider(currentProviderId);
     };
 
-    // Load VOD for a specific provider
+    // Load VOD for a specific provider using the new card-based UI
     const loadVodForProvider = async (providerId) => {
       if (!providerId) return;
 
       currentProviderId = providerId;
-      table.innerHTML = '';
-      Dashboard.showLoadingMsg();
+      vodContent.innerHTML = '';
+      vodContent.appendChild(XtreamStyles.createLoadingSpinner('Loading VOD categories...'));
 
       try {
         const config = await ApiClient.getPluginConfiguration(pluginId);
         const provider = config.Providers.find(p => p.Id === providerId);
 
         if (!provider) {
-          Dashboard.hideLoadingMsg();
+          vodContent.innerHTML = '';
+          vodContent.appendChild(XtreamStyles.createErrorState('Provider not found'));
           return;
         }
 
         // Get the provider's current Vod configuration
-        const providerVod = provider.Vod || {};
+        currentData = provider.Vod || {};
 
-        currentData = await Xtream.populateCategoriesTable(
-          table,
-          () => Promise.resolve(providerVod),
+        // Create the searchable categories UI
+        await Xtream.createSearchableCategories(
+          vodContent,
+          currentData,
           () => Xtream.fetchJson(`Xtream/VodCategories?providerId=${providerId}`),
           (categoryId) => Xtream.fetchJson(`Xtream/VodCategories/${categoryId}?providerId=${providerId}`),
+          {
+            icon: 'movie',
+            searchPlaceholder: 'Search movies...',
+            emptyMessage: 'No VOD categories available'
+          }
         );
 
-        Dashboard.hideLoadingMsg();
       } catch (err) {
         console.error('Failed to load VOD:', err);
-        Dashboard.hideLoadingMsg();
-        table.innerHTML = '<tr><td colspan="3" style="color: #f44; padding: 20px;">Failed to load VOD. Check provider credentials.</td></tr>';
+        vodContent.innerHTML = '';
+        vodContent.appendChild(XtreamStyles.createErrorState('Failed to load VOD. Check provider credentials.'));
       }
     };
 

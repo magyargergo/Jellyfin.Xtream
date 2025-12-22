@@ -1,10 +1,12 @@
 export default function (view) {
-  view.addEventListener("viewshow", () => import(
-    window.ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(window.ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(window.ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     const pluginId = Xtream.pluginConfig.UniqueId;
     Xtream.setTabs('XtreamMigration');
 
@@ -20,12 +22,12 @@ export default function (view) {
     const migratedProviderInfo = view.querySelector('#MigratedProviderInfo');
     const migrationErrorMessage = view.querySelector('#MigrationErrorMessage');
 
-    // Helper to show/hide steps
+    // Helper to show/hide steps using styles system
     const showStep = (stepElement) => {
       [step1, stepNoLegacy, stepResult, loadingStep].forEach(el => {
-        el.classList.add('hide');
+        XtreamStyles.setVisible(el, false);
       });
-      stepElement.classList.remove('hide');
+      XtreamStyles.setVisible(stepElement, true);
     };
 
     // Navigate to providers page
@@ -76,7 +78,7 @@ export default function (view) {
           }
 
           if (legacyConfigDetails.children.length === 0) {
-            legacyConfigInfo.classList.add('hide');
+            legacyConfigInfo.style.display = 'none';
           }
 
           showStep(step1);
@@ -110,20 +112,20 @@ export default function (view) {
             <p style="margin: 0;"><strong>Provider Created:</strong> ${result.providerName}</p>
             <p style="margin: 8px 0 0 0; font-size: 0.9em; color: #888;">ID: ${result.providerId}</p>
           `;
-          migrationSuccess.classList.remove('hide');
-          migrationError.classList.add('hide');
+          migrationSuccess.style.display = 'block';
+          migrationError.style.display = 'none';
           showStep(stepResult);
         } else {
           migrationErrorMessage.textContent = result.message || 'Migration failed for unknown reason.';
-          migrationSuccess.classList.add('hide');
-          migrationError.classList.remove('hide');
+          migrationSuccess.style.display = 'none';
+          migrationError.style.display = 'block';
           showStep(stepResult);
         }
       } catch (err) {
         console.error('Migration failed:', err);
         migrationErrorMessage.textContent = err.message || 'An unexpected error occurred.';
-        migrationSuccess.classList.add('hide');
-        migrationError.classList.remove('hide');
+        migrationSuccess.style.display = 'none';
+        migrationError.style.display = 'block';
         showStep(stepResult);
       }
     };

@@ -3,44 +3,58 @@
   <div data-role="content">
     <div class="content-primary">
       <form id="XtreamLiveOverridesForm">
-        <div class="sectionTitleContainer flex align-items-center">
-          <h2 class="sectionTitle">Provider</h2>
-        </div>
-        <div class="selectContainer">
-          <select is="emby-select" id="ProviderSelect" label="Select Provider">
-            <option value="">Loading providers...</option>
-          </select>
-          <div class="fieldDescription">Select a provider to configure its channel overrides.</div>
+        <!-- Provider Selection -->
+        <div class="provider-section">
+          <div class="selectContainer" style="flex: 1; min-width: 200px;">
+            <select is="emby-select" id="ProviderSelect" label="Provider">
+              <option value="">Loading providers...</option>
+            </select>
+          </div>
+          <button is="emby-button" type="button" id="RefreshOverrides" class="fab emby-button" title="Refresh channels">
+            <span class="material-icons refresh"></span>
+          </button>
         </div>
 
-        <div id="NoProviderMessage" class="hide" style="padding: 20px; text-align: center; color: #888;">
+        <!-- No Provider Message -->
+        <div id="NoProviderMessage" class="empty-state hide">
+          <span class="material-icons">cloud_off</span>
           <p>No providers configured. Please add a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab first.</p>
         </div>
 
+        <!-- Channel Overrides Content -->
         <div id="ProviderContent" class="hide">
-          <div class="sectionTitleContainer flex align-items-center">
-            <h2 class="sectionTitle">TV channel overrides</h2>
-            <button is="emby-button" type="button" id="RefreshOverrides" class="fab btnRefresh" title="Refresh channels">
-              <span class="material-icons refresh"></span>
-            </button>
+          <!-- Search Bar -->
+          <div class="search-filter-bar" style="margin-bottom: 16px;">
+            <div class="search-container">
+              <span class="material-icons search-icon">search</span>
+              <input type="text" id="OverrideSearch" class="search-input" placeholder="Search channels...">
+              <button type="button" id="ClearSearch" class="clear-search hide">
+                <span class="material-icons">close</span>
+              </button>
+            </div>
+            <div class="selection-stats" id="ChannelStats">
+              <span class="stat-selected" id="OverrideCount">0</span>
+              <span> overrides</span>
+              <span class="stat-divider"></span>
+              <span class="stat-categories" id="ChannelCount">0 channels</span>
+            </div>
           </div>
-          <div class="inputContainer">
-            <table class="overrides-table">
-              <thead>
-                <tr>
-                  <th>Number</th>
-                  <th>Name</th>
-                  <th>Logo</th>
-                </tr>
-              </thead>
-              <tbody id="LiveChannels">
 
-              </tbody>
-            </table>
+          <!-- Override Header -->
+          <div class="override-header">
+            <span>Number</span>
+            <span>Name</span>
+            <span>Logo URL</span>
+          </div>
+
+          <!-- Channel List -->
+          <div id="LiveChannels">
+            <!-- Channel rows will be dynamically inserted here -->
           </div>
         </div>
 
-        <div>
+        <!-- Save Button -->
+        <div style="margin-top: 24px;">
           <button is="emby-button" type="submit" class="raised button-submit block emby-button">
             <span>Save</span>
           </button>

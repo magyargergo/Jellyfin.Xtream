@@ -1,10 +1,12 @@
 export default function (view) {
-  view.addEventListener("viewshow", () => import(
-    window.ApiClient.getUrl("web/ConfigurationPage", {
-      name: "Xtream.js",
-    })
-  ).then((Xtream) => Xtream.default
-  ).then((Xtream) => {
+  view.addEventListener("viewshow", () => Promise.all([
+    import(window.ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(window.ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+  ]).then(([XtreamModule, StylesModule]) => {
+    const Xtream = XtreamModule.default;
+    const XtreamStyles = StylesModule.default;
+
+    // CSS is auto-loaded by XtreamStyles module
     const pluginId = Xtream.pluginConfig.UniqueId;
     Xtream.setTabs('XtreamAdvanced');
 
@@ -22,12 +24,17 @@ export default function (view) {
     const enableExternalEpgCheckbox = view.querySelector('#EnableExternalEpg');
     const externalEpgSettings = view.querySelector('#ExternalEpgSettings');
 
-    // Toggle functions for networking section
-    const toggleProxySettings = Xtream.createToggleFn(enableProxyCheckbox, proxySettings);
-    const toggleUserAgentRotationSettings = Xtream.createToggleFn(enableUserAgentRotationCheckbox, userAgentRotationSettings);
-    const toggleRateLimitingSettings = Xtream.createToggleFn(enableRateLimitingCheckbox, rateLimitingSettings);
-    const toggleConnectionLimitSettings = Xtream.createToggleFn(enforceConnectionLimitCheckbox, connectionLimitSettings);
-    const toggleExternalEpgSettings = Xtream.createToggleFn(enableExternalEpgCheckbox, externalEpgSettings);
+    // Toggle function using styles system for visibility
+    const createToggle = (checkbox, element) => () => {
+      XtreamStyles.setVisible(element, checkbox.checked);
+    };
+
+    // Toggle functions
+    const toggleProxySettings = createToggle(enableProxyCheckbox, proxySettings);
+    const toggleUserAgentRotationSettings = createToggle(enableUserAgentRotationCheckbox, userAgentRotationSettings);
+    const toggleRateLimitingSettings = createToggle(enableRateLimitingCheckbox, rateLimitingSettings);
+    const toggleConnectionLimitSettings = createToggle(enforceConnectionLimitCheckbox, connectionLimitSettings);
+    const toggleExternalEpgSettings = createToggle(enableExternalEpgCheckbox, externalEpgSettings);
 
     // Add event listeners for toggles
     enableProxyCheckbox.addEventListener('change', toggleProxySettings);
@@ -36,7 +43,24 @@ export default function (view) {
     enforceConnectionLimitCheckbox.addEventListener('change', toggleConnectionLimitSettings);
     enableExternalEpgCheckbox.addEventListener('change', toggleExternalEpgSettings);
 
-    // Combined field mappings from all three pages
+    // Setup collapsible section headers
+    view.querySelectorAll('.settings-section-header').forEach(header => {
+      const sectionName = header.dataset.section;
+      const content = view.querySelector(`.settings-section-content[data-section="${sectionName}"]`);
+      const icon = header.querySelector('.material-icons:last-child');
+
+      if (content && icon) {
+        let isExpanded = true;
+
+        header.addEventListener('click', () => {
+          isExpanded = !isExpanded;
+          content.style.display = isExpanded ? 'block' : 'none';
+          icon.textContent = isExpanded ? 'expand_less' : 'expand_more';
+        });
+      }
+    });
+
+    // Combined field mappings
     const fieldMappings = [
       // Networking fields
       ['#EnableProxy', 'EnableProxy', false, true],
@@ -94,7 +118,7 @@ export default function (view) {
     });
 
     // Form submission handler
-    view.querySelector('#XtreamAdvancedForm').addEventListener('submit', 
+    view.querySelector('#XtreamAdvancedForm').addEventListener('submit',
       Xtream.createFormSubmitHandler(
         pluginId,
         () => {
@@ -102,34 +126,34 @@ export default function (view) {
           if (enableProxyCheckbox.checked) {
             const proxyAddress = view.querySelector('#ProxyAddress').value.trim();
             const proxyPort = parseInt(view.querySelector('#ProxyPort').value);
-            
+
             if (!proxyAddress) {
               Dashboard.alert('Please enter a proxy address or disable the proxy.');
               return false;
             }
-            
+
             if (!proxyPort || proxyPort < 1 || proxyPort > 65535) {
               Dashboard.alert('Please enter a valid proxy port (1-65535).');
               return false;
             }
           }
-          
+
         },
         (config) => {
           Xtream.saveConfigFields(view, config, fieldMappings);
-          
+
           // Clean up proxy address (remove protocol if present)
           let proxyAddress = config.ProxyAddress;
           if (proxyAddress) {
             proxyAddress = proxyAddress.replace(/^https?:\/\//, '').replace(/\/$/, '');
             config.ProxyAddress = proxyAddress;
           }
-          
+
           // Trim custom user agent
           if (config.CustomUserAgent) {
             config.CustomUserAgent = config.CustomUserAgent.trim();
           }
-          
+
           // Refresh Discord service to update health report timer after saving
           Xtream.apiPost('Xtream/RefreshDiscordConfiguration')
             .catch(err => console.error('Failed to refresh Discord configuration:', err));
@@ -152,8 +176,8 @@ export default function (view) {
         .then(data => {
           Dashboard.hideLoadingMsg();
           Dashboard.alert(data.success ?
-            '✅ Test notification sent successfully! Check your Discord channel.' :
-            '❌ Test failed: ' + (data.message || 'Unknown error'));
+            'Test notification sent successfully! Check your Discord channel.' :
+            'Test failed: ' + (data.message || 'Unknown error'));
         })
         .catch(error => {
           Dashboard.hideLoadingMsg();
@@ -168,15 +192,15 @@ export default function (view) {
       Xtream.apiPost('Xtream/SendBufferDiagnostics')
         .then(data => {
           Dashboard.hideLoadingMsg();
-          
+
           if (data.success) {
             if (data.count > 0) {
-              Dashboard.alert(`✅ Buffer diagnostics sent successfully!\n\n📊 Sent diagnostics for ${data.count} active stream(s).\nCheck your Discord channel.`);
+              Dashboard.alert(`Buffer diagnostics sent successfully!\n\nSent diagnostics for ${data.count} active stream(s).\nCheck your Discord channel.`);
             } else {
-              Dashboard.alert('⚠️ No active streams found.\n\nStart watching a channel first, then try again.');
+              Dashboard.alert('No active streams found.\n\nStart watching a channel first, then try again.');
             }
           } else {
-            Dashboard.alert('❌ Failed to send diagnostics: ' + (data.message || 'Unknown error'));
+            Dashboard.alert('Failed to send diagnostics: ' + (data.message || 'Unknown error'));
           }
         })
         .catch(error => {

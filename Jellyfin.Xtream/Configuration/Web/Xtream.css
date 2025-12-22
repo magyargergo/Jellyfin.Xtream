@@ -1,46 +1,1361 @@
-.categories-table {
-  border-collapse: collapse;
-  width: 100%;
+/* ============================================
+   Xtream Plugin Stylesheet
+
+   A complete CSS file following Tailwind-like patterns.
+   All styles are defined here - no CSS-in-JS needed.
+   Load this file early for consistent styling.
+   ============================================ */
+
+/* ============================================
+   CSS Variables (Design Tokens)
+   ============================================ */
+:root {
+  /* Primary Colors */
+  --xt-primary: #00a4dc;
+  --xt-primary-light: rgba(0, 164, 220, 0.15);
+  --xt-primary-border: rgba(0, 164, 220, 0.4);
+  --xt-primary-hover: rgba(0, 164, 220, 0.25);
+
+  /* Status Colors */
+  --xt-success: #4caf50;
+  --xt-success-light: rgba(76, 175, 80, 0.15);
+  --xt-success-border: rgba(76, 175, 80, 0.3);
+  --xt-warning: #ff9800;
+  --xt-warning-light: rgba(255, 152, 0, 0.15);
+  --xt-error: #f44336;
+  --xt-error-light: rgba(244, 67, 54, 0.15);
+  --xt-error-border: rgba(244, 67, 54, 0.3);
+  --xt-purple: #9c27b0;
+  --xt-purple-light: rgba(156, 39, 176, 0.25);
+  --xt-info: #2196f3;
+  --xt-info-light: rgba(33, 150, 243, 0.1);
+
+  /* Neutral Colors */
+  --xt-text: #fff;
+  --xt-text-secondary: #ccc;
+  --xt-text-muted: #888;
+  --xt-text-dim: #555;
+
+  /* Background Colors */
+  --xt-card-bg: rgba(255, 255, 255, 0.04);
+  --xt-card-bg-hover: rgba(255, 255, 255, 0.07);
+  --xt-input-bg: rgba(255, 255, 255, 0.08);
+  --xt-overlay-bg: rgba(0, 0, 0, 0.2);
+
+  /* Border Colors */
+  --xt-border: rgba(255, 255, 255, 0.12);
+  --xt-border-light: rgba(255, 255, 255, 0.08);
+  --xt-border-hover: rgba(255, 255, 255, 0.25);
+
+  /* Spacing */
+  --xt-space-xs: 4px;
+  --xt-space-sm: 8px;
+  --xt-space-md: 12px;
+  --xt-space-lg: 16px;
+  --xt-space-xl: 20px;
+  --xt-space-xxl: 24px;
+
+  /* Border Radius */
+  --xt-radius-sm: 4px;
+  --xt-radius-md: 6px;
+  --xt-radius-lg: 8px;
+  --xt-radius-xl: 10px;
+  --xt-radius-xxl: 12px;
+
+  /* Transitions */
+  --xt-transition-fast: 0.15s ease;
+  --xt-transition-normal: 0.2s ease;
+  --xt-transition-slow: 0.3s ease-out;
 }
 
-.categories-table th:nth-child(1) {
-  min-width: 30%;
+/* ============================================
+   Keyframes
+   ============================================ */
+@keyframes xtream-spin {
+  to { transform: rotate(360deg); }
 }
 
-.categories-table th:nth-child(2),
-.categories-table tr[data-category-id]>td:nth-child(3),
-.categories-table tr[data-item-id]>td:nth-child(2) {
-  width: 100%;
+@keyframes xtream-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-.categories-table tbody {
-  vertical-align: baseline;
+@keyframes xtream-slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.categories-table tr[data-item-id]>td:nth-child(3) {
+/* ============================================
+   Utility Classes (Tailwind-like)
+   ============================================ */
+
+/* Display */
+.pluginConfigurationPage .hide { display: none !important; }
+.pluginConfigurationPage .block { display: block !important; }
+.pluginConfigurationPage .flex { display: flex !important; }
+.pluginConfigurationPage .grid { display: grid !important; }
+.pluginConfigurationPage .inline-flex { display: inline-flex !important; }
+
+/* Flex utilities */
+.pluginConfigurationPage .flex-row { flex-direction: row; }
+.pluginConfigurationPage .flex-col { flex-direction: column; }
+.pluginConfigurationPage .flex-wrap { flex-wrap: wrap; }
+.pluginConfigurationPage .flex-1 { flex: 1; }
+.pluginConfigurationPage .flex-shrink-0 { flex-shrink: 0; }
+.pluginConfigurationPage .items-center { align-items: center; }
+.pluginConfigurationPage .items-start { align-items: flex-start; }
+.pluginConfigurationPage .items-end { align-items: flex-end; }
+.pluginConfigurationPage .justify-center { justify-content: center; }
+.pluginConfigurationPage .justify-between { justify-content: space-between; }
+.pluginConfigurationPage .justify-start { justify-content: flex-start; }
+.pluginConfigurationPage .justify-end { justify-content: flex-end; }
+
+/* Gap utilities */
+.pluginConfigurationPage .gap-xs { gap: var(--xt-space-xs); }
+.pluginConfigurationPage .gap-sm { gap: var(--xt-space-sm); }
+.pluginConfigurationPage .gap-md { gap: var(--xt-space-md); }
+.pluginConfigurationPage .gap-lg { gap: var(--xt-space-lg); }
+.pluginConfigurationPage .gap-xl { gap: var(--xt-space-xl); }
+.pluginConfigurationPage .gap-8 { gap: 8px; }
+.pluginConfigurationPage .gap-10 { gap: 10px; }
+.pluginConfigurationPage .gap-12 { gap: 12px; }
+.pluginConfigurationPage .gap-16 { gap: 16px; }
+.pluginConfigurationPage .gap-20 { gap: 20px; }
+
+/* Margin utilities */
+.pluginConfigurationPage .m-0 { margin: 0; }
+.pluginConfigurationPage .mt-0 { margin-top: 0; }
+.pluginConfigurationPage .mt-sm { margin-top: var(--xt-space-sm); }
+.pluginConfigurationPage .mt-md { margin-top: var(--xt-space-md); }
+.pluginConfigurationPage .mt-lg { margin-top: var(--xt-space-lg); }
+.pluginConfigurationPage .mt-xl { margin-top: var(--xt-space-xl); }
+.pluginConfigurationPage .mt-8 { margin-top: 8px; }
+.pluginConfigurationPage .mt-12 { margin-top: 12px; }
+.pluginConfigurationPage .mt-16 { margin-top: 16px; }
+.pluginConfigurationPage .mt-24 { margin-top: 24px; }
+.pluginConfigurationPage .mb-0 { margin-bottom: 0; }
+.pluginConfigurationPage .mb-sm { margin-bottom: var(--xt-space-sm); }
+.pluginConfigurationPage .mb-md { margin-bottom: var(--xt-space-md); }
+.pluginConfigurationPage .mb-lg { margin-bottom: var(--xt-space-lg); }
+.pluginConfigurationPage .mb-xl { margin-bottom: var(--xt-space-xl); }
+.pluginConfigurationPage .mb-8 { margin-bottom: 8px; }
+.pluginConfigurationPage .mb-12 { margin-bottom: 12px; }
+.pluginConfigurationPage .mb-16 { margin-bottom: 16px; }
+.pluginConfigurationPage .mb-24 { margin-bottom: 24px; }
+.pluginConfigurationPage .ml-sm { margin-left: var(--xt-space-sm); }
+.pluginConfigurationPage .mr-sm { margin-right: var(--xt-space-sm); }
+
+/* Padding utilities */
+.pluginConfigurationPage .p-0 { padding: 0; }
+.pluginConfigurationPage .p-sm { padding: var(--xt-space-sm); }
+.pluginConfigurationPage .p-md { padding: var(--xt-space-md); }
+.pluginConfigurationPage .p-lg { padding: var(--xt-space-lg); }
+.pluginConfigurationPage .p-xl { padding: var(--xt-space-xl); }
+.pluginConfigurationPage .px-lg { padding-left: var(--xt-space-lg); padding-right: var(--xt-space-lg); }
+.pluginConfigurationPage .py-md { padding-top: var(--xt-space-md); padding-bottom: var(--xt-space-md); }
+.pluginConfigurationPage .pl-xl { padding-left: var(--xt-space-xl); }
+
+/* Text utilities */
+.pluginConfigurationPage .text-center { text-align: center; }
+.pluginConfigurationPage .text-left { text-align: left; }
+.pluginConfigurationPage .text-right { text-align: right; }
+.pluginConfigurationPage .text-xs { font-size: 11px; }
+.pluginConfigurationPage .text-sm { font-size: 12px; }
+.pluginConfigurationPage .text-md { font-size: 13px; }
+.pluginConfigurationPage .text-lg { font-size: 14px; }
+.pluginConfigurationPage .text-xl { font-size: 15px; }
+.pluginConfigurationPage .text-xxl { font-size: 16px; }
+.pluginConfigurationPage .text-3xl { font-size: 18px; }
+.pluginConfigurationPage .font-normal { font-weight: 400; }
+.pluginConfigurationPage .font-medium { font-weight: 500; }
+.pluginConfigurationPage .font-semibold { font-weight: 600; }
+.pluginConfigurationPage .font-bold { font-weight: 700; }
+.pluginConfigurationPage .uppercase { text-transform: uppercase; }
+.pluginConfigurationPage .truncate {
   white-space: nowrap;
-  padding: 0.3em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pluginConfigurationPage .whitespace-nowrap { white-space: nowrap; }
+
+/* Color utilities */
+.pluginConfigurationPage .text-white { color: var(--xt-text); }
+.pluginConfigurationPage .text-secondary { color: var(--xt-text-secondary); }
+.pluginConfigurationPage .text-muted { color: var(--xt-text-muted); }
+.pluginConfigurationPage .text-primary { color: var(--xt-primary); }
+.pluginConfigurationPage .text-success { color: var(--xt-success); }
+.pluginConfigurationPage .text-warning { color: var(--xt-warning); }
+.pluginConfigurationPage .text-error { color: var(--xt-error); }
+
+/* Background utilities */
+.pluginConfigurationPage .bg-card { background: var(--xt-card-bg); }
+.pluginConfigurationPage .bg-overlay { background: var(--xt-overlay-bg); }
+.pluginConfigurationPage .bg-primary-light { background: var(--xt-primary-light); }
+.pluginConfigurationPage .bg-success-light { background: var(--xt-success-light); }
+.pluginConfigurationPage .bg-error-light { background: var(--xt-error-light); }
+
+/* Border utilities */
+.pluginConfigurationPage .border { border: 1px solid var(--xt-border); }
+.pluginConfigurationPage .border-light { border: 1px solid var(--xt-border-light); }
+.pluginConfigurationPage .border-primary { border-color: var(--xt-primary); }
+.pluginConfigurationPage .rounded-sm { border-radius: var(--xt-radius-sm); }
+.pluginConfigurationPage .rounded-md { border-radius: var(--xt-radius-md); }
+.pluginConfigurationPage .rounded-lg { border-radius: var(--xt-radius-lg); }
+.pluginConfigurationPage .rounded-xl { border-radius: var(--xt-radius-xl); }
+.pluginConfigurationPage .rounded-full { border-radius: 50%; }
+
+/* Cursor utilities */
+.pluginConfigurationPage .cursor-pointer { cursor: pointer; }
+.pluginConfigurationPage .cursor-default { cursor: default; }
+.pluginConfigurationPage .select-none { user-select: none; }
+
+/* Overflow utilities */
+.pluginConfigurationPage .overflow-hidden { overflow: hidden; }
+.pluginConfigurationPage .overflow-auto { overflow: auto; }
+
+/* Width utilities */
+.pluginConfigurationPage .w-full { width: 100%; }
+.pluginConfigurationPage .min-w-0 { min-width: 0; }
+
+/* Transition utilities */
+.pluginConfigurationPage .transition-fast { transition: all var(--xt-transition-fast); }
+.pluginConfigurationPage .transition-normal { transition: all var(--xt-transition-normal); }
+.pluginConfigurationPage .transition-slow { transition: all var(--xt-transition-slow); }
+
+/* Opacity utilities */
+.pluginConfigurationPage .opacity-40 { opacity: 0.4; }
+.pluginConfigurationPage .opacity-50 { opacity: 0.5; }
+
+/* ============================================
+   Modern Card-Based UI Styles
+   ============================================ */
+
+/* Force styles with highest specificity */
+div.category-card,
+.pluginConfigurationPage div.category-card,
+#XtreamLivePage div.category-card,
+#XtreamVodPage div.category-card,
+#XtreamSeriesPage div.category-card {
+  display: block !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  margin-bottom: 12px !important;
+  overflow: hidden !important;
 }
 
-.categories-table tr[data-item-id]>td:nth-child(3)>span {
-  font-size: 1em;
-  vertical-align: middle;
+div.category-card:hover {
+  border-color: rgba(255, 255, 255, 0.25) !important;
 }
 
-.overrides-table {
+div.category-card.expanded {
+  border-color: #00a4dc !important;
+}
+
+div.category-header,
+.pluginConfigurationPage div.category-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 14px 18px !important;
+  cursor: pointer !important;
+  background: transparent !important;
+}
+
+div.category-header:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+
+div.category-info,
+.pluginConfigurationPage div.category-info {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  flex: 1 !important;
+}
+
+div.category-actions,
+.pluginConfigurationPage div.category-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+
+div.category-content,
+.pluginConfigurationPage div.category-content {
+  max-height: 0 !important;
+  overflow: hidden !important;
+  background: rgba(0, 0, 0, 0.2) !important;
+  transition: max-height 0.3s ease-out !important;
+}
+
+div.category-content.expanded,
+.pluginConfigurationPage div.category-content.expanded {
+  max-height: 5000px !important;
+}
+
+div.channel-grid,
+.pluginConfigurationPage div.channel-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)) !important;
+  gap: 10px !important;
+  padding: 16px !important;
+}
+
+div.channel-item,
+.pluginConfigurationPage div.channel-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 12px 14px !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 8px !important;
+  cursor: pointer !important;
+}
+
+div.channel-item:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+div.channel-item.selected {
+  background: rgba(0, 164, 220, 0.2) !important;
+  border-color: rgba(0, 164, 220, 0.5) !important;
+}
+
+/* Force button styles */
+button.select-all-btn,
+.pluginConfigurationPage button.select-all-btn {
+  padding: 8px 16px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  background: rgba(0, 164, 220, 0.15) !important;
+  border: 1px solid rgba(0, 164, 220, 0.4) !important;
+  border-radius: 6px !important;
+  color: #00a4dc !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+}
+
+button.select-all-btn:hover {
+  background: rgba(0, 164, 220, 0.3) !important;
+}
+
+button.expand-btn,
+.pluginConfigurationPage button.expand-btn {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: none !important;
+  color: #aaa !important;
+  cursor: pointer !important;
+  padding: 6px !important;
+  border-radius: 6px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+button.expand-btn:hover {
+  background: rgba(255, 255, 255, 0.15) !important;
+  color: #fff !important;
+}
+
+button.expand-btn.expanded {
+  transform: rotate(180deg) !important;
+}
+
+/* Force checkbox styles */
+input.category-checkbox,
+input.channel-checkbox {
+  width: 18px !important;
+  height: 18px !important;
+  cursor: pointer !important;
+  accent-color: #00a4dc !important;
+  flex-shrink: 0 !important;
+}
+
+/* Force span styles */
+span.category-icon {
+  color: #00a4dc !important;
+  font-size: 22px !important;
+}
+
+span.category-name {
+  font-weight: 600 !important;
+  font-size: 15px !important;
+  color: #fff !important;
+}
+
+span.category-count {
+  color: #888 !important;
+  font-size: 13px !important;
+}
+
+span.category-selected-count {
+  color: #4caf50 !important;
+  font-size: 12px !important;
+  margin-left: 8px !important;
+}
+
+span.channel-name {
+  flex: 1 !important;
+  font-size: 13px !important;
+  color: #ddd !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+/* Force search bar styles */
+div.search-filter-bar,
+.pluginConfigurationPage div.search-filter-bar {
+  display: flex !important;
+  align-items: center !important;
+  gap: 16px !important;
+  margin-bottom: 20px !important;
+  flex-wrap: wrap !important;
+}
+
+div.search-container,
+.pluginConfigurationPage div.search-container {
+  position: relative !important;
+  flex: 1 !important;
+  min-width: 250px !important;
+  max-width: 400px !important;
+}
+
+input.search-input,
+.pluginConfigurationPage input.search-input {
+  width: 100% !important;
+  padding: 12px 40px 12px 44px !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #fff !important;
+  font-size: 14px !important;
+  box-sizing: border-box !important;
+}
+
+input.search-input:focus {
+  outline: none !important;
+  border-color: #00a4dc !important;
+  background: rgba(0, 164, 220, 0.1) !important;
+}
+
+div.selection-stats,
+.pluginConfigurationPage div.selection-stats {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 10px 18px !important;
+  background: rgba(0, 164, 220, 0.15) !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+  color: #ccc !important;
+}
+
+span.stat-selected {
+  color: #00a4dc !important;
+  font-weight: bold !important;
+  font-size: 15px !important;
+}
+
+span.stat-total {
+  font-weight: bold !important;
+}
+
+span.stat-divider {
+  width: 1px !important;
+  height: 16px !important;
+  background: rgba(255, 255, 255, 0.3) !important;
+  margin: 0 4px !important;
+}
+
+/* Catchup badge */
+span.catchup-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 4px 8px !important;
+  background: rgba(156, 39, 176, 0.25) !important;
+  border-radius: 4px !important;
+  font-size: 11px !important;
+  color: #ce93d8 !important;
+}
+
+/* Loading and empty states */
+div.loading-overlay {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 50px 40px !important;
+  color: #999 !important;
+}
+
+div.loading-spinner {
+  width: 40px !important;
+  height: 40px !important;
+  border: 3px solid rgba(0, 164, 220, 0.2) !important;
+  border-top-color: #00a4dc !important;
+  border-radius: 50% !important;
+  animation: xtream-spin 1s linear infinite !important;
+  margin-bottom: 16px !important;
+}
+
+div.empty-state {
+  text-align: center !important;
+  padding: 50px 40px !important;
+  color: #888 !important;
+}
+
+div.no-results {
+  text-align: center !important;
+  padding: 40px !important;
+  color: #888 !important;
+}
+
+/* Categories container */
+div.categories-container {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+}
+
+/* Search Container */
+.pluginConfigurationPage .search-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pluginConfigurationPage .search-container {
+  position: relative;
+  flex: 1;
+  min-width: 250px;
+  max-width: 400px;
+}
+
+.pluginConfigurationPage .search-container .search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #888;
+  font-size: 20px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.pluginConfigurationPage .search-container .search-input {
+  width: 100%;
+  padding: 12px 40px 12px 44px !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: inherit;
+  font-size: 14px;
+  transition: border-color 0.2s, background 0.2s;
+  box-sizing: border-box;
+}
+
+.pluginConfigurationPage .search-container .search-input:focus {
+  outline: none;
+  border-color: #00a4dc !important;
+  background: rgba(0, 164, 220, 0.1) !important;
+}
+
+.pluginConfigurationPage .search-container .search-input::placeholder {
+  color: #888;
+}
+
+.pluginConfigurationPage .search-container .clear-search {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, color 0.2s;
+}
+
+.pluginConfigurationPage .search-container .clear-search:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.pluginConfigurationPage .search-container .clear-search .material-icons {
+  font-size: 18px;
+}
+
+/* Selection Stats */
+.pluginConfigurationPage .selection-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(0, 164, 220, 0.15);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #ccc;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pluginConfigurationPage .selection-stats .stat-selected {
+  color: #00a4dc;
+  font-weight: bold;
+  font-size: 15px;
+}
+
+.pluginConfigurationPage .selection-stats .stat-total {
+  font-weight: bold;
+}
+
+.pluginConfigurationPage .selection-stats .stat-divider {
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.3);
+  margin: 0 4px;
+}
+
+.pluginConfigurationPage .selection-stats .stat-categories {
+  color: #999;
+}
+
+/* Categories Container */
+.pluginConfigurationPage .categories-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Category Card */
+.pluginConfigurationPage .category-card {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-radius: 10px !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.pluginConfigurationPage .category-card:hover {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.pluginConfigurationPage .category-card.expanded {
+  border-color: #00a4dc !important;
+  box-shadow: 0 0 0 1px rgba(0, 164, 220, 0.3);
+}
+
+.pluginConfigurationPage .category-card.filtered-out {
+  display: none !important;
+}
+
+.pluginConfigurationPage .category-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+  background: transparent;
+}
+
+.pluginConfigurationPage .category-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.pluginConfigurationPage .category-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.pluginConfigurationPage .category-checkbox {
+  width: 20px !important;
+  height: 20px !important;
+  cursor: pointer;
+  flex-shrink: 0;
+  accent-color: #00a4dc;
+}
+
+.pluginConfigurationPage .category-icon {
+  color: #00a4dc;
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.pluginConfigurationPage .category-name {
+  font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #fff;
+}
+
+.pluginConfigurationPage .category-count {
+  color: #888;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.pluginConfigurationPage .category-selected-count {
+  color: #4caf50;
+  font-size: 12px;
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+.pluginConfigurationPage .category-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pluginConfigurationPage .select-all-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(0, 164, 220, 0.15);
+  border: 1px solid rgba(0, 164, 220, 0.4);
+  border-radius: 6px;
+  color: #00a4dc;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, transform 0.1s;
+  white-space: nowrap;
+}
+
+.pluginConfigurationPage .select-all-btn:hover {
+  background: rgba(0, 164, 220, 0.25);
+  border-color: #00a4dc;
+  transform: translateY(-1px);
+}
+
+.pluginConfigurationPage .select-none-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(244, 67, 54, 0.15);
+  border: 1px solid rgba(244, 67, 54, 0.4);
+  border-radius: 6px;
+  color: #f44336;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  white-space: nowrap;
+}
+
+.pluginConfigurationPage .select-none-btn:hover {
+  background: rgba(244, 67, 54, 0.25);
+  border-color: #f44336;
+}
+
+.pluginConfigurationPage .expand-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, color 0.2s, transform 0.3s;
+}
+
+.pluginConfigurationPage .expand-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.pluginConfigurationPage .expand-btn.expanded {
+  transform: rotate(180deg);
+}
+
+.pluginConfigurationPage .expand-btn .material-icons {
+  font-size: 24px;
+}
+
+/* Category Content (expandable) */
+.pluginConfigurationPage .category-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease-out;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.pluginConfigurationPage .category-content.expanded {
+  max-height: 3000px;
+  transition: max-height 0.5s ease-in;
+}
+
+.pluginConfigurationPage .category-content-inner {
+  padding: 16px 18px 20px;
+}
+
+/* Channel Grid */
+.pluginConfigurationPage .channel-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)) !important;
+  gap: 10px !important;
+}
+
+/* Channel Item */
+.pluginConfigurationPage .channel-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 10px 14px !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 8px !important;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  min-width: 0;
+}
+
+.pluginConfigurationPage .channel-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  transform: translateY(-1px);
+}
+
+.pluginConfigurationPage .channel-item.selected {
+  background: rgba(0, 164, 220, 0.15) !important;
+  border-color: rgba(0, 164, 220, 0.4) !important;
+}
+
+.pluginConfigurationPage .channel-item.filtered-out {
+  display: none !important;
+}
+
+.pluginConfigurationPage .channel-item.search-match {
+  border-color: #00a4dc !important;
+  box-shadow: 0 0 0 2px rgba(0, 164, 220, 0.3);
+}
+
+.pluginConfigurationPage .channel-checkbox {
+  width: 18px !important;
+  height: 18px !important;
+  cursor: pointer;
+  flex-shrink: 0;
+  accent-color: #00a4dc;
+}
+
+.pluginConfigurationPage .channel-name {
+  flex: 1;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #ddd;
+}
+
+.pluginConfigurationPage .catchup-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  background: rgba(156, 39, 176, 0.2);
+  border-radius: 4px;
+  font-size: 11px;
+  color: #ce93d8;
+  flex-shrink: 0;
+}
+
+.pluginConfigurationPage .catchup-badge .material-icons {
+  font-size: 13px;
+}
+
+/* Loading State */
+.pluginConfigurationPage .loading-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 50px 40px;
+  color: #999;
+}
+
+.pluginConfigurationPage .loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(0, 164, 220, 0.2);
+  border-top-color: #00a4dc;
+  border-radius: 50%;
+  animation: xtream-spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+@keyframes xtream-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Empty State */
+.pluginConfigurationPage .empty-state {
+  text-align: center;
+  padding: 50px 40px;
+  color: #888;
+}
+
+.pluginConfigurationPage .empty-state .material-icons {
+  font-size: 56px;
+  opacity: 0.4;
+  margin-bottom: 16px;
+  display: block;
+}
+
+.pluginConfigurationPage .empty-state p {
+  margin: 0;
+  font-size: 14px;
+}
+
+/* No Results State */
+.pluginConfigurationPage .no-results {
+  text-align: center;
+  padding: 40px;
+  color: #888;
+}
+
+.pluginConfigurationPage .no-results .material-icons {
+  font-size: 42px;
+  opacity: 0.4;
+  margin-bottom: 12px;
+  display: block;
+}
+
+/* Provider Section */
+.pluginConfigurationPage .provider-section {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pluginConfigurationPage .provider-section .selectContainer {
+  flex: 1;
+  min-width: 200px;
+  margin-bottom: 0;
+  position: relative;
+}
+
+.pluginConfigurationPage .provider-section .selectContainer .selectArrowContainer {
+  position: absolute !important;
+  right: 10px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  pointer-events: none;
+}
+
+.pluginConfigurationPage .provider-section .fab,
+.pluginConfigurationPage .provider-section button.emby-button {
+  align-self: flex-end;
+  margin-bottom: 2px;
+  flex-shrink: 0;
+}
+
+/* Copy From Provider Section */
+.pluginConfigurationPage .copy-from-section {
+  margin-top: 16px;
+  margin-bottom: 24px;
+  padding: 18px;
+  background: rgba(33, 150, 243, 0.1);
+  border-radius: 10px;
+  border-left: 4px solid #2196f3;
+}
+
+.pluginConfigurationPage .copy-from-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.pluginConfigurationPage .copy-from-row .selectContainer {
+  flex: 1;
+  min-width: 200px;
+  margin-bottom: 0;
+}
+
+.pluginConfigurationPage .copy-result-message {
+  margin-top: 12px;
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.pluginConfigurationPage .copy-result-message.success {
+  background: rgba(76, 175, 80, 0.15);
+  color: #4caf50;
+  border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.pluginConfigurationPage .copy-result-message.error {
+  background: rgba(244, 67, 54, 0.15);
+  color: #f44336;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+.pluginConfigurationPage .copy-result-message.loading {
+  background: rgba(0, 164, 220, 0.15);
+  color: #00a4dc;
+  border: 1px solid rgba(0, 164, 220, 0.3);
+}
+
+/* Section Headers */
+.pluginConfigurationPage .content-section {
+  margin-bottom: 24px;
+}
+
+.pluginConfigurationPage .content-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.pluginConfigurationPage .content-section-title {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0;
+}
+
+/* Collapsible Settings Section */
+.pluginConfigurationPage .settings-section {
+  margin-bottom: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.pluginConfigurationPage .settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+
+.pluginConfigurationPage .settings-section-header:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pluginConfigurationPage .settings-section-header .material-icons {
+  color: #888;
+  transition: transform 0.3s;
+}
+
+.pluginConfigurationPage .settings-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: #fff;
+}
+
+.pluginConfigurationPage .settings-section-content {
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* Utility Classes */
+.pluginConfigurationPage .gap-8 { gap: 8px; }
+.pluginConfigurationPage .gap-12 { gap: 12px; }
+.pluginConfigurationPage .gap-16 { gap: 16px; }
+.pluginConfigurationPage .mt-8 { margin-top: 8px; }
+.pluginConfigurationPage .mt-12 { margin-top: 12px; }
+.pluginConfigurationPage .mt-16 { margin-top: 16px; }
+.pluginConfigurationPage .mb-8 { margin-bottom: 8px; }
+.pluginConfigurationPage .mb-12 { margin-bottom: 12px; }
+.pluginConfigurationPage .mb-16 { margin-bottom: 16px; }
+
+/* Toggle Content (for collapsible settings) */
+.pluginConfigurationPage .toggle-content {
+  display: none;
+  margin-top: 12px;
+  padding-left: 20px;
+  border-left: 2px solid rgba(255, 255, 255, 0.1);
+}
+
+.pluginConfigurationPage .toggle-content.visible {
+  display: block;
+}
+
+/* Info Card */
+.pluginConfigurationPage .info-card {
+  padding: 16px 18px;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Stat Card (for buffer sizes, etc) */
+.pluginConfigurationPage .stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+}
+
+.pluginConfigurationPage .stat-card .stat-label {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.pluginConfigurationPage .stat-card .stat-value {
+  font-size: 20px;
+  font-weight: bold;
+  color: #fff;
+}
+
+/* Notification Grid */
+.pluginConfigurationPage .notification-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.pluginConfigurationPage .notification-grid .checkboxContainer {
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pluginConfigurationPage .notification-grid .checkboxContainer:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Subsection */
+.pluginConfigurationPage .subsection {
+  margin-bottom: 12px;
+}
+
+/* Override Channel Row */
+.pluginConfigurationPage .override-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 1fr;
+  gap: 12px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pluginConfigurationPage .override-row:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.pluginConfigurationPage .override-row input {
   width: 100%;
 }
 
-.overrides-table thead th:first-child {
-  width: 0;
+.pluginConfigurationPage .override-row .channel-original {
+  font-size: 11px;
+  color: #777;
+  margin-top: 4px;
 }
 
-.btnRefresh {
-  margin-left: 1em;
-  min-width: auto;
-  padding: 0.5em;
+/* Override Header */
+.pluginConfigurationPage .override-header {
+  display: grid;
+  grid-template-columns: 80px 1fr 1fr;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #999;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 8px 8px 0 0;
+  margin-bottom: 4px;
 }
 
-.btnRefresh .material-icons {
-  font-size: 1.2em;
+/* EPG Program Card */
+.pluginConfigurationPage .epg-program-card {
+  padding: 18px;
+  margin-bottom: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  border-left: 4px solid #00a4dc;
+  transition: background 0.2s, transform 0.15s;
+}
+
+.pluginConfigurationPage .epg-program-card:hover {
+  background: rgba(255, 255, 255, 0.07);
+  transform: translateX(2px);
+}
+
+.pluginConfigurationPage .epg-program-card.current {
+  border-left-color: #4caf50;
+  background: rgba(76, 175, 80, 0.1);
+}
+
+.pluginConfigurationPage .epg-program-card.past {
+  opacity: 0.5;
+  border-left-color: #555;
+}
+
+.pluginConfigurationPage .epg-program-card .program-title {
+  font-weight: 600;
+  font-size: 15px;
+  margin-bottom: 6px;
+  color: #fff;
+}
+
+.pluginConfigurationPage .epg-program-card .program-time {
+  font-size: 13px;
+  color: #999;
+  margin-bottom: 10px;
+}
+
+.pluginConfigurationPage .epg-program-card .program-description {
+  font-size: 13px;
+  color: #aaa;
+  line-height: 1.5;
+}
+
+/* EPG Summary */
+.pluginConfigurationPage .epg-summary-card {
+  padding: 18px;
+  background: rgba(0, 164, 220, 0.1);
+  border-radius: 10px;
+  margin-bottom: 20px;
+  border: 1px solid rgba(0, 164, 220, 0.2);
+}
+
+.pluginConfigurationPage .epg-summary-card .summary-title {
+  font-weight: 600;
+  margin-bottom: 12px;
+  font-size: 16px;
+  color: #fff;
+}
+
+.pluginConfigurationPage .epg-summary-card .summary-stats {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.pluginConfigurationPage .epg-summary-card .summary-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #999;
+}
+
+.pluginConfigurationPage .epg-summary-card .summary-stat .material-icons {
+  font-size: 18px;
+  color: #00a4dc;
+}
+
+/* Migration Card */
+.pluginConfigurationPage .migration-card {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 28px;
+  margin-bottom: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.pluginConfigurationPage .migration-card h3 {
+  margin-top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+  color: #fff;
+}
+
+.pluginConfigurationPage .migration-card .migration-info {
+  background: rgba(255, 193, 7, 0.12);
+  border-left: 4px solid #ffc107;
+  padding: 14px 16px;
+  margin: 18px 0;
+  border-radius: 6px;
+}
+
+.pluginConfigurationPage .migration-card .migration-success {
+  background: rgba(76, 175, 80, 0.12);
+  border-left: 4px solid #4caf50;
+}
+
+.pluginConfigurationPage .migration-card .migration-error {
+  background: rgba(244, 67, 54, 0.12);
+  border-left: 4px solid #f44336;
+}
+
+/* Status Badge */
+.pluginConfigurationPage .status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pluginConfigurationPage .status-badge.available {
+  background: rgba(76, 175, 80, 0.2);
+  color: #4caf50;
+}
+
+.pluginConfigurationPage .status-badge.unavailable {
+  background: rgba(244, 67, 54, 0.2);
+  color: #f44336;
+}
+
+.pluginConfigurationPage .status-badge.loading {
+  background: rgba(0, 164, 220, 0.2);
+  color: #00a4dc;
+}
+
+/* Hide utility class */
+.pluginConfigurationPage .hide {
+  display: none !important;
 }
