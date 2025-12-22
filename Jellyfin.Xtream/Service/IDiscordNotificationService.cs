@@ -200,4 +200,24 @@ public interface IDiscordNotificationService
         long violationCount,
         CancellationToken cancellationToken = default
     );
+
+    /// <summary>
+    /// Sends a provider connection limit notification to Discord.
+    /// Reports when a provider reaches its connection limit or connections become available.
+    /// </summary>
+    /// <param name="providerName">The provider name.</param>
+    /// <param name="activeConnections">Current active connections.</param>
+    /// <param name="maxConnections">Maximum connections allowed.</param>
+    /// <param name="isAtLimit">Whether the provider is at its connection limit.</param>
+    /// <param name="externalConnections">Number of connections from external sources (not this plugin).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    Task NotifyConnectionLimitChangeAsync(
+        string providerName,
+        int activeConnections,
+        int maxConnections,
+        bool isAtLimit,
+        int externalConnections = 0,
+        CancellationToken cancellationToken = default
+    );
 }

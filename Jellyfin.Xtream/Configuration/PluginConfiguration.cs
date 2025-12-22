@@ -256,6 +256,16 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool NotifyOnEpgRefresh { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets a value indicating whether to notify on connection limit changes.
+    /// </summary>
+    /// <remarks>
+    /// When enabled, sends a Discord notification when a provider reaches its connection limit
+    /// or when connections become available again. This helps monitor provider capacity without
+    /// actively using the service.
+    /// </remarks>
+    public bool NotifyOnConnectionLimitChange { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets a value indicating whether to send periodic health reports.
     /// </summary>
     public bool EnablePeriodicHealthReports { get; set; }

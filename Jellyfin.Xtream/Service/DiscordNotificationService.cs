@@ -875,6 +875,69 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <inheritdoc/>
+    public async Task NotifyConnectionLimitChangeAsync(
+        string providerName,
+        int activeConnections,
+        int maxConnections,
+        bool isAtLimit,
+        int externalConnections = 0,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnConnectionLimitChange)
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+
+        Color color;
+        string emoji;
+        string title;
+        string description;
+
+        if (isAtLimit)
+        {
+            color = Color.Red;
+            emoji = "🔴";
+            title = "Provider At Connection Limit";
+            description = $"{emoji} **AT LIMIT** - No available connections\n**Provider:** `{providerName}`";
+        }
+        else
+        {
+            color = Color.Green;
+            emoji = "✅";
+            title = "Provider Connections Available";
+            description = $"{emoji} **AVAILABLE** - Connections freed up\n**Provider:** `{providerName}`";
+        }
+
+        var availableSlots = maxConnections - activeConnections;
+        var utilizationPercent = maxConnections > 0 ? (int)Math.Round(100.0 * activeConnections / maxConnections) : 100;
+
+        var embedBuilder = new EmbedBuilder()
+            .WithAuthor("Jellyfin.Xtream", JellyfinIconUrl)
+            .WithTitle(title)
+            .WithDescription(description)
+            .WithColor(color)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
+            .AddField("📊 Connections", $"{activeConnections}/{maxConnections}", true)
+            .AddField("📈 Utilization", $"{utilizationPercent}%", true);
+
+        if (externalConnections > 0)
+        {
+            embedBuilder.AddField("🌐 External", $"{externalConnections} connections", true);
+        }
+
+        embedBuilder
+            .AddField("🎰 Available", $"{availableSlots} slot{(availableSlots != 1 ? "s" : "")}", true)
+            .WithTimestamp(now)
+            .WithFooter("Connection Limit Monitoring");
+
+        await SendDiscordMessageAsync(embedBuilder.Build(), cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Formats bytes into human-readable format (GB, MB, KB).
     /// </summary>

@@ -74,7 +74,8 @@ export default function (view) {
       ['#NotifyOnStreamError', 'NotifyOnStreamError', true, true],
       ['#NotifyOnStreamKilled', 'NotifyOnStreamKilled', true, true],
       ['#NotifyOnStreamQualityViolation', 'NotifyOnStreamQualityViolation', true, true],
-      ['#NotifyOnEpgRefresh', 'NotifyOnEpgRefresh', true, true]
+      ['#NotifyOnEpgRefresh', 'NotifyOnEpgRefresh', true, true],
+      ['#NotifyOnConnectionLimitChange', 'NotifyOnConnectionLimitChange', true, true]
     ];
 
     // Load configuration
