@@ -55,10 +55,50 @@ export default function (view) {
       const overflowBytes = stream.overflowBytes ?? stream.OverflowBytes ?? 0;
       const isAligned = stream.isAligned ?? stream.IsAligned ?? false;
 
+      // Quality metrics
+      const hasQualityIssues = stream.hasQualityIssues ?? stream.HasQualityIssues ?? false;
+      const qualityLevel = stream.qualityLevel ?? stream.QualityLevel ?? 'None';
+      const qualityIssues = stream.qualityIssues ?? stream.QualityIssues ?? null;
+      const packetErrors = stream.packetErrors ?? stream.PacketErrors ?? 0;
+      const continuityErrors = stream.continuityErrors ?? stream.ContinuityErrors ?? 0;
+      const syncErrors = stream.syncErrors ?? stream.SyncErrors ?? 0;
+      const patViolations = stream.patViolations ?? stream.PatViolations ?? 0;
+      const crcErrors = stream.crcErrors ?? stream.CrcErrors ?? 0;
+      const avDriftMs = stream.avDriftMs ?? stream.AvDriftMs ?? 0;
+      const syncStatus = stream.syncStatus ?? stream.SyncStatus ?? 'Unknown';
+
+      // Quality indicator styling
+      let qualityColor = '#4caf50';
+      let qualityIcon = 'check_circle';
+      if (qualityLevel === 'Critical') {
+        qualityColor = '#f44336';
+        qualityIcon = 'error';
+      } else if (qualityLevel === 'Warning') {
+        qualityColor = '#ff9800';
+        qualityIcon = 'warning';
+      }
+
+      // Build quality section
+      let qualitySection = '';
+      if (hasQualityIssues) {
+        qualitySection = `
+          <div class="quality-warning" style="margin-top: 12px; padding: 8px 12px; background: rgba(${qualityLevel === 'Critical' ? '244, 67, 54' : '255, 152, 0'}, 0.1); border-radius: 4px; border-left: 3px solid ${qualityColor};">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="material-icons" style="color: ${qualityColor};">${qualityIcon}</span>
+              <span style="color: ${qualityColor}; font-weight: bold;">Quality Issues Detected</span>
+            </div>
+            <div style="font-size: 0.9em; margin-top: 4px; color: #aaa;">${escapeHtml(qualityIssues)}</div>
+          </div>
+        `;
+      }
+
       card.innerHTML = `
         <div class="stream-header">
           <div class="stream-title">${escapeHtml(channelName)}</div>
-          <span class="stream-status-badge ${statusClass}">${status}</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="material-icons" style="color: ${qualityColor}; font-size: 18px;" title="Quality: ${qualityLevel}">${qualityIcon}</span>
+            <span class="stream-status-badge ${statusClass}">${status}</span>
+          </div>
         </div>
         <div class="stream-stats">
           <div class="stat-item">
@@ -78,15 +118,20 @@ export default function (view) {
             <div class="stat-value">${formatBytes(currentGap)} (${gapPct.toFixed(1)}%)</div>
           </div>
           <div class="stat-item">
-            <div class="stat-label">Overflows</div>
-            <div class="stat-value">${overflowCount} (${formatBytes(overflowBytes)} lost)</div>
+            <div class="stat-label">A/V Sync</div>
+            <div class="stat-value" style="color: ${Math.abs(avDriftMs) > 100 ? '#f44336' : Math.abs(avDriftMs) > 40 ? '#ff9800' : '#4caf50'};">
+              ${syncStatus}${Math.abs(avDriftMs) > 1 ? ` (${avDriftMs.toFixed(0)}ms)` : ''}
+            </div>
           </div>
-          <div class="stat-item">
-            <div class="stat-label">Keyframe Aligned</div>
-            <div class="stat-value">${isAligned ? 'Yes' : 'No'}</div>
+          <div class="stat-item" title="Packet: ${packetErrors} | Continuity: ${continuityErrors} | Sync: ${syncErrors} | PAT: ${patViolations} | CRC: ${crcErrors}">
+            <div class="stat-label">Stream Errors</div>
+            <div class="stat-value" style="color: ${(packetErrors + continuityErrors + syncErrors + patViolations + crcErrors) > 0 ? '#ff9800' : '#4caf50'};">
+              ${packetErrors + continuityErrors + syncErrors + patViolations + crcErrors} total
+            </div>
           </div>
         </div>
-        <div>
+        ${qualitySection}
+        <div style="margin-top: 8px;">
           <div class="stat-label">Buffer Fill</div>
           <div class="progress-bar">
             <div class="progress-fill ${statusClass}" style="width: ${bufferFillPct}%"></div>

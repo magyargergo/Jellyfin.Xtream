@@ -82,4 +82,56 @@ public readonly record struct StreamInfoSnapshot
     /// Gets a value indicating whether the stream is aligned to a keyframe.
     /// </summary>
     public bool IsAligned { get; init; }
+
+    // Quality Metrics
+
+    /// <summary>
+    /// Gets the total number of TS packets with Transport Error Indicator set.
+    /// </summary>
+    public long PacketErrors { get; init; }
+
+    /// <summary>
+    /// Gets the total number of continuity counter discontinuities detected.
+    /// </summary>
+    public long ContinuityErrors { get; init; }
+
+    /// <summary>
+    /// Gets the number of sync byte errors detected.
+    /// </summary>
+    public long SyncErrors { get; init; }
+
+    /// <summary>
+    /// Gets the number of PAT interval violations.
+    /// </summary>
+    public long PatViolations { get; init; }
+
+    /// <summary>
+    /// Gets the number of CRC-32 validation failures.
+    /// </summary>
+    public long CrcErrors { get; init; }
+
+    /// <summary>
+    /// Gets the current A/V drift in milliseconds.
+    /// </summary>
+    public double AvDriftMs { get; init; }
+
+    /// <summary>
+    /// Gets the sync status (None, Good, Warning, Severe).
+    /// </summary>
+    public string SyncStatus { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether there are quality issues.
+    /// </summary>
+    public bool HasQualityIssues { get; init; }
+
+    /// <summary>
+    /// Gets the quality warning level (None, Warning, Critical).
+    /// </summary>
+    public string QualityLevel { get; init; }
+
+    /// <summary>
+    /// Gets a summary of quality issues.
+    /// </summary>
+    public string? QualityIssues { get; init; }
 }

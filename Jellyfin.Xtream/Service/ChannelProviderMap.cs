@@ -22,6 +22,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Service.ChannelMatching;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -72,6 +73,22 @@ public sealed partial class ChannelProviderMap
     /// <returns>A new <see cref="ChannelProviderMap"/> with channels grouped and sorted by quality.</returns>
     public static ChannelProviderMap Build(IEnumerable<ProviderStreamInfo> providerStreams)
     {
+        return Build(providerStreams, availabilityScorer: null);
+    }
+
+    /// <summary>
+    /// Builds the channel map with connection-aware provider ordering.
+    /// Providers are sorted by a combination of quality and availability scores.
+    /// </summary>
+    /// <param name="providerStreams">All streams from all providers.</param>
+    /// <param name="availabilityScorer">Function to get availability score (0-100) for a provider ID.
+    /// Higher scores indicate more available capacity. Pass null to use quality-only sorting.</param>
+    /// <returns>A new <see cref="ChannelProviderMap"/> with channels grouped and sorted.</returns>
+    public static ChannelProviderMap Build(
+        IEnumerable<ProviderStreamInfo> providerStreams,
+        Func<string, int>? availabilityScorer
+    )
+    {
         // Materialize once to avoid multiple enumeration
         var streamsList = providerStreams as IList<ProviderStreamInfo> ?? providerStreams.ToList();
 
@@ -85,12 +102,16 @@ public sealed partial class ChannelProviderMap
         }
 
         // Use parallel processing for large datasets
-        return streamsList.Count >= ParallelThreshold ? BuildParallel(streamsList) : BuildSequential(streamsList);
+        return streamsList.Count >= ParallelThreshold
+            ? BuildParallel(streamsList, availabilityScorer)
+            : BuildSequential(streamsList, availabilityScorer);
     }
 
-    private static ChannelProviderMap BuildSequential(IList<ProviderStreamInfo> streamsList)
+    private static ChannelProviderMap BuildSequential(
+        IList<ProviderStreamInfo> streamsList,
+        Func<string, int>? availabilityScorer
+    )
     {
-        // Pre-allocate with estimated capacity (assume ~50% deduplication)
         var channelDict = new Dictionary<string, List<(ProviderStreamInfo Stream, int Score, string DisplayName)>>(
             streamsList.Count / 2,
             StringComparer.OrdinalIgnoreCase
@@ -99,10 +120,8 @@ public sealed partial class ChannelProviderMap
         var guidMapping = new Dictionary<Guid, string>(streamsList.Count);
         int skippedCount = 0;
 
-        // Single pass: group streams by normalized name and compute scores
         foreach (var ps in streamsList)
         {
-            // Process name once - get both normalized and display name in single pass
             var (normalizedName, displayName) = ProcessChannelName(ps.Stream.Name);
             if (string.IsNullOrWhiteSpace(normalizedName))
             {
@@ -110,8 +129,7 @@ public sealed partial class ChannelProviderMap
                 continue;
             }
 
-            // Use ScoreStream which includes image bonus
-            int score = QualityScorer.ScoreStream(ps.Stream);
+            int score = CalculateProviderScore(ps, availabilityScorer);
 
             ref var listRef = ref CollectionsMarshal.GetValueRefOrAddDefault(
                 channelDict,
@@ -120,12 +138,11 @@ public sealed partial class ChannelProviderMap
             );
             if (!exists)
             {
-                listRef = new List<(ProviderStreamInfo, int, string)>(4); // Most channels have 1-4 providers
+                listRef = new List<(ProviderStreamInfo, int, string)>(4);
             }
 
             listRef!.Add((ps, score, displayName));
 
-            // Pre-compute GUID mapping
             var guid = StreamService.ToProviderGuid(StreamService.LiveTvPrefix, ps.Provider, ps.Stream.StreamId);
             guidMapping[guid] = normalizedName;
         }
@@ -133,7 +150,23 @@ public sealed partial class ChannelProviderMap
         return BuildFromGrouped(channelDict, guidMapping, skippedCount);
     }
 
-    private static ChannelProviderMap BuildParallel(IList<ProviderStreamInfo> streamsList)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int CalculateProviderScore(ProviderStreamInfo ps, Func<string, int>? availabilityScorer)
+    {
+        int qualityScore = QualityScorer.ScoreStream(ps.Stream);
+        if (availabilityScorer == null)
+        {
+            return qualityScore;
+        }
+
+        int availabilityScore = availabilityScorer(ps.Provider.Id);
+        return QualityScorer.CombinedScore(qualityScore, availabilityScore);
+    }
+
+    private static ChannelProviderMap BuildParallel(
+        IList<ProviderStreamInfo> streamsList,
+        Func<string, int>? availabilityScorer
+    )
     {
         // Thread-safe collections for parallel grouping
         var channelDict = new Dictionary<string, List<(ProviderStreamInfo Stream, int Score, string DisplayName)>>(
@@ -169,7 +202,8 @@ public sealed partial class ChannelProviderMap
                         continue;
                     }
 
-                    int score = QualityScorer.ScoreStream(ps.Stream);
+                    int score = CalculateProviderScore(ps, availabilityScorer);
+
                     var guid = StreamService.ToProviderGuid(
                         StreamService.LiveTvPrefix,
                         ps.Provider,
@@ -327,58 +361,37 @@ public sealed partial class ChannelProviderMap
     }
 
     /// <summary>
-    /// Processes a channel name in a single pass, returning both the normalized name
-    /// (for deduplication) and the display name (for UI).
-    /// This avoids calling ParseName and regex operations twice per stream.
+    /// Processes a channel name, returning both the normalized name (for deduplication)
+    /// and the display name (for UI).
+    /// Uses the same ChannelNameNormalizer as channel copying for consistency.
     /// </summary>
     /// <param name="name">The raw channel name.</param>
-    /// <returns>A tuple of (NormalizedName, DisplayName) where NormalizedName is uppercase for matching
-    /// and DisplayName preserves original casing for readability.</returns>
+    /// <returns>A tuple of (NormalizedName, DisplayName) where NormalizedName is for matching
+    /// and DisplayName is cleaned for readability.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static (string NormalizedName, string DisplayName) ProcessChannelName(string name)
     {
+        // Use the same normalizer as CopyChannelSelections for consistent matching
+        var normalizedName = ChannelNameNormalizer.Default.Normalize(name);
+
+        // For display name, use StreamService.ParseName which strips tags but keeps the name readable
         var parsed = StreamService.ParseName(name);
-        var title = parsed.Title;
+        var displayName = DisplayNameCleanupRegex().Replace(parsed.Title, " ").Trim();
+        displayName = MultipleSpacesRegex().Replace(displayName, " ");
 
-        // Strip common channel number prefixes like "1234 PL:" or "PL:"
-        title = ChannelPrefixRegex().Replace(title, string.Empty);
-
-        // Strip quality indicators anywhere in the name (not just at the end)
-        // This handles cases like "Polsat HD", "HD Polsat", "Polsat FHD Extra"
-        title = QualityIndicatorRegex().Replace(title, " ");
-
-        // Collapse multiple spaces and trim
-        title = MultipleSpacesRegex().Replace(title, " ").Trim();
-
-        // For normalization: remove spaces between letters and numbers
-        // This handles "TV 6" vs "TV6", "Canal+ 2" vs "Canal+2", "TVP 1" vs "TVP1"
-        var normalizedTitle = LetterToDigitSpaceRegex().Replace(title, "$1$2");
-        normalizedTitle = DigitToLetterSpaceRegex().Replace(normalizedTitle, "$1$2");
-
-        // Return both: uppercase normalized for deduplication key, original for display
-        return (normalizedTitle.ToUpperInvariant(), title);
+        return (normalizedName, displayName);
     }
 
-    // Matches patterns like "1234 PL:", "PL:", "UK:", "US:", "DE:", etc. at the start
-    [GeneratedRegex(@"^(\d+\s+)?[A-Z]{2,3}:\s*", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
-    private static partial Regex ChannelPrefixRegex();
-
-    // Matches quality indicators anywhere in the name (word boundaries)
+    // Matches country prefixes and quality indicators for display name cleanup
+    // Less aggressive than full normalization - keeps the name readable
+    // Handles: "PL:", "PL-", "PL|", "PL |", "|PL|", "[PL]", "(PL)"
     [GeneratedRegex(
-        @"\b(HD|FHD|SD|4K|UHD|HEVC|H\.?265|H\.?264|1080[PI]?|720[PI]?|480[PI]?|576[PI]?|2160[PI]?)\b",
+        @"^(\d+\s+)?(\|?[A-Z]{2,3}\||\[[A-Z]{2,3}\]|\([A-Z]{2,3}\)|[A-Z]{2,3}\s*[:\-\|])\s*|\b(HD|FHD|SD|4K|UHD)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled
     )]
-    private static partial Regex QualityIndicatorRegex();
+    private static partial Regex DisplayNameCleanupRegex();
 
     // Matches multiple consecutive spaces
     [GeneratedRegex(@"\s{2,}", RegexOptions.Compiled)]
     private static partial Regex MultipleSpacesRegex();
-
-    // Matches spaces between letters/symbols and digits: "TV 6" -> "TV6", "Canal+ 2" -> "Canal+2"
-    [GeneratedRegex(@"([A-Za-z+])\s+(\d)", RegexOptions.Compiled)]
-    private static partial Regex LetterToDigitSpaceRegex();
-
-    // Matches spaces between digits and letters: "7 TVN" -> "7TVN"
-    [GeneratedRegex(@"(\d)\s+([A-Za-z])", RegexOptions.Compiled)]
-    private static partial Regex DigitToLetterSpaceRegex();
 }

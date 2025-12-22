@@ -51,6 +51,7 @@ namespace Jellyfin.Xtream;
 /// <param name="epgProvider">Instance of the <see cref="IEpgProvider"/> interface.</param>
 /// <param name="externalEpgProvider">Instance of the <see cref="ExternalXmltvEpgProvider"/> for logo fallback.</param>
 /// <param name="epgRefreshTracker">Instance of the <see cref="EpgRefreshTracker"/> for batch tracking.</param>
+/// <param name="connectionCache">Instance of the <see cref="ProviderConnectionCache"/> for connection-aware ordering.</param>
 public class LiveTvService(
     IServerApplicationHost appHost,
     IHttpClientFactory httpClientFactory,
@@ -60,7 +61,8 @@ public class LiveTvService(
     IDiscordNotificationService discordService,
     IEpgProvider epgProvider,
     ExternalXmltvEpgProvider externalEpgProvider,
-    EpgRefreshTracker epgRefreshTracker
+    EpgRefreshTracker epgRefreshTracker,
+    ProviderConnectionCache connectionCache
 ) : ILiveTvService, ISupportsDirectStreamProvider
 {
     private const int MaxParallelEpgRequests = 10;
@@ -74,6 +76,7 @@ public class LiveTvService(
     private readonly IEpgProvider _epgProvider = epgProvider;
     private readonly ExternalXmltvEpgProvider _externalEpgProvider = externalEpgProvider;
     private readonly EpgRefreshTracker _epgRefreshTracker = epgRefreshTracker;
+    private readonly ProviderConnectionCache _connectionCache = connectionCache;
 
     private volatile ChannelProviderMap? _channelProviderMap;
 
@@ -97,8 +100,17 @@ public class LiveTvService(
 
     private async Task<IEnumerable<ChannelInfo>> GetDeduplicatedChannelsAsync(CancellationToken cancellationToken)
     {
+        // Refresh connection status for all enabled providers to get current availability
+        var enabledProviders = Plugin.Instance.Configuration.GetEnabledProviders().ToList();
+        if (_connectionCache.NeedsRefresh() && enabledProviders.Count > 0)
+        {
+            _logger.LogDebug("Refreshing provider connection status for connection-aware channel ordering");
+            await _connectionCache.RefreshAsync(enabledProviders, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Build channel map with connection-aware provider ordering
         ChannelProviderMap channelMap = _channelProviderMap = await StreamService
-            .GetDeduplicatedChannelMap(cancellationToken)
+            .GetDeduplicatedChannelMap(_connectionCache.GetAvailabilityScore, cancellationToken)
             .ConfigureAwait(false);
 
         if (Plugin.Instance.Configuration.UseExternalLogoFallback)
@@ -147,11 +159,30 @@ public class LiveTvService(
             items.Add(channelInfo);
         }
 
-        _logger.LogInformation(
-            "Loaded {ChannelCount} deduplicated channels from {ProviderCount} providers",
-            items.Count,
-            Plugin.Instance.Configuration.GetEnabledProviders().Count()
-        );
+        // Log connection-aware ordering status
+        var statuses = _connectionCache.GetAllStatuses();
+        if (statuses.Count > 0)
+        {
+            var onlineCount = statuses.Values.Count(s => s.IsOnline);
+            var totalCapacity = statuses.Values.Where(s => s.IsOnline).Sum(s => s.MaxConnections);
+            var totalActive = statuses.Values.Where(s => s.IsOnline).Sum(s => s.ActiveConnections);
+            _logger.LogInformation(
+                "Loaded {ChannelCount} deduplicated channels from {ProviderCount} providers with connection-aware ordering ({OnlineProviders} online, {ActiveConnections}/{TotalCapacity} connections)",
+                items.Count,
+                enabledProviders.Count,
+                onlineCount,
+                totalActive,
+                totalCapacity
+            );
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Loaded {ChannelCount} deduplicated channels from {ProviderCount} providers (quality-only ordering, no connection data)",
+                items.Count,
+                enabledProviders.Count
+            );
+        }
 
         if (channelMap.SkippedCount > 0)
         {

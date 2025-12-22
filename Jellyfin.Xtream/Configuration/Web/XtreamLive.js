@@ -16,6 +16,10 @@ export default function (view) {
     const noProviderMessage = view.querySelector("#NoProviderMessage");
     const providerContent = view.querySelector("#ProviderContent");
     const table = view.querySelector('#LiveContent');
+    const copyFromProviderSection = view.querySelector("#CopyFromProviderSection");
+    const copyFromProviderSelect = view.querySelector("#CopyFromProviderSelect");
+    const copyChannelsBtn = view.querySelector("#CopyChannelsBtn");
+    const copyResultMessage = view.querySelector("#CopyResultMessage");
 
     let providers = [];
     let currentProviderId = null;
@@ -69,6 +73,32 @@ export default function (view) {
 
       providerContent.classList.remove('hide');
       await loadChannelsForProvider(currentProviderId);
+
+      // Update copy from provider dropdown
+      updateCopyFromProviderSelect(enabledProviders);
+    };
+
+    // Update the copy from provider dropdown
+    const updateCopyFromProviderSelect = (enabledProviders) => {
+      copyFromProviderSelect.innerHTML = '<option value="">Select source provider...</option>';
+
+      // Only show copy section if there are multiple providers
+      if (enabledProviders.length < 2) {
+        copyFromProviderSection.classList.add('hide');
+        return;
+      }
+
+      copyFromProviderSection.classList.remove('hide');
+
+      // Add all providers except the current one
+      enabledProviders.forEach(provider => {
+        if (provider.Id !== currentProviderId) {
+          const option = document.createElement('option');
+          option.value = provider.Id;
+          option.textContent = provider.Name || provider.Id;
+          copyFromProviderSelect.appendChild(option);
+        }
+      });
     };
 
     // Load channels for a specific provider
@@ -146,6 +176,75 @@ export default function (view) {
       if (currentProviderId) {
         loadChannelsForProvider(currentProviderId);
       }
+    });
+
+    // Copy channels button handler
+    copyChannelsBtn.addEventListener('click', async () => {
+      const sourceProviderId = copyFromProviderSelect.value;
+      if (!sourceProviderId) {
+        showCopyResult('Please select a source provider', false);
+        return;
+      }
+
+      if (!currentProviderId) {
+        showCopyResult('No target provider selected', false);
+        return;
+      }
+
+      copyChannelsBtn.disabled = true;
+      copyChannelsBtn.innerHTML = '<span class="material-icons" style="margin-right: 8px;">hourglass_empty</span><span>Copying...</span>';
+      copyResultMessage.classList.add('hide');
+
+      try {
+        const result = await Xtream.apiRequest('Xtream/CopyChannelSelections', {
+          method: 'POST',
+          body: {
+            SourceProviderId: sourceProviderId,
+            TargetProviderId: currentProviderId
+          }
+        });
+
+        if (result.Success) {
+          const sourceProvider = providers.find(p => p.Id === sourceProviderId);
+          const sourceName = sourceProvider?.Name || sourceProviderId;
+          const unmatchedInfo = result.UnmatchedCount > 0 ? ` (${result.UnmatchedCount} not found)` : '';
+          showCopyResult(
+            `Copied ${result.MatchedCount} of ${result.SourceSelectedCount} channels from "${sourceName}"${unmatchedInfo}`,
+            result.MatchedCount > 0
+          );
+          // Reload channels to show updated selections
+          await loadChannelsForProvider(currentProviderId);
+        } else {
+          showCopyResult(result.Message || 'Copy failed', false);
+        }
+      } catch (err) {
+        console.error('Failed to copy channels:', err);
+        showCopyResult('Failed to copy channels: ' + (err.message || 'Unknown error'), false);
+      } finally {
+        copyChannelsBtn.disabled = false;
+        copyChannelsBtn.innerHTML = '<span class="material-icons" style="margin-right: 8px;">content_copy</span><span>Copy Channels</span>';
+      }
+    });
+
+    // Show copy result message
+    const showCopyResult = (message, success) => {
+      copyResultMessage.textContent = message;
+      copyResultMessage.style.background = success ? 'rgba(76, 175, 80, 0.2)' : 'rgba(244, 67, 54, 0.2)';
+      copyResultMessage.style.color = success ? '#4caf50' : '#f44336';
+      copyResultMessage.style.border = `1px solid ${success ? '#4caf50' : '#f44336'}`;
+      copyResultMessage.classList.remove('hide');
+
+      // Auto-hide after 5 seconds
+      setTimeout(() => {
+        copyResultMessage.classList.add('hide');
+      }, 5000);
+    };
+
+    // Update copy dropdown when provider changes
+    providerSelect.addEventListener('change', () => {
+      const enabledProviders = providers.filter(p => p.Enabled);
+      updateCopyFromProviderSelect(enabledProviders);
+      copyResultMessage.classList.add('hide');
     });
 
     // Initial load

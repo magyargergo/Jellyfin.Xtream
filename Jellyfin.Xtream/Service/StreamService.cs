@@ -736,13 +736,23 @@ public partial class StreamService
     }
 
     /// <summary>
-    /// Normalizes a channel name for comparison and deduplication.
+    /// Gets all live streams with channel deduplication and connection-aware provider ordering.
+    /// Channels with the same name are merged. Providers are sorted by a combination of
+    /// stream quality and available connection capacity.
     /// </summary>
-    /// <param name="name">The channel name to normalize.</param>
-    /// <returns>The normalized channel name (uppercase, trimmed, tags removed).</returns>
-    public static string NormalizeChannelName(string name)
+    /// <param name="availabilityScorer">Function to get availability score (0-100) for a provider ID.
+    /// Higher scores indicate more available capacity.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A map of channels to their providers, supporting failover.</returns>
+    public static async Task<ChannelProviderMap> GetDeduplicatedChannelMap(
+        Func<string, int> availabilityScorer,
+        CancellationToken cancellationToken
+    )
     {
-        return ParseName(name).Title.ToUpperInvariant().Trim();
+        return ChannelProviderMap.Build(
+            await GetAllLiveStreams(cancellationToken).ConfigureAwait(false),
+            availabilityScorer
+        );
     }
 
     [GeneratedRegex(@"\[([^\]]+)\]|\|([^\|]+)\|")]

@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -1269,6 +1270,53 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     status = "Streaming";
                 }
 
+                // Get quality metrics from TsIndexer
+                MpegTs.TsIndexer monitor = stream._buffer.TsIndexer;
+                long packetErrors = monitor.TotalPacketErrors;
+                long continuityErrors = monitor.TotalContinuityErrors;
+                long syncErrors = monitor.SyncByteErrors;
+                long patViolations = monitor.PatIntervalViolations;
+                long crcErrors = monitor.PatCrcErrors + monitor.PmtCrcErrors + monitor.CatCrcErrors;
+                double avDriftMs = monitor.GetCurrentDriftMs();
+                var syncStatus = monitor.GetSyncStatus();
+
+                // Calculate quality level and issues
+                var issues = new List<string>();
+                if (packetErrors > 0)
+                {
+                    issues.Add(string.Format(CultureInfo.InvariantCulture, "{0} packet errors", packetErrors));
+                }
+
+                if (continuityErrors > 0)
+                {
+                    issues.Add(string.Format(CultureInfo.InvariantCulture, "{0} continuity errors", continuityErrors));
+                }
+
+                if (syncErrors > 0)
+                {
+                    issues.Add(string.Format(CultureInfo.InvariantCulture, "{0} sync errors", syncErrors));
+                }
+
+                if (patViolations > 0)
+                {
+                    issues.Add(string.Format(CultureInfo.InvariantCulture, "{0} PAT violations", patViolations));
+                }
+
+                if (crcErrors > 0)
+                {
+                    issues.Add(string.Format(CultureInfo.InvariantCulture, "{0} CRC errors", crcErrors));
+                }
+
+                if (Math.Abs(avDriftMs) > 40)
+                {
+                    issues.Add(string.Format(CultureInfo.InvariantCulture, "A/V drift {0:F0}ms", avDriftMs));
+                }
+
+                string qualityLevel =
+                    issues.Count == 0 ? "None"
+                    : Math.Abs(avDriftMs) > 100 || crcErrors > 10 || packetErrors > 100 ? "Critical"
+                    : "Warning";
+
                 result.Add(
                     new StreamInfoSnapshot
                     {
@@ -1284,6 +1332,17 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         OverflowBytes = 0L,
                         Status = status,
                         IsAligned = true,
+                        // Quality metrics
+                        PacketErrors = packetErrors,
+                        ContinuityErrors = continuityErrors,
+                        SyncErrors = syncErrors,
+                        PatViolations = patViolations,
+                        CrcErrors = crcErrors,
+                        AvDriftMs = avDriftMs,
+                        SyncStatus = syncStatus.ToString(),
+                        HasQualityIssues = issues.Count > 0,
+                        QualityLevel = qualityLevel,
+                        QualityIssues = issues.Count > 0 ? string.Join(", ", issues) : null,
                     }
                 );
             }

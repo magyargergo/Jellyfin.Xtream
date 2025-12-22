@@ -60,6 +60,26 @@
           <div class="fieldDescription">Select a provider to configure its Live TV channel selection.</div>
         </div>
 
+        <!-- Copy from Provider Section -->
+        <div id="CopyFromProviderSection" class="hide" style="margin-top: 16px; padding: 16px; background: rgba(33, 150, 243, 0.1); border-radius: 8px; border-left: 4px solid #2196f3;">
+          <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 200px;">
+              <label class="inputLabel inputLabelUnfocused" for="CopyFromProviderSelect">Copy selections from</label>
+              <select is="emby-select" id="CopyFromProviderSelect" style="margin-top: 4px;">
+                <option value="">Select source provider...</option>
+              </select>
+            </div>
+            <button is="emby-button" type="button" id="CopyChannelsBtn" class="raised emby-button" style="margin-top: 20px;">
+              <span class="material-icons" style="margin-right: 8px;">content_copy</span>
+              <span>Copy Channels</span>
+            </button>
+          </div>
+          <div class="fieldDescription" style="margin-top: 8px;">
+            Automatically select matching channels from another provider. Channels are matched by name (ignoring quality suffixes like HD/FHD).
+          </div>
+          <div id="CopyResultMessage" class="hide" style="margin-top: 12px; padding: 12px; border-radius: 4px;"></div>
+        </div>
+
         <div id="NoProviderMessage" class="hide" style="padding: 20px; text-align: center; color: #888;">
           <p>No providers configured. Please add a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab first.</p>
         </div>
