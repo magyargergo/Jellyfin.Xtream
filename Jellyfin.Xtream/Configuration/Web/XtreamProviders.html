@@ -21,6 +21,22 @@
         Configure one or more Xtream IPTV providers. Channels from all enabled providers will be aggregated in the Live TV guide.
       </div>
 
+      <!-- Connection Status Panel -->
+      <div id="ConnectionStatusPanel" class="hide" style="margin-bottom: 20px; padding: 16px; border-radius: 8px; background: var(--theme-card-background-color, #1c1c1e);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="material-icons" id="ConnectionStatusIcon" style="font-size: 24px;">wifi</span>
+            <span style="font-weight: bold;">Connection Status</span>
+          </div>
+          <button is="emby-button" type="button" id="RefreshConnectionStatusBtn" class="fab emby-button" title="Refresh Status" style="width: 32px; height: 32px; min-width: 32px;">
+            <span class="material-icons" style="font-size: 18px;">refresh</span>
+          </button>
+        </div>
+        <div id="ConnectionStatusContent">
+          <!-- Status content will be dynamically inserted here -->
+        </div>
+      </div>
+
       <div id="ProvidersContainer">
         <!-- Provider cards will be dynamically inserted here -->
       </div>
@@ -74,33 +90,60 @@
       <!-- Discover Providers Dialog -->
       <div id="ScrapeDialog" class="dialog hide" style="display: none;">
         <div class="dialog-content" style="max-width: 800px; margin: 30px auto; background: var(--theme-card-background-color, #1c1c1e); padding: 24px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto;">
-          <h2 style="margin-top: 0;">Discover Polish TV Providers</h2>
+          <h2 style="margin-top: 0;">Discover TV Providers</h2>
           <div class="fieldDescription" style="margin-bottom: 16px;">
-            Automatically discover and test Xtream providers with Polish TV channels from online sources.
+            Automatically discover and test Xtream providers with TV channels from online sources.
           </div>
 
           <!-- Discovery Options -->
           <div id="ScrapeOptions">
             <div class="inputContainer">
-              <label class="inputLabel inputLabelUnfocused" for="ScrapeMaxPages">Pages to Search</label>
-              <input id="ScrapeMaxPages" type="number" is="emby-input" value="5" min="1" max="20" />
-              <div class="fieldDescription">Number of pages to search (more pages = more providers found, but slower).</div>
+              <label class="inputLabel inputLabelUnfocused" for="ScrapeCountry">Country Filter</label>
+              <select id="ScrapeCountry" is="emby-select" class="emby-select-withcolor">
+                <option value="PL" selected>🇵🇱 Poland</option>
+                <option value="UK">🇬🇧 United Kingdom</option>
+                <option value="DE">🇩🇪 Germany</option>
+                <option value="FR">🇫🇷 France</option>
+                <option value="">No filter (all channels)</option>
+              </select>
+              <div class="fieldDescription">Filter providers by country-specific channels (broadcasters, country prefix).</div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="ScrapeTimeRange">Time Range</label>
+              <select id="ScrapeTimeRange" is="emby-select" class="emby-select-withcolor">
+                <option value="LastWeek">Last Week</option>
+                <option value="LastMonth" selected>Last Month</option>
+                <option value="Last3Months">Last 3 Months</option>
+                <option value="Last6Months">Last 6 Months</option>
+                <option value="ThisYear">This Year</option>
+                <option value="LastYear">Last Year</option>
+                <option value="Custom">Custom Range...</option>
+              </select>
+              <div class="fieldDescription">How far back to search for providers (longer = more providers found, but slower).</div>
+            </div>
+            <!-- Custom date range inputs (hidden by default) -->
+            <div id="CustomDateRange" class="hide" style="display: none;">
+              <div style="display: flex; gap: 16px;">
+                <div class="inputContainer" style="flex: 1;">
+                  <label class="inputLabel inputLabelUnfocused" for="ScrapeStartDate">Start Date</label>
+                  <input id="ScrapeStartDate" type="date" is="emby-input" />
+                </div>
+                <div class="inputContainer" style="flex: 1;">
+                  <label class="inputLabel inputLabelUnfocused" for="ScrapeEndDate">End Date</label>
+                  <input id="ScrapeEndDate" type="date" is="emby-input" />
+                </div>
+              </div>
+              <div class="fieldDescription">Select custom start and end dates for discovery.</div>
             </div>
             <div class="inputContainer">
               <label class="inputLabel inputLabelUnfocused" for="ScrapeWorkers">Parallel Workers</label>
-              <input id="ScrapeWorkers" type="number" is="emby-input" value="10" min="1" max="20" />
-              <div class="fieldDescription">Number of parallel connections for testing providers.</div>
+              <input id="ScrapeWorkers" type="number" is="emby-input" value="5" min="1" max="10" />
+              <div class="fieldDescription">Number of parallel connections for discovery.</div>
             </div>
             <div class="checkboxContainer" style="margin: 16px 0;">
               <label>
                 <input type="checkbox" id="ScrapeTestStream" is="emby-checkbox" checked />
                 <span>Test stream playback</span>
-              </label>
-            </div>
-            <div class="checkboxContainer" style="margin: 16px 0;">
-              <label>
-                <input type="checkbox" id="ScrapeTestEpg" is="emby-checkbox" checked />
-                <span>Test EPG availability</span>
               </label>
             </div>
             <div style="display: flex; gap: 8px; margin-top: 24px;">
@@ -124,37 +167,87 @@
 
           <!-- Discovery Progress -->
           <div id="ScrapeProgress" class="hide">
-            <div style="margin-bottom: 16px;">
-              <div id="ScrapeProgressPhase" style="font-weight: bold; margin-bottom: 8px;">Initializing...</div>
-              <div style="background: #333; border-radius: 4px; height: 8px; overflow: hidden;">
-                <div id="ScrapeProgressBar" style="background: #9c27b0; height: 100%; width: 0%; transition: width 0.3s;"></div>
-              </div>
-              <div id="ScrapeProgressText" style="font-size: 0.85em; color: #888; margin-top: 8px;">0 / 0</div>
-            </div>
-            <div id="ScrapeStats" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
-              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 4px; text-align: center;">
-                <div style="font-size: 1.5em; font-weight: bold; color: #4caf50;" id="StatWorking">0</div>
-                <div style="font-size: 0.85em; color: #888;">Working</div>
-              </div>
-              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 4px; text-align: center;">
-                <div style="font-size: 1.5em; font-weight: bold; color: #2196f3;" id="StatWithEpg">0</div>
-                <div style="font-size: 0.85em; color: #888;">+ EPG</div>
-              </div>
-              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 4px; text-align: center;">
-                <div style="font-size: 1.5em; font-weight: bold; color: #9c27b0;" id="StatFullyWorking">0</div>
-                <div style="font-size: 0.85em; color: #888;">+ Polish</div>
+            <!-- Animated progress header -->
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+              <div id="ScrapeSpinner" style="width: 24px; height: 24px; border: 3px solid rgba(156, 39, 176, 0.3); border-top-color: #9c27b0; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+              <div>
+                <div id="ScrapeProgressPhase" style="font-weight: bold; font-size: 1.1em;">Initializing...</div>
+                <div id="ScrapeProgressText" style="font-size: 0.85em; color: #888;">Preparing discovery...</div>
               </div>
             </div>
+
+            <!-- Progress bar with percentage -->
+            <div style="margin-bottom: 20px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                <span style="font-size: 0.85em; color: #888;">Progress</span>
+                <span id="ScrapeProgressPercent" style="font-size: 0.85em; color: #9c27b0; font-weight: bold;">0%</span>
+              </div>
+              <div style="background: rgba(255,255,255,0.1); border-radius: 8px; height: 12px; overflow: hidden;">
+                <div id="ScrapeProgressBar" style="background: linear-gradient(90deg, #9c27b0, #e040fb); height: 100%; width: 0%; transition: width 0.3s ease-out; border-radius: 8px;"></div>
+              </div>
+            </div>
+
+            <!-- Stats funnel visualization - 6-stage pipeline -->
+            <div style="margin-bottom: 20px;">
+              <div style="font-size: 0.85em; color: #888; margin-bottom: 8px;">Discovery Pipeline</div>
+              <!-- Top row: Found → Reachable → Auth -->
+              <div id="ScrapeStatsTop" style="display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+                <!-- Found -->
+                <div style="flex: 1; background: rgba(158, 158, 158, 0.1); border: 1px solid rgba(158, 158, 158, 0.3); padding: 8px 4px; border-radius: 8px 0 0 0; text-align: center;">
+                  <div style="font-size: 1.4em; font-weight: bold; color: #9e9e9e;" id="StatFound">0</div>
+                  <div style="font-size: 0.7em; color: #666;">Found</div>
+                </div>
+                <span class="material-icons" style="color: #444; font-size: 14px;">chevron_right</span>
+                <!-- Reachable -->
+                <div style="flex: 1; background: rgba(0, 188, 212, 0.1); border: 1px solid rgba(0, 188, 212, 0.3); padding: 8px 4px; text-align: center;">
+                  <div style="font-size: 1.4em; font-weight: bold; color: #00bcd4;" id="StatReachable">0</div>
+                  <div style="font-size: 0.7em; color: #666;">Reachable</div>
+                </div>
+                <span class="material-icons" style="color: #444; font-size: 14px;">chevron_right</span>
+                <!-- Authenticated -->
+                <div style="flex: 1; background: rgba(103, 58, 183, 0.1); border: 1px solid rgba(103, 58, 183, 0.3); padding: 8px 4px; border-radius: 0 8px 0 0; text-align: center;">
+                  <div style="font-size: 1.4em; font-weight: bold; color: #673ab7;" id="StatAuthenticated">0</div>
+                  <div style="font-size: 0.7em; color: #666;">Auth</div>
+                </div>
+              </div>
+              <!-- Bottom row: Country → Streams → Best -->
+              <div id="ScrapeStatsBottom" style="display: flex; align-items: center; gap: 4px;">
+                <!-- Country Filter -->
+                <div style="flex: 1; background: rgba(156, 39, 176, 0.1); border: 1px solid rgba(156, 39, 176, 0.3); padding: 8px 4px; border-radius: 0 0 0 8px; text-align: center;">
+                  <div style="font-size: 1.4em; font-weight: bold; color: #9c27b0;" id="StatFullyWorking">0</div>
+                  <div style="font-size: 0.7em; color: #666;" id="StatCountryLabel">Country</div>
+                </div>
+                <span class="material-icons" style="color: #444; font-size: 14px;">chevron_right</span>
+                <!-- Streams -->
+                <div style="flex: 1; background: rgba(76, 175, 80, 0.1); border: 1px solid rgba(76, 175, 80, 0.3); padding: 8px 4px; text-align: center;">
+                  <div style="font-size: 1.4em; font-weight: bold; color: #4caf50;" id="StatWorking">0</div>
+                  <div style="font-size: 0.7em; color: #666;">Streams</div>
+                </div>
+                <span class="material-icons" style="color: #444; font-size: 14px;">chevron_right</span>
+                <!-- Best -->
+                <div style="flex: 1; background: linear-gradient(135deg, rgba(255, 215, 0, 0.15), rgba(255, 193, 7, 0.1)); border: 2px solid rgba(255, 215, 0, 0.5); padding: 8px 4px; border-radius: 0 0 8px 0; text-align: center;">
+                  <div style="font-size: 1.4em; font-weight: bold; color: #ffd700;" id="StatExcellent">0</div>
+                  <div style="font-size: 0.7em; color: #666;">★ Best</div>
+                </div>
+              </div>
+            </div>
+
             <button is="emby-button" type="button" id="CancelScrapeBtn" class="raised emby-button" style="background: rgba(244, 67, 54, 0.2);">
               <span class="material-icons" style="margin-right: 4px;">cancel</span>
-              <span>Cancel</span>
+              <span>Cancel Discovery</span>
             </button>
           </div>
+
+          <style>
+            @keyframes spin {
+              to { transform: rotate(360deg); }
+            }
+          </style>
 
           <!-- Discovery Results -->
           <div id="ScrapeResults" class="hide">
             <div id="ScrapeResultsSummary" style="margin-bottom: 16px; padding: 12px; background: rgba(76, 175, 80, 0.1); border-radius: 4px; border-left: 3px solid #4caf50;"></div>
-            <div id="ScrapeResultsList" style="max-height: 400px; overflow-y: auto;"></div>
+            <div id="ScrapeResultsList" style="max-height: 400px; overflow-y: auto; overflow-x: hidden; padding-right: 8px; margin-right: -8px;"></div>
             <div style="display: flex; gap: 8px; margin-top: 16px;">
               <button is="emby-button" type="button" id="ScrapeAgainBtn" class="raised emby-button">
                 <span class="material-icons" style="margin-right: 4px;">refresh</span>
