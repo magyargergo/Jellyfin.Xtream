@@ -23,6 +23,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml;
 using Jellyfin.Xtream.Client;
+using Jellyfin.Xtream.Service.ChannelMatching;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -287,40 +288,11 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
 
     /// <summary>
     /// Normalizes a channel name for matching against XMLTV display-names.
-    /// Removes quality indicators, country prefixes, and normalizes spacing.
+    /// Uses the shared ChannelNameNormalizer for consistent matching across the plugin.
     /// </summary>
     private static string NormalizeChannelName(string name)
     {
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return string.Empty;
-        }
-
-        // Convert to uppercase for case-insensitive matching
-        var normalized = name.ToUpperInvariant();
-
-        // Remove common prefixes like "PL:", "PL|", "UK:", etc.
-        if (normalized.Length > 3)
-        {
-            var prefixEnd = normalized.IndexOfAny([':', '|']);
-            if (prefixEnd > 0 && prefixEnd <= 3)
-            {
-                normalized = normalized[(prefixEnd + 1)..].TrimStart();
-            }
-        }
-
-        // Remove quality indicators (HD, FHD, SD, 4K, etc.)
-        normalized = System.Text.RegularExpressions.Regex.Replace(
-            normalized,
-            @"\b(HD|FHD|SD|4K|UHD|HEVC)\b",
-            string.Empty,
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase
-        );
-
-        // Normalize whitespace
-        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s+", " ").Trim();
-
-        return normalized;
+        return ChannelNameNormalizer.Default.Normalize(name);
     }
 
     private async Task<(
