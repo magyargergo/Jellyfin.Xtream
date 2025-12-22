@@ -13,7 +13,50 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+using System;
+
 namespace Jellyfin.Xtream.Api.Models;
+
+/// <summary>
+/// Time range options for discovery.
+/// </summary>
+public enum DiscoveryTimeRangeOption
+{
+    /// <summary>
+    /// Last week (7 days).
+    /// </summary>
+    LastWeek,
+
+    /// <summary>
+    /// Last month (30 days).
+    /// </summary>
+    LastMonth,
+
+    /// <summary>
+    /// Last 3 months (90 days).
+    /// </summary>
+    Last3Months,
+
+    /// <summary>
+    /// Last 6 months (180 days).
+    /// </summary>
+    Last6Months,
+
+    /// <summary>
+    /// This year (from January 1st).
+    /// </summary>
+    ThisYear,
+
+    /// <summary>
+    /// Last year (previous calendar year).
+    /// </summary>
+    LastYear,
+
+    /// <summary>
+    /// Custom date range (uses CustomStartDate and CustomEndDate).
+    /// </summary>
+    Custom,
+}
 
 /// <summary>
 /// Request model for discovering providers.
@@ -21,9 +64,21 @@ namespace Jellyfin.Xtream.Api.Models;
 public sealed class DiscoveryRequest
 {
     /// <summary>
-    /// Gets or sets the maximum number of pages to process.
+    /// Gets or sets the time range for discovery.
     /// </summary>
-    public int MaxPages { get; set; } = 5;
+    public DiscoveryTimeRangeOption TimeRange { get; set; } = DiscoveryTimeRangeOption.LastMonth;
+
+    /// <summary>
+    /// Gets or sets the custom start date (used when TimeRange is Custom).
+    /// Format: yyyy-MM-dd.
+    /// </summary>
+    public DateTime? CustomStartDate { get; set; }
+
+    /// <summary>
+    /// Gets or sets the custom end date (used when TimeRange is Custom).
+    /// Format: yyyy-MM-dd.
+    /// </summary>
+    public DateTime? CustomEndDate { get; set; }
 
     /// <summary>
     /// Gets or sets the maximum number of parallel workers for discovery.
@@ -31,11 +86,6 @@ public sealed class DiscoveryRequest
     public int MaxDiscoveryWorkers { get; set; } = 5;
 
     /// <summary>
-    /// Gets or sets the maximum number of parallel workers for testing.
-    /// </summary>
-    public int MaxTestWorkers { get; set; } = 10;
-
-    /// <summary>
     /// Gets or sets a value indicating whether to test stream playback.
     /// </summary>
     public bool TestStream { get; set; } = true;
@@ -46,43 +96,11 @@ public sealed class DiscoveryRequest
     public bool TestEpg { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets a value indicating whether to filter for Polish channels only.
+    /// Gets or sets the country code to filter channels by.
     /// </summary>
-    public bool PolishOnly { get; set; } = true;
-}
-
-/// <summary>
-/// Backward compatibility alias for DiscoveryRequest.
-/// </summary>
-public sealed class ScrapeRequest
-{
-    /// <summary>
-    /// Gets or sets the maximum number of pages to process.
-    /// </summary>
-    public int MaxPages { get; set; } = 5;
-
-    /// <summary>
-    /// Gets or sets the maximum number of parallel workers for discovery.
-    /// </summary>
-    public int MaxScrapeWorkers { get; set; } = 5;
-
-    /// <summary>
-    /// Gets or sets the maximum number of parallel workers for testing.
-    /// </summary>
-    public int MaxTestWorkers { get; set; } = 10;
-
-    /// <summary>
-    /// Gets or sets a value indicating whether to test stream playback.
-    /// </summary>
-    public bool TestStream { get; set; } = true;
-
-    /// <summary>
-    /// Gets or sets a value indicating whether to test EPG availability.
-    /// </summary>
-    public bool TestEpg { get; set; } = true;
-
-    /// <summary>
-    /// Gets or sets a value indicating whether to filter for Polish channels only.
-    /// </summary>
-    public bool PolishOnly { get; set; } = true;
+    /// <remarks>
+    /// Supported values: "PL" (Poland), "UK" (United Kingdom), "DE" (Germany), "FR" (France), or null for no filtering.
+    /// Defaults to "PL" for backward compatibility.
+    /// </remarks>
+    public string? CountryCode { get; set; } = "PL";
 }

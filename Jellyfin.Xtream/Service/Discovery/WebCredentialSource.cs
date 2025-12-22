@@ -122,7 +122,8 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
 
     /// <inheritdoc />
     public async Task<DiscoveryResult> DiscoverAsync(
-        int maxPages,
+        DateTime startDate,
+        DateTime endDate,
         int maxWorkers,
         IProgress<DiscoveryProgress>? progress,
         CancellationToken cancellationToken
@@ -132,16 +133,22 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
 
         try
         {
-            ReportProgress(progress, DiscoveryPhase.Discovering, 0, maxPages, 0, "Discovering pages...");
+            var totalDays = (int)(endDate - startDate).TotalDays + 1;
+            ReportProgress(progress, DiscoveryPhase.Discovering, 0, totalDays, 0, "Discovering pages...");
 
-            var urls = await GetPageUrlsAsync(maxPages, cancellationToken).ConfigureAwait(false);
+            var urls = GetPageUrls(startDate, endDate);
             if (urls.Count == 0)
             {
                 result.ErrorMessage = "No pages found to process";
                 return result;
             }
 
-            _logger.LogInformation("Found {Count} pages to process", urls.Count);
+            _logger.LogInformation(
+                "Found {Count} pages to process for date range {StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd}",
+                urls.Count,
+                startDate,
+                endDate
+            );
 
             var allCredentials = new ConcurrentBag<DiscoveredCredential>();
             var pagesCompleted = 0;
@@ -220,117 +227,35 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
         return result;
     }
 
-    private async Task<List<string>> GetPageUrlsAsync(int maxPages, CancellationToken cancellationToken)
+    private List<string> GetPageUrls(DateTime startDate, DateTime endDate)
     {
-        var urls = new HashSet<string>(StringComparer.Ordinal);
+        var urls = new List<string>();
+        var totalDays = (int)(endDate - startDate).TotalDays + 1;
 
-        try
+        // Generate date-based URLs for the entire date range
+        for (var i = 0; i < totalDays; i++)
         {
-            // Discover from multiple category pages with pagination
-            // URL format: /tag/xtream-codes/ for page 1, /tag/xtream-codes/page/2/ for page 2, etc.
-            var categoryPagesToProcess = Math.Max(1, (maxPages + 9) / 10); // Roughly 10 posts per category page
-
-            for (var pageNum = 1; pageNum <= categoryPagesToProcess && urls.Count < maxPages * 2; pageNum++)
+            var date = endDate.AddDays(-i);
+            if (date < startDate)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var categoryUrl =
-                    pageNum == 1
-                        ? _baseUrl + _categoryPath
-                        : string.Create(CultureInfo.InvariantCulture, $"{_baseUrl}{_categoryPath}page/{pageNum}/");
-
-                _logger.LogInformation("Fetching category page {PageNum}: {Url}", pageNum, categoryUrl);
-
-                var html = await FetchPageWithRetryAsync(categoryUrl, cancellationToken).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(html))
-                {
-                    _logger.LogDebug("Empty response for category page {PageNum}, stopping pagination", pageNum);
-                    break;
-                }
-
-                var document = await _browsingContext
-                    .OpenAsync(req => req.Content(html), cancellationToken)
-                    .ConfigureAwait(false);
-
-                // Check if we've hit a 404 page (no more pages)
-                var title = document.Title?.ToLowerInvariant() ?? string.Empty;
-                if (
-                    title.Contains("404", StringComparison.Ordinal)
-                    || title.Contains("not found", StringComparison.Ordinal)
-                )
-                {
-                    _logger.LogDebug("Hit 404 at category page {PageNum}, stopping pagination", pageNum);
-                    break;
-                }
-
-                // Use AngleSharp's CSS selector to find daily list links
-                // Try multiple selectors to find the "Read more" links to daily list posts
-                var links = document
-                    .QuerySelectorAll(
-                        "a[href*='xtream-codes-daily'], a.blogpost-button[href*='xtream-codes'], article.tag-xtream-codes-daily-lists a[href]"
-                    )
-                    .OfType<IHtmlAnchorElement>()
-                    .Select(a => a.Href)
-                    .Where(href =>
-                        !string.IsNullOrEmpty(href)
-                        && href.Contains("tvappapk.com", StringComparison.OrdinalIgnoreCase)
-                        && href.Contains("xtream-codes", StringComparison.OrdinalIgnoreCase)
-                    )
-                    .ToList();
-
-                var countBefore = urls.Count;
-                foreach (var link in links)
-                {
-                    urls.Add(link);
-                }
-
-                var newCount = urls.Count - countBefore;
-                _logger.LogDebug(
-                    "Found {NewCount} new daily list links from category page {PageNum} (total: {TotalCount})",
-                    newCount,
-                    pageNum,
-                    urls.Count
-                );
-
-                // If no new links found on this page, stop pagination
-                if (newCount == 0)
-                {
-                    _logger.LogDebug("No new links on category page {PageNum}, stopping pagination", pageNum);
-                    break;
-                }
-
-                // Small delay between category page fetches to be polite
-                if (pageNum < categoryPagesToProcess)
-                {
-                    await Task.Delay(_random.Next(200, 500), cancellationToken).ConfigureAwait(false);
-                }
+                break;
             }
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to fetch category pages, falling back to date-based URLs");
+
+            var dateUrl = string.Create(
+                CultureInfo.InvariantCulture,
+                $"{_baseUrl}/xtream-codes-daily-lists-{date:dd-MM-yyyy}/"
+            );
+            urls.Add(dateUrl);
         }
 
-        // Fallback to date-based URLs if category discovery failed or found few results
-        if (urls.Count < maxPages)
-        {
-            var today = DateTime.UtcNow.Date;
-            for (var i = 0; i < maxPages * 3 && urls.Count < maxPages * 2; i++)
-            {
-                var date = today.AddDays(-i);
-                var dateUrl = string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"{_baseUrl}/xtream-codes-daily-lists-{date:dd-MM-yyyy}/"
-                );
-                urls.Add(dateUrl);
-            }
-        }
+        _logger.LogDebug(
+            "Generated {Count} date-based URLs from {StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd}",
+            urls.Count,
+            startDate,
+            endDate
+        );
 
-        return [.. urls.Take(maxPages * 2)];
+        return urls;
     }
 
     private async Task<IEnumerable<DiscoveredCredential>> DiscoverFromPageAsync(
@@ -369,22 +294,27 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            // Select user agent once for this request (but create new request on each retry)
+            var userAgent = UserAgents[_random.Next(UserAgents.Length)];
 
-            // Rotate user agents to appear more human-like
-            request.Headers.Add("User-Agent", UserAgents[_random.Next(UserAgents.Length)]);
-            request.Headers.Add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8");
-            request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
-            // Note: Don't add Accept-Encoding here - HttpClient handles decompression automatically
-            // when AutomaticDecompression is set, or we'd need to decompress manually
-            request.Headers.Add("Connection", "keep-alive");
-            request.Headers.Add("Upgrade-Insecure-Requests", "1");
-
-            // Use Polly resilience pipeline
+            // Use Polly resilience pipeline - create new HttpRequestMessage for each attempt
+            // because HttpRequestMessage can only be sent once
             var response = await _resiliencePipeline
                 .ExecuteAsync(
                     async ct =>
                     {
+                        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+                        // Rotate user agents to appear more human-like
+                        request.Headers.Add("User-Agent", userAgent);
+                        request.Headers.Add(
+                            "Accept",
+                            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+                        );
+                        request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
+                        request.Headers.Add("Connection", "keep-alive");
+                        request.Headers.Add("Upgrade-Insecure-Requests", "1");
+
                         var resp = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
                         return resp;
                     },

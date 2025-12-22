@@ -82,7 +82,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
 
         // Register provider discovery services
         serviceCollection.AddSingleton<ICredentialParser, CredentialParser>();
-        serviceCollection.AddSingleton<IProviderTester, ProviderTester>();
         serviceCollection.AddSingleton<IProviderDiscoveryService, ProviderDiscoveryService>();
+
+        // Register provider connection cache for connection-aware channel ordering
+        serviceCollection.AddSingleton<ProviderConnectionCache>();
     }
 }

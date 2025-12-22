@@ -92,14 +92,19 @@ public sealed class ProviderTestResult
     public int ActiveConnections { get; set; }
 
     /// <summary>
-    /// Gets or sets whether the provider has Polish channels.
+    /// Gets or sets whether the provider has channels matching the country filter.
     /// </summary>
-    public bool HasPolishChannels { get; set; }
+    public bool HasCountryChannels { get; set; }
 
     /// <summary>
-    /// Gets or sets the count of Polish channels.
+    /// Gets or sets the count of channels matching the country filter.
     /// </summary>
-    public int PolishChannelCount { get; set; }
+    public int CountryChannelCount { get; set; }
+
+    /// <summary>
+    /// Gets or sets the country code used for filtering (e.g., "PL", "UK", "DE").
+    /// </summary>
+    public string? CountryCode { get; set; }
 
     /// <summary>
     /// Gets or sets the total channel count.
@@ -117,6 +122,11 @@ public sealed class ProviderTestResult
     public string? StreamStatus { get; set; }
 
     /// <summary>
+    /// Gets or sets the stream quality metrics captured during testing.
+    /// </summary>
+    public StreamQualitySnapshot? StreamQuality { get; set; }
+
+    /// <summary>
     /// Gets or sets whether EPG data is available.
     /// </summary>
     public bool HasEpg { get; set; }
@@ -132,17 +142,40 @@ public sealed class ProviderTestResult
     public string? ErrorMessage { get; set; }
 
     /// <summary>
-    /// Gets or sets the Polish channel names found.
+    /// Gets or sets the channel names found matching the country filter.
     /// </summary>
-    public List<string> PolishChannelNames { get; set; } = [];
+    public List<string> CountryChannelNames { get; set; } = [];
 
     /// <summary>
-    /// Gets or sets the Polish category prefixes found.
+    /// Gets or sets the category prefixes found matching the country filter.
     /// </summary>
-    public List<string> PolishCategories { get; set; } = [];
+    public List<string> CountryCategories { get; set; } = [];
 
     /// <summary>
     /// Gets a value indicating whether this provider passed all checks.
     /// </summary>
-    public bool IsFullyWorking => Status == ProviderStatus.Active && StreamWorks && HasEpg && HasPolishChannels;
+    public bool IsFullyWorking => Status == ProviderStatus.Active && StreamWorks && HasEpg && HasCountryChannels;
+
+    /// <summary>
+    /// Gets a value indicating whether this provider has high quality streams.
+    /// </summary>
+    public bool HasHighQualityStreams => StreamQuality?.PassesQualityThreshold ?? false;
+
+    /// <summary>
+    /// Gets a value indicating whether this provider is excellent (all checks + high quality).
+    /// </summary>
+    public bool IsExcellent => IsFullyWorking && HasHighQualityStreams;
+
+    /// <summary>
+    /// Gets or sets the comprehensive trust score for this provider.
+    /// </summary>
+    public ProviderTrustScore? TrustScore { get; set; }
+
+    /// <summary>
+    /// Calculates and sets the trust score based on current test results.
+    /// </summary>
+    public void CalculateTrustScore()
+    {
+        TrustScore = ProviderTrustScore.Calculate(this);
+    }
 }

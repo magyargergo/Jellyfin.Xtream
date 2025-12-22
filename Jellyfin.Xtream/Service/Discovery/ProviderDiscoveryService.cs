@@ -23,6 +23,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Service.Discovery.Pipeline;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -38,9 +39,9 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-    private readonly IProviderTester _tester;
     private readonly ICredentialParser _parser;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<ProviderDiscoveryService> _logger;
     private readonly ILogger<WebCredentialSource> _sourceLogger;
     private readonly string _cachePath;
@@ -57,24 +58,24 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
     /// <summary>
     /// Initializes a new instance of the <see cref="ProviderDiscoveryService"/> class.
     /// </summary>
-    /// <param name="tester">The provider tester.</param>
     /// <param name="parser">The credential parser.</param>
     /// <param name="httpClientFactory">The HTTP client factory.</param>
+    /// <param name="loggerFactory">The logger factory.</param>
     /// <param name="applicationPaths">The application paths.</param>
     /// <param name="logger">The logger.</param>
     /// <param name="sourceLogger">The credential source logger.</param>
     public ProviderDiscoveryService(
-        IProviderTester tester,
         ICredentialParser parser,
         IHttpClientFactory httpClientFactory,
+        ILoggerFactory loggerFactory,
         IApplicationPaths applicationPaths,
         ILogger<ProviderDiscoveryService> logger,
         ILogger<WebCredentialSource> sourceLogger
     )
     {
-        _tester = tester;
         _parser = parser;
         _httpClientFactory = httpClientFactory;
+        _loggerFactory = loggerFactory;
         _logger = logger;
         _sourceLogger = sourceLogger;
         _cachePath = Path.Combine(applicationPaths.PluginConfigurationsPath, "Jellyfin.Xtream", CacheFileName);
@@ -198,33 +199,43 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
     {
         var result = new DiscoveryTestResult();
 
-        // Create progress reporter that writes to channel
-        var progress = new Progress<DiscoveryProgress>(p =>
+        // Helper to update progress
+        void UpdateProgress(DiscoveryProgress p)
         {
             lock (_lock)
             {
                 _currentProgress = p;
             }
 
-            // Try to write, ignore if channel is full (DropOldest will handle it)
             writer.TryWrite(p);
-        });
+        }
 
         try
         {
+            var startDate = options.GetStartDate();
+            var endDate = options.GetEndDate();
+
             _logger.LogInformation(
-                "Starting discovery and test operation: MaxPages={MaxPages}, DiscoveryWorkers={DiscoveryWorkers}, TestWorkers={TestWorkers}",
-                options.MaxPages,
-                options.MaxDiscoveryWorkers,
-                options.MaxTestWorkers
+                "Starting pipeline discovery: TimeRange={TimeRange} ({StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd}), DiscoveryWorkers={DiscoveryWorkers}",
+                options.TimeRange,
+                startDate,
+                endDate,
+                options.MaxDiscoveryWorkers
             );
 
             // Phase 1: Discover credentials using the web credential source
             var httpClient = _httpClientFactory.CreateClient("XtreamClient");
             using var source = new WebCredentialSource(httpClient, _parser, _sourceLogger);
 
+            // Report discovery phase progress
+            var discoveryProgress = new Progress<DiscoveryProgress>(p =>
+            {
+                p.Phase = DiscoveryPhase.Discovering;
+                UpdateProgress(p);
+            });
+
             var discoveryResult = await source
-                .DiscoverAsync(options.MaxPages, options.MaxDiscoveryWorkers, progress, cancellationToken)
+                .DiscoverAsync(startDate, endDate, options.MaxDiscoveryWorkers, discoveryProgress, cancellationToken)
                 .ConfigureAwait(false);
 
             result.DiscoveryResult = discoveryResult;
@@ -232,15 +243,9 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
             if (!discoveryResult.Success || discoveryResult.Credentials.Count == 0)
             {
                 result.ErrorMessage = discoveryResult.ErrorMessage ?? "No credentials found";
-                var failProgress = new DiscoveryProgress
-                {
-                    Phase = DiscoveryPhase.Failed,
-                    Message = result.ErrorMessage,
-                };
-                writer.TryWrite(failProgress);
+                UpdateProgress(new DiscoveryProgress { Phase = DiscoveryPhase.Failed, Message = result.ErrorMessage });
                 lock (_lock)
                 {
-                    _currentProgress = failProgress;
                     _lastResult = result;
                 }
 
@@ -248,116 +253,152 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
             }
 
             _logger.LogInformation(
-                "Discovered {Count} credentials from {Pages} pages",
+                "Discovered {Count} credentials from {Pages} pages, starting pipeline",
                 discoveryResult.Credentials.Count,
                 discoveryResult.PagesProcessed
             );
 
-            // Phase 2: Test credentials
-            var testResults = await _tester
-                .TestCredentialsAsync(
-                    discoveryResult.Credentials,
-                    options.MaxTestWorkers,
-                    options.TestStream,
-                    options.TestEpg,
-                    progress,
-                    cancellationToken
-                )
-                .ConfigureAwait(false);
-
-            result.TestResults = testResults.ToList();
-
-            // Categorize results as a funnel: Working -> Working+EPG -> Working+EPG+Polish
-            // Order by: Polish channel count (descending), days until expiration (descending), total channels (descending)
-            result.WorkingProviders = OrderByPreference(
-                    testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks)
-                )
-                .ToList();
-
-            result.WorkingWithEpgProviders = OrderByPreference(
-                    testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks && r.HasEpg)
-                )
-                .ToList();
-
-            result.FullyWorkingProviders = OrderByPreference(testResults.Where(r => r.IsFullyWorking)).ToList();
-
-            result.Success = true;
-
-            // Save to cache
-            SaveCachedResult(result);
-
-            // Report completion
-            var completeProgress = new DiscoveryProgress
-            {
-                Phase = DiscoveryPhase.Completed,
-                CurrentItem = testResults.Count,
-                TotalItems = testResults.Count,
-                CredentialsFound = discoveryResult.Credentials.Count,
-                WorkingProviders = result.WorkingProviders.Count,
-                WorkingWithEpg = result.WorkingWithEpgProviders.Count,
-                FullyWorking = result.FullyWorkingProviders.Count,
-                Message =
-                    $"Complete: {result.WorkingProviders.Count} working, {result.WorkingWithEpgProviders.Count} with EPG, {result.FullyWorkingProviders.Count} with Polish",
-            };
-            writer.TryWrite(completeProgress);
-
-            lock (_lock)
-            {
-                _currentProgress = completeProgress;
-                _lastResult = result;
-            }
-
-            _logger.LogInformation(
-                "Discovery and test complete: {Total} tested, {Working} working, {WithEpg} with EPG, {Full} fully working",
-                testResults.Count,
-                result.WorkingProviders.Count,
-                result.WorkingWithEpgProviders.Count,
-                result.FullyWorkingProviders.Count
+            // Phase 2: Run the pipeline
+            UpdateProgress(
+                new DiscoveryProgress
+                {
+                    Phase = DiscoveryPhase.Testing,
+                    Message = "Starting pipeline...",
+                    CredentialsFound = discoveryResult.Credentials.Count,
+                    TotalItems = discoveryResult.Credentials.Count,
+                }
             );
+
+            var pipeline = DiscoveryPipeline.Create(_httpClientFactory, _loggerFactory, options.CountryCode);
+            try
+            {
+                // Start the pipeline
+                var pipelineTask = pipeline.RunAsync(discoveryResult.Credentials, cancellationToken);
+
+                // Stream progress updates while pipeline runs
+                await foreach (
+                    var pipelineProgress in pipeline.StreamProgressAsync(cancellationToken).ConfigureAwait(false)
+                )
+                {
+                    // Map pipeline progress to discovery progress
+                    var stageStats = pipelineProgress.StageStats;
+                    var dp = new DiscoveryProgress
+                    {
+                        Phase = DiscoveryPhase.Testing,
+                        CurrentItem = pipelineProgress.CompletedItems,
+                        TotalItems = pipelineProgress.TotalItems,
+                        CredentialsFound = discoveryResult.Credentials.Count,
+                        ConnectivityPassed = (int)pipelineProgress.ConnectivityPassed,
+                        AuthenticationPassed = (int)pipelineProgress.AuthenticationPassed,
+                        WorkingProviders = (int)pipelineProgress.StreamTestPassed,
+                        WorkingWithEpg = (int)pipelineProgress.EpgCheckPassed,
+                        FullyWorking = (int)pipelineProgress.CountryFilterPassed,
+                        ExcellentProviders = (int)pipelineProgress.QualityScoringPassed,
+                        InProgress = (int)pipelineProgress.TotalInProgress,
+                        IsComplete = pipelineProgress.IsComplete,
+                        Message =
+                            $"Pipeline: {pipelineProgress.CompletedItems}/{pipelineProgress.TotalItems} processed",
+                    };
+
+                    UpdateProgress(dp);
+                }
+
+                // Wait for pipeline to complete
+                await pipelineTask.ConfigureAwait(false);
+
+                // Collect results from pipeline
+                var testResults = pipeline.GetCompletedResults().ToList();
+
+                result.TestResults = testResults;
+
+                // Categorize results as a funnel
+                result.WorkingProviders = OrderByPreference(
+                        testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks)
+                    )
+                    .ToList();
+
+                result.WorkingWithEpgProviders = OrderByPreference(
+                        testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks && r.HasEpg)
+                    )
+                    .ToList();
+
+                result.FullyWorkingProviders = OrderByPreference(testResults.Where(r => r.IsFullyWorking)).ToList();
+
+                result.ExcellentProviders = OrderByPreference(testResults.Where(r => r.IsExcellent)).ToList();
+
+                result.Success = true;
+
+                // Save to cache
+                SaveCachedResult(result);
+
+                // Report completion
+                var completeProgress = new DiscoveryProgress
+                {
+                    Phase = DiscoveryPhase.Completed,
+                    CurrentItem = testResults.Count,
+                    TotalItems = discoveryResult.Credentials.Count,
+                    CredentialsFound = discoveryResult.Credentials.Count,
+                    ConnectivityPassed = (int)(pipeline.GetStageStats(PipelineStage.Connectivity)?.Passed ?? 0),
+                    AuthenticationPassed = (int)(pipeline.GetStageStats(PipelineStage.Authentication)?.Passed ?? 0),
+                    WorkingProviders = result.WorkingProviders.Count,
+                    WorkingWithEpg = result.WorkingWithEpgProviders.Count,
+                    FullyWorking = result.FullyWorkingProviders.Count,
+                    ExcellentProviders = result.ExcellentProviders.Count,
+                    InProgress = 0,
+                    IsComplete = true,
+                    Message =
+                        $"Complete: {result.WorkingProviders.Count} working, {result.FullyWorkingProviders.Count} with country channels, {result.ExcellentProviders.Count} excellent",
+                };
+                UpdateProgress(completeProgress);
+
+                lock (_lock)
+                {
+                    _lastResult = result;
+                }
+
+                _logger.LogInformation(
+                    "Pipeline complete: {Total} processed, {Working} working, {WithEpg} with EPG, {Full} fully working, {Excellent} excellent",
+                    testResults.Count,
+                    result.WorkingProviders.Count,
+                    result.WorkingWithEpgProviders.Count,
+                    result.FullyWorkingProviders.Count,
+                    result.ExcellentProviders.Count
+                );
+            }
+            finally
+            {
+                await pipeline.DisposeAsync().ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
             result.ErrorMessage = "Operation was cancelled";
-            var cancelProgress = new DiscoveryProgress
-            {
-                Phase = DiscoveryPhase.Failed,
-                Message = "Operation cancelled",
-            };
-            writer.TryWrite(cancelProgress);
+            UpdateProgress(new DiscoveryProgress { Phase = DiscoveryPhase.Failed, Message = "Operation cancelled" });
             lock (_lock)
             {
-                _currentProgress = cancelProgress;
                 _lastResult = result;
             }
         }
         catch (Exception ex)
         {
-            // Log at debug level for expected failures to reduce noise
             if (ex is HttpRequestException httpEx && IsExpectedConnectionFailure(httpEx))
             {
-                _logger.LogDebug("Discovery and test operation failed: {Message}", ex.Message);
+                _logger.LogDebug("Discovery pipeline failed: {Message}", ex.Message);
             }
             else
             {
-                _logger.LogError(ex, "Discovery and test operation failed");
+                _logger.LogError(ex, "Discovery pipeline failed");
             }
 
             result.ErrorMessage = ex.Message;
-            var errorProgress = new DiscoveryProgress
-            {
-                Phase = DiscoveryPhase.Failed,
-                Message = $"Error: {ex.Message}",
-            };
-            writer.TryWrite(errorProgress);
+            UpdateProgress(new DiscoveryProgress { Phase = DiscoveryPhase.Failed, Message = $"Error: {ex.Message}" });
             lock (_lock)
             {
-                _currentProgress = errorProgress;
                 _lastResult = result;
             }
         }
         finally
         {
-            // Complete the channel
             writer.Complete();
 
             lock (_lock)
@@ -367,154 +408,6 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
                 _progressChannel = null;
             }
         }
-    }
-
-    /// <inheritdoc />
-    public async Task<DiscoveryTestResult> DiscoverAndTestAsync(
-        DiscoveryOptions options,
-        IProgress<DiscoveryProgress>? progress,
-        CancellationToken cancellationToken
-    )
-    {
-        var result = new DiscoveryTestResult();
-
-        // Create linked cancellation token
-        CancellationTokenSource cts;
-        lock (_lock)
-        {
-            if (_currentCts != null && !_currentCts.IsCancellationRequested)
-            {
-                result.ErrorMessage = "A discovery operation is already in progress";
-                return result;
-            }
-
-            _currentCts?.Dispose();
-            _currentCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts = _currentCts;
-        }
-
-        try
-        {
-            _logger.LogInformation(
-                "Starting discovery and test operation: MaxPages={MaxPages}, DiscoveryWorkers={DiscoveryWorkers}, TestWorkers={TestWorkers}",
-                options.MaxPages,
-                options.MaxDiscoveryWorkers,
-                options.MaxTestWorkers
-            );
-
-            // Phase 1: Discover credentials using the web credential source
-            var httpClient = _httpClientFactory.CreateClient("XtreamClient");
-            using var source = new WebCredentialSource(httpClient, _parser, _sourceLogger);
-
-            var discoveryResult = await source
-                .DiscoverAsync(options.MaxPages, options.MaxDiscoveryWorkers, progress, cts.Token)
-                .ConfigureAwait(false);
-
-            result.DiscoveryResult = discoveryResult;
-
-            if (!discoveryResult.Success || discoveryResult.Credentials.Count == 0)
-            {
-                result.ErrorMessage = discoveryResult.ErrorMessage ?? "No credentials found";
-                return result;
-            }
-
-            _logger.LogInformation(
-                "Discovered {Count} credentials from {Pages} pages",
-                discoveryResult.Credentials.Count,
-                discoveryResult.PagesProcessed
-            );
-
-            // Phase 2: Test credentials
-            var testResults = await _tester
-                .TestCredentialsAsync(
-                    discoveryResult.Credentials,
-                    options.MaxTestWorkers,
-                    options.TestStream,
-                    options.TestEpg,
-                    progress,
-                    cts.Token
-                )
-                .ConfigureAwait(false);
-
-            result.TestResults = testResults.ToList();
-
-            // Categorize results as a funnel: Working -> Working+EPG -> Working+EPG+Polish
-            // Order by: Polish channel count (descending), days until expiration (descending), total channels (descending)
-            result.WorkingProviders = OrderByPreference(
-                    testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks)
-                )
-                .ToList();
-
-            result.WorkingWithEpgProviders = OrderByPreference(
-                    testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks && r.HasEpg)
-                )
-                .ToList();
-
-            result.FullyWorkingProviders = OrderByPreference(testResults.Where(r => r.IsFullyWorking)).ToList();
-
-            result.Success = true;
-
-            // Save to cache
-            SaveCachedResult(result);
-
-            // Report completion
-            progress?.Report(
-                new DiscoveryProgress
-                {
-                    Phase = DiscoveryPhase.Completed,
-                    CurrentItem = testResults.Count,
-                    TotalItems = testResults.Count,
-                    CredentialsFound = discoveryResult.Credentials.Count,
-                    WorkingProviders = result.WorkingProviders.Count,
-                    WorkingWithEpg = result.WorkingWithEpgProviders.Count,
-                    FullyWorking = result.FullyWorkingProviders.Count,
-                    Message =
-                        $"Complete: {result.WorkingProviders.Count} working, {result.WorkingWithEpgProviders.Count} with EPG, {result.FullyWorkingProviders.Count} with Polish",
-                }
-            );
-
-            _logger.LogInformation(
-                "Discovery and test complete: {Total} tested, {Working} working, {WithEpg} with EPG, {Full} fully working",
-                testResults.Count,
-                result.WorkingProviders.Count,
-                result.WorkingWithEpgProviders.Count,
-                result.FullyWorkingProviders.Count
-            );
-        }
-        catch (OperationCanceledException)
-        {
-            result.ErrorMessage = "Operation was cancelled";
-            progress?.Report(new DiscoveryProgress { Phase = DiscoveryPhase.Failed, Message = "Operation cancelled" });
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Log at debug level for expected failures to reduce noise
-            if (ex is HttpRequestException httpEx && IsExpectedConnectionFailure(httpEx))
-            {
-                _logger.LogDebug("Discovery and test operation failed: {Message}", ex.Message);
-            }
-            else
-            {
-                _logger.LogError(ex, "Discovery and test operation failed");
-            }
-
-            result.ErrorMessage = ex.Message;
-            progress?.Report(new DiscoveryProgress { Phase = DiscoveryPhase.Failed, Message = $"Error: {ex.Message}" });
-        }
-        finally
-        {
-            lock (_lock)
-            {
-                if (_currentCts == cts)
-                {
-                    _currentCts.Dispose();
-                    _currentCts = null;
-                }
-            }
-        }
-
-        return result;
     }
 
     /// <inheritdoc />
@@ -577,17 +470,19 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
     }
 
     /// <summary>
-    /// Orders providers by preference:
-    /// 1. Polish channel count (descending - more Polish channels first)
-    /// 2. Days until expiration (descending - longer validity first)
-    /// 3. Total channel count (descending - more channels first).
+    /// Orders providers by preference using comprehensive trust score:
+    /// 1. Trust score (descending - higher trust first)
+    /// 2. Quality score (descending - higher quality first)
+    /// 3. Country channel count (descending - more country channels first)
+    /// 4. Days until expiration (descending - longer validity first).
     /// </summary>
     private static IOrderedEnumerable<ProviderTestResult> OrderByPreference(IEnumerable<ProviderTestResult> providers)
     {
         return providers
-            .OrderByDescending(r => r.PolishChannelCount)
-            .ThenByDescending(r => GetDaysUntilExpiration(r.ExpirationDate))
-            .ThenByDescending(r => r.TotalChannelCount);
+            .OrderByDescending(r => r.TrustScore?.Score ?? 0)
+            .ThenByDescending(r => r.StreamQuality?.QualityScore ?? 0)
+            .ThenByDescending(r => r.CountryChannelCount)
+            .ThenByDescending(r => GetDaysUntilExpiration(r.ExpirationDate));
     }
 
     private void LoadCachedResult()

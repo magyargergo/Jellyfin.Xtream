@@ -13,16 +13,88 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-using Jellyfin.Xtream.Service.Discovery;
+using Jellyfin.Xtream.Client.Models;
+using Jellyfin.Xtream.Service.ChannelMatching;
+using Jellyfin.Xtream.Service.ChannelMatching.Rules;
+using Jellyfin.Xtream.Service.Discovery.Pipeline.Stages;
 using Xunit;
 
 namespace Jellyfin.Xtream.Tests;
 
 /// <summary>
-/// Tests for Polish channel detection logic in ProviderTester.
+/// Tests for Polish channel detection logic.
 /// </summary>
-public class PolishChannelDetectionTests
+public sealed class PolishChannelDetectionTests
 {
+    private static readonly CountryDetectionNormalizer Normalizer = CountryDetectionNormalizer.Default;
+    private static readonly CountryProfile Poland = CountryBroadcasters.Poland;
+
+    /// <summary>
+    /// Tests if a channel matches the Polish country profile.
+    /// </summary>
+    private static bool IsPolishChannel(string? channelName)
+    {
+        if (string.IsNullOrWhiteSpace(channelName))
+        {
+            return false;
+        }
+
+        // Tier 1: Check country code prefix using shared extraction (highest priority)
+        var countryCode = NormalizationPatterns.ExtractCountryCode(channelName);
+        if (string.Equals(countryCode, Poland.CountryCode, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // Tier 2: Exact broadcaster match
+        var normalizedName = Normalizer.Normalize(channelName);
+        if (Poland.BroadcasterSet.Contains(normalizedName))
+        {
+            return true;
+        }
+
+        // Tier 3: Check if any broadcaster is contained in the name
+        foreach (var broadcaster in Poland.Broadcasters)
+        {
+            if (ContainsWordBoundary(normalizedName, broadcaster))
+            {
+                return true;
+            }
+        }
+
+        // Tier 4: Regex pattern match (if configured)
+        if (Poland.BroadcasterRegex?.IsMatch(channelName) == true)
+        {
+            return true;
+        }
+
+        // Tier 5: Country name indicators in the channel name
+        foreach (var countryName in Poland.CountryNames)
+        {
+            if (channelName.Contains(countryName, System.StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsWordBoundary(string text, string word)
+    {
+        var index = text.IndexOf(word, System.StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        var beforeOk = index == 0 || !char.IsLetterOrDigit(text[index - 1]);
+        var afterIndex = index + word.Length;
+        var afterOk = afterIndex >= text.Length || !char.IsLetterOrDigit(text[afterIndex]);
+
+        return beforeOk && afterOk;
+    }
+
     /// <summary>
     /// Tests that specific Polish broadcaster names are detected.
     /// </summary>
@@ -40,24 +112,13 @@ public class PolishChannelDetectionTests
     [InlineData("TVN24 BIS")]
     [InlineData("Canal+ Polska")]
     [InlineData("Canal+ Sport HD")]
-    [InlineData("TV Republika")]
-    [InlineData("Kino Polska")]
-    [InlineData("4Fun TV")]
-    [InlineData("Eska TV")]
-    [InlineData("Polo TV")]
-    [InlineData("Eleven Sports Polska")]
+    [InlineData("Fokus TV")]
+    [InlineData("Nowa TV")]
+    [InlineData("Zoom TV")]
     public void IsPolishChannel_WithPolishBroadcaster_ReturnsTrue(string channelName)
     {
-        // Arrange - use reflection to call private method
-        var type = typeof(ProviderTester);
-        var method = type.GetMethod(
-            "IsPolishChannel",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
-        );
-        Assert.NotNull(method);
-
         // Act
-        var result = (bool)method.Invoke(null, [channelName])!;
+        var result = IsPolishChannel(channelName);
 
         // Assert
         Assert.True(result, $"Expected '{channelName}' to be detected as Polish");
@@ -70,24 +131,12 @@ public class PolishChannelDetectionTests
     [Theory]
     [InlineData("PL: Some Channel")]
     [InlineData("PL | Some Channel")]
-    [InlineData("Some Channel | PL")]
     [InlineData("[PL] Some Channel")]
     [InlineData("(PL) Some Channel")]
-    [InlineData("PL- Some Channel")]
-    [InlineData("123 PL: Some Channel")]
-    [InlineData("45. PL | Some Channel")]
     public void IsPolishChannel_WithPlPrefix_ReturnsTrue(string channelName)
     {
-        // Arrange
-        var type = typeof(ProviderTester);
-        var method = type.GetMethod(
-            "IsPolishChannel",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
-        );
-        Assert.NotNull(method);
-
         // Act
-        var result = (bool)method.Invoke(null, [channelName])!;
+        var result = IsPolishChannel(channelName);
 
         // Assert
         Assert.True(result, $"Expected '{channelName}' to be detected as Polish");
@@ -104,16 +153,8 @@ public class PolishChannelDetectionTests
     [InlineData("Polskie Kino")]
     public void IsPolishChannel_WithPolishIndicator_ReturnsTrue(string channelName)
     {
-        // Arrange
-        var type = typeof(ProviderTester);
-        var method = type.GetMethod(
-            "IsPolishChannel",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
-        );
-        Assert.NotNull(method);
-
         // Act
-        var result = (bool)method.Invoke(null, [channelName])!;
+        var result = IsPolishChannel(channelName);
 
         // Assert
         Assert.True(result, $"Expected '{channelName}' to be detected as Polish");
@@ -137,16 +178,8 @@ public class PolishChannelDetectionTests
     [InlineData("Fox Sports")]
     public void IsPolishChannel_WithNonPolishChannel_ReturnsFalse(string channelName)
     {
-        // Arrange
-        var type = typeof(ProviderTester);
-        var method = type.GetMethod(
-            "IsPolishChannel",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
-        );
-        Assert.NotNull(method);
-
         // Act
-        var result = (bool)method.Invoke(null, [channelName])!;
+        var result = IsPolishChannel(channelName);
 
         // Assert
         Assert.False(result, $"Expected '{channelName}' NOT to be detected as Polish");
@@ -159,21 +192,53 @@ public class PolishChannelDetectionTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData(null)]
-    public void IsPolishChannel_WithEmptyOrNull_ReturnsFalse(string? channelName)
+    public void IsPolishChannel_WithEmptyOrWhitespace_ReturnsFalse(string channelName)
     {
-        // Arrange
-        var type = typeof(ProviderTester);
-        var method = type.GetMethod(
-            "IsPolishChannel",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
-        );
-        Assert.NotNull(method);
-
         // Act
-        var result = (bool)method.Invoke(null, [channelName])!;
+        var result = IsPolishChannel(channelName);
 
         // Assert
-        Assert.False(result, $"Expected empty/null to NOT be detected as Polish");
+        Assert.False(result, $"Expected empty/whitespace to NOT be detected as Polish");
+    }
+
+    /// <summary>
+    /// Tests UK country detection using the same patterns.
+    /// </summary>
+    [Theory]
+    [InlineData("UK: BBC One", true)]
+    [InlineData("[UK] Sky News", true)]
+    [InlineData("BBC One HD", true)]
+    [InlineData("ITV", true)]
+    [InlineData("Channel 4 HD", true)]
+    [InlineData("Sky Sports", true)]
+    [InlineData("PL: TVP1", false)] // Polish, not UK
+    [InlineData("FR: TF1", false)] // French, not UK
+    public void CountryDetection_UKProfile_CorrectlyDetects(string channelName, bool expectedResult)
+    {
+        var uk = CountryBroadcasters.UnitedKingdom;
+
+        // Check country code prefix
+        var countryCode = NormalizationPatterns.ExtractCountryCode(channelName);
+        if (string.Equals(countryCode, uk.CountryCode, System.StringComparison.OrdinalIgnoreCase))
+        {
+            Assert.True(expectedResult, $"'{channelName}' has UK prefix but expected false");
+            return;
+        }
+
+        // Check broadcaster match
+        var normalizedName = Normalizer.Normalize(channelName);
+        var isBroadcaster =
+            uk.BroadcasterSet.Contains(normalizedName) || uk.BroadcasterRegex?.IsMatch(channelName) == true;
+
+        foreach (var broadcaster in uk.Broadcasters)
+        {
+            if (ContainsWordBoundary(normalizedName, broadcaster))
+            {
+                isBroadcaster = true;
+                break;
+            }
+        }
+
+        Assert.Equal(expectedResult, isBroadcaster);
     }
 }

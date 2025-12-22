@@ -22,24 +22,70 @@ using System.Threading.Tasks;
 namespace Jellyfin.Xtream.Service.Discovery;
 
 /// <summary>
+/// Time range for credential discovery.
+/// </summary>
+public enum DiscoveryTimeRange
+{
+    /// <summary>
+    /// Last week (7 days).
+    /// </summary>
+    LastWeek,
+
+    /// <summary>
+    /// Last month (30 days).
+    /// </summary>
+    LastMonth,
+
+    /// <summary>
+    /// Last 3 months (90 days).
+    /// </summary>
+    Last3Months,
+
+    /// <summary>
+    /// Last 6 months (180 days).
+    /// </summary>
+    Last6Months,
+
+    /// <summary>
+    /// This year (from January 1st).
+    /// </summary>
+    ThisYear,
+
+    /// <summary>
+    /// Last year (previous calendar year).
+    /// </summary>
+    LastYear,
+
+    /// <summary>
+    /// Custom date range (uses CustomStartDate and CustomEndDate).
+    /// </summary>
+    Custom,
+}
+
+/// <summary>
 /// Options for the discovery and test operation.
 /// </summary>
 public sealed class DiscoveryOptions
 {
     /// <summary>
-    /// Gets or sets the maximum number of pages to process.
+    /// Gets or sets the time range for discovery.
     /// </summary>
-    public int MaxPages { get; set; } = 5;
+    public DiscoveryTimeRange TimeRange { get; set; } = DiscoveryTimeRange.LastMonth;
+
+    /// <summary>
+    /// Gets or sets the custom start date (used when TimeRange is Custom).
+    /// </summary>
+    public DateTime? CustomStartDate { get; set; }
+
+    /// <summary>
+    /// Gets or sets the custom end date (used when TimeRange is Custom).
+    /// </summary>
+    public DateTime? CustomEndDate { get; set; }
 
     /// <summary>
     /// Gets or sets the maximum number of parallel workers for discovery.
     /// </summary>
     public int MaxDiscoveryWorkers { get; set; } = 5;
-
-    /// <summary>
-    /// Gets or sets the maximum number of parallel workers for testing.
-    /// </summary>
-    public int MaxTestWorkers { get; set; } = 10;
 
     /// <summary>
     /// Gets or sets a value indicating whether to test stream playback.
@@ -52,9 +98,48 @@ public sealed class DiscoveryOptions
     public bool TestEpg { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets a value indicating whether to filter for Polish channels only.
+    /// Gets or sets the country code to filter channels by.
     /// </summary>
-    public bool PolishOnly { get; set; } = true;
+    /// <remarks>
+    /// Supported values: "PL" (Poland), "UK" (United Kingdom), "DE" (Germany), "FR" (France), or null for no filtering.
+    /// Defaults to "PL" for backward compatibility.
+    /// </remarks>
+    public string? CountryCode { get; set; } = "PL";
+
+    /// <summary>
+    /// Gets the start date for the discovery time range.
+    /// </summary>
+    /// <returns>The start date.</returns>
+    public DateTime GetStartDate()
+    {
+        var today = DateTime.UtcNow.Date;
+        return TimeRange switch
+        {
+            DiscoveryTimeRange.LastWeek => today.AddDays(-7),
+            DiscoveryTimeRange.LastMonth => today.AddDays(-30),
+            DiscoveryTimeRange.Last3Months => today.AddDays(-90),
+            DiscoveryTimeRange.Last6Months => today.AddDays(-180),
+            DiscoveryTimeRange.ThisYear => new DateTime(today.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            DiscoveryTimeRange.LastYear => new DateTime(today.Year - 1, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            DiscoveryTimeRange.Custom => CustomStartDate?.Date ?? today.AddDays(-30),
+            _ => today.AddDays(-30),
+        };
+    }
+
+    /// <summary>
+    /// Gets the end date for the discovery time range.
+    /// </summary>
+    /// <returns>The end date.</returns>
+    public DateTime GetEndDate()
+    {
+        var today = DateTime.UtcNow.Date;
+        return TimeRange switch
+        {
+            DiscoveryTimeRange.LastYear => new DateTime(today.Year - 1, 12, 31, 23, 59, 59, DateTimeKind.Utc),
+            DiscoveryTimeRange.Custom => CustomEndDate?.Date ?? today,
+            _ => today,
+        };
+    }
 }
 
 /// <summary>
@@ -98,6 +183,11 @@ public sealed class DiscoveryTestResult
     /// Gets or sets the fully working providers (active + stream + EPG + Polish).
     /// </summary>
     public List<ProviderTestResult> FullyWorkingProviders { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the excellent providers (fully working + high quality streams).
+    /// </summary>
+    public List<ProviderTestResult> ExcellentProviders { get; set; } = [];
 }
 
 /// <summary>
@@ -105,19 +195,6 @@ public sealed class DiscoveryTestResult
 /// </summary>
 public interface IProviderDiscoveryService
 {
-    /// <summary>
-    /// Discovers credentials from configured sources and tests them.
-    /// </summary>
-    /// <param name="options">The discovery options.</param>
-    /// <param name="progress">Optional progress reporter.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The complete discovery and test result.</returns>
-    Task<DiscoveryTestResult> DiscoverAndTestAsync(
-        DiscoveryOptions options,
-        IProgress<DiscoveryProgress>? progress,
-        CancellationToken cancellationToken
-    );
-
     /// <summary>
     /// Starts a discovery operation in the background and returns immediately.
     /// Use <see cref="GetProgressUpdatesAsync"/> to receive progress updates.

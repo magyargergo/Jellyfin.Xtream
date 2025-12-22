@@ -275,4 +275,30 @@ public static class QualityScorer
 
         return qualityScore;
     }
+
+    /// <summary>
+    /// Calculates a combined score factoring in both quality and provider availability.
+    /// </summary>
+    /// <param name="qualityScore">The quality score (0-110 typically).</param>
+    /// <param name="availabilityScore">The availability score (0-100).</param>
+    /// <param name="qualityWeight">Weight for quality (0.0-1.0). Availability weight is 1-qualityWeight.</param>
+    /// <returns>Combined score where higher is better.</returns>
+    /// <remarks>
+    /// Default weighting is 60% quality, 40% availability. This ensures high-quality streams
+    /// are still preferred, but providers with more available connections get a meaningful boost.
+    /// A 4K stream from a provider at 80% capacity will score lower than an HD stream from
+    /// a provider with plenty of capacity.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int CombinedScore(int qualityScore, int availabilityScore, double qualityWeight = 0.6)
+    {
+        // Normalize quality score to 0-100 range (max is Score4K + ScoreHasImage = 110)
+        var normalizedQuality = (int)Math.Round(qualityScore * 100.0 / (Score4K + ScoreHasImage));
+
+        // Apply weights
+        var availabilityWeight = 1.0 - qualityWeight;
+        var combined = (normalizedQuality * qualityWeight) + (availabilityScore * availabilityWeight);
+
+        return (int)Math.Round(combined);
+    }
 }

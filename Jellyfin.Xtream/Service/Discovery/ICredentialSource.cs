@@ -35,15 +35,17 @@ public interface ICredentialSource
     string BaseUrl { get; }
 
     /// <summary>
-    /// Discovers credentials from the configured source.
+    /// Discovers credentials from the configured source within the specified date range.
     /// </summary>
-    /// <param name="maxPages">Maximum number of pages to process.</param>
+    /// <param name="startDate">The start date for discovery (inclusive).</param>
+    /// <param name="endDate">The end date for discovery (inclusive).</param>
     /// <param name="maxWorkers">Maximum parallel workers for discovery.</param>
     /// <param name="progress">Optional progress reporter.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The discovery result containing found credentials.</returns>
     Task<DiscoveryResult> DiscoverAsync(
-        int maxPages,
+        DateTime startDate,
+        DateTime endDate,
         int maxWorkers,
         IProgress<DiscoveryProgress>? progress,
         CancellationToken cancellationToken

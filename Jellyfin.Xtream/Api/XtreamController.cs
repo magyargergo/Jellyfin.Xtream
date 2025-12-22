@@ -52,6 +52,7 @@ public class XtreamController : ControllerBase
     private readonly ILoggerFactory _loggerFactory;
     private readonly IMemoryCache _cache;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ProviderConnectionCache _connectionCache;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="XtreamController"/> class.
@@ -60,17 +61,20 @@ public class XtreamController : ControllerBase
     /// <param name="loggerFactory">The logger factory instance.</param>
     /// <param name="cache">The memory cache instance.</param>
     /// <param name="httpClientFactory">The HTTP client factory.</param>
+    /// <param name="connectionCache">The provider connection cache.</param>
     public XtreamController(
         ILogger<XtreamController> logger,
         ILoggerFactory loggerFactory,
         IMemoryCache cache,
-        IHttpClientFactory httpClientFactory
+        IHttpClientFactory httpClientFactory,
+        ProviderConnectionCache connectionCache
     )
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
         _cache = cache;
         _httpClientFactory = httpClientFactory;
+        _connectionCache = connectionCache;
     }
 
     private XtreamProvider? GetProvider(string? providerId)
@@ -885,77 +889,6 @@ public class XtreamController : ControllerBase
     }
 
     /// <summary>
-    /// Discover and test provider credentials.
-    /// </summary>
-    /// <remarks>
-    /// This endpoint uses CancellationToken.None to prevent the operation from being cancelled
-    /// when the HTTP connection drops. The discovery operation can take several minutes, and
-    /// browsers/proxies may timeout before it completes. Use the CancelDiscovery endpoint to
-    /// explicitly cancel the operation.
-    /// </remarks>
-    /// <param name="request">The discovery request options.</param>
-    /// <param name="discoveryService">The discovery service.</param>
-    /// <returns>The discovery results.</returns>
-    [Authorize(Policy = "RequiresElevation")]
-    [HttpPost("DiscoverProviders")]
-    public async Task<ActionResult<DiscoveryResponse>> DiscoverProviders(
-        [FromBody] DiscoveryRequest? request,
-        [FromServices] IProviderDiscoveryService discoveryService
-    )
-    {
-        var options = new DiscoveryOptions
-        {
-            MaxPages = request?.MaxPages ?? 5,
-            MaxDiscoveryWorkers = request?.MaxDiscoveryWorkers ?? 5,
-            MaxTestWorkers = request?.MaxTestWorkers ?? 10,
-            TestStream = request?.TestStream ?? true,
-            TestEpg = request?.TestEpg ?? true,
-            PolishOnly = request?.PolishOnly ?? true,
-        };
-
-        _logger.LogInformation(
-            "Starting provider discovery: Pages={Pages}, DiscoveryWorkers={DiscoveryWorkers}, TestWorkers={TestWorkers}",
-            options.MaxPages,
-            options.MaxDiscoveryWorkers,
-            options.MaxTestWorkers
-        );
-
-        try
-        {
-            // Use CancellationToken.None to prevent HTTP connection drops from cancelling the operation.
-            // The operation can be explicitly cancelled via the CancelDiscovery endpoint.
-            var result = await discoveryService
-                .DiscoverAndTestAsync(options, null, CancellationToken.None)
-                .ConfigureAwait(false);
-
-            var response = new DiscoveryResponse
-            {
-                Success = result.Success,
-                ErrorMessage = result.ErrorMessage,
-                PagesProcessed = result.DiscoveryResult?.PagesProcessed ?? 0,
-                TotalCredentialsFound = result.DiscoveryResult?.Credentials.Count ?? 0,
-                TotalCredentialsTested = result.TestResults.Count,
-                WorkingProviderCount = result.WorkingProviders.Count,
-                WorkingWithEpgCount = result.WorkingWithEpgProviders.Count,
-                FullyWorkingCount = result.FullyWorkingProviders.Count,
-                WorkingProviders = result.WorkingProviders.Select(MapToDiscoveryResponse).ToList(),
-                FullyWorkingProviders = result.FullyWorkingProviders.Select(MapToDiscoveryResponse).ToList(),
-            };
-
-            return Ok(response);
-        }
-        catch (OperationCanceledException)
-        {
-            return Ok(new DiscoveryResponse { Success = false, ErrorMessage = "Discovery was cancelled" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Provider discovery failed");
-            return Ok(new DiscoveryResponse { Success = false, ErrorMessage = ex.Message });
-        }
-    }
-
-    /// <summary>
     /// Get the current discovery status and progress.
     /// </summary>
     /// <param name="discoveryService">The discovery service.</param>
@@ -978,11 +911,17 @@ public class XtreamController : ControllerBase
                             Phase = progress.Phase.ToString(),
                             CurrentItem = progress.CurrentItem,
                             TotalItems = progress.TotalItems,
+                            ProgressPercent = progress.ProgressPercent,
                             CredentialsFound = progress.CredentialsFound,
+                            ConnectivityPassed = progress.ConnectivityPassed,
+                            AuthenticationPassed = progress.AuthenticationPassed,
                             WorkingProviders = progress.WorkingProviders,
                             WorkingWithEpg = progress.WorkingWithEpg,
                             FullyWorking = progress.FullyWorking,
+                            Excellent = progress.ExcellentProviders,
                             Message = progress.Message,
+                            InProgress = progress.InProgress,
+                            IsComplete = progress.IsComplete,
                         }
                         : null,
             }
@@ -1003,21 +942,27 @@ public class XtreamController : ControllerBase
         [FromServices] IProviderDiscoveryService discoveryService
     )
     {
+        var timeRange = request?.TimeRange ?? Models.DiscoveryTimeRangeOption.LastMonth;
         var options = new DiscoveryOptions
         {
-            MaxPages = request?.MaxPages ?? 5,
+            TimeRange = (DiscoveryTimeRange)timeRange,
+            CustomStartDate = request?.CustomStartDate,
+            CustomEndDate = request?.CustomEndDate,
             MaxDiscoveryWorkers = request?.MaxDiscoveryWorkers ?? 5,
-            MaxTestWorkers = request?.MaxTestWorkers ?? 10,
             TestStream = request?.TestStream ?? true,
             TestEpg = request?.TestEpg ?? true,
-            PolishOnly = request?.PolishOnly ?? true,
+            CountryCode = request?.CountryCode ?? "PL",
         };
 
+        var startDate = options.GetStartDate();
+        var endDate = options.GetEndDate();
+
         _logger.LogInformation(
-            "Starting background discovery: Pages={Pages}, DiscoveryWorkers={DiscoveryWorkers}, TestWorkers={TestWorkers}",
-            options.MaxPages,
-            options.MaxDiscoveryWorkers,
-            options.MaxTestWorkers
+            "Starting background discovery: TimeRange={TimeRange} ({StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd}), DiscoveryWorkers={DiscoveryWorkers}",
+            options.TimeRange,
+            startDate,
+            endDate,
+            options.MaxDiscoveryWorkers
         );
 
         var started = discoveryService.StartDiscoveryAsync(options);
@@ -1057,11 +1002,17 @@ public class XtreamController : ControllerBase
                     Phase = progress.Phase.ToString(),
                     CurrentItem = progress.CurrentItem,
                     TotalItems = progress.TotalItems,
+                    ProgressPercent = progress.ProgressPercent,
                     CredentialsFound = progress.CredentialsFound,
+                    ConnectivityPassed = progress.ConnectivityPassed,
+                    AuthenticationPassed = progress.AuthenticationPassed,
                     WorkingProviders = progress.WorkingProviders,
                     WorkingWithEpg = progress.WorkingWithEpg,
                     FullyWorking = progress.FullyWorking,
+                    Excellent = progress.ExcellentProviders,
                     Message = progress.Message,
+                    InProgress = progress.InProgress,
+                    IsComplete = progress.IsComplete,
                 }
             );
 
@@ -1120,11 +1071,17 @@ public class XtreamController : ControllerBase
                     Phase = progress.Phase.ToString(),
                     CurrentItem = progress.CurrentItem,
                     TotalItems = progress.TotalItems,
+                    ProgressPercent = progress.ProgressPercent,
                     CredentialsFound = progress.CredentialsFound,
+                    ConnectivityPassed = progress.ConnectivityPassed,
+                    AuthenticationPassed = progress.AuthenticationPassed,
                     WorkingProviders = progress.WorkingProviders,
                     WorkingWithEpg = progress.WorkingWithEpg,
                     FullyWorking = progress.FullyWorking,
+                    Excellent = progress.ExcellentProviders,
                     Message = progress.Message,
+                    InProgress = progress.InProgress,
+                    IsComplete = progress.IsComplete,
                 };
 
                 var json = System.Text.Json.JsonSerializer.Serialize(response);
@@ -1294,8 +1251,11 @@ public class XtreamController : ControllerBase
                 WorkingProviderCount = result.WorkingProviders.Count,
                 WorkingWithEpgCount = result.WorkingWithEpgProviders.Count,
                 FullyWorkingCount = result.FullyWorkingProviders.Count,
+                ExcellentCount = result.ExcellentProviders.Count,
+                CountryCode = result.TestResults.FirstOrDefault()?.CountryCode,
                 WorkingProviders = result.WorkingProviders.Select(MapToDiscoveryResponse).ToList(),
                 FullyWorkingProviders = result.FullyWorkingProviders.Select(MapToDiscoveryResponse).ToList(),
+                ExcellentProviders = result.ExcellentProviders.Select(MapToDiscoveryResponse).ToList(),
             }
         );
     }
@@ -1400,6 +1360,149 @@ public class XtreamController : ControllerBase
         );
     }
 
+    /// <summary>
+    /// Get comprehensive connection status for all providers.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Connection status with per-provider details and utilization warnings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("ConnectionStatus")]
+    public async Task<ActionResult<ConnectionStatusResponse>> GetConnectionStatus(CancellationToken cancellationToken)
+    {
+        var config = Plugin.Instance.Configuration;
+        var enabledProviders = config.GetEnabledProviders().ToList();
+        var response = new ConnectionStatusResponse
+        {
+            PluginActiveStreams = Restream.GetActiveStreamCount(),
+            ConfiguredMaxStreams = config.MaxConcurrentStreams,
+            EnforcementEnabled = config.EnforceConnectionLimit,
+            AutoKillEnabled = config.AutoKillOldestStream,
+        };
+
+        // Always refresh the shared connection cache to get fresh data
+        // This ensures both UI display and channel deduplication use the same data
+        await _connectionCache.RefreshAsync(enabledProviders, cancellationToken).ConfigureAwait(false);
+
+        // Build provider status from the shared cache (same data used for channel ordering)
+        response.Providers = enabledProviders
+            .Select(provider =>
+            {
+                var status = new ProviderConnectionStatus { ProviderId = provider.Id, ProviderName = provider.Name };
+
+                // Get cached status (just refreshed above)
+                var cachedStatus = _connectionCache.GetStatus(provider.Id);
+                if (cachedStatus != null)
+                {
+                    status.MaxConnections = cachedStatus.MaxConnections;
+                    status.ProviderActiveConnections = cachedStatus.ActiveConnections;
+                    status.Status = cachedStatus.Status;
+                    status.ExpirationDate = cachedStatus.ExpirationDate;
+                    status.IsTrial = cachedStatus.IsTrial;
+                    status.IsOnline = cachedStatus.IsOnline;
+                    status.ErrorMessage = cachedStatus.ErrorMessage;
+                }
+                else
+                {
+                    status.ErrorMessage = "No cached status";
+                    status.IsOnline = false;
+                }
+
+                return status;
+            })
+            .ToList();
+
+        // Calculate effective max streams and available slots
+        // Available slots must consider BOTH:
+        // 1. The configured max streams limit (if set)
+        // 2. The actual provider capacity (MaxConnections - ProviderActiveConnections)
+        var onlineProviders = response.Providers.Where(p => p.IsOnline).ToList();
+
+        // Calculate provider-side availability (accounts for external usage of the same credentials)
+        var providerAvailableSlots = onlineProviders.Sum(p =>
+            Math.Max(0, p.MaxConnections - p.ProviderActiveConnections)
+        );
+        var providerTotalCapacity = onlineProviders.Sum(p => p.MaxConnections);
+        var providerTotalActiveConnections = onlineProviders.Sum(p => p.ProviderActiveConnections);
+
+        // Set provider-side totals for UI transparency
+        response.TotalProviderActiveConnections = providerTotalActiveConnections;
+        response.TotalProviderCapacity = providerTotalCapacity;
+
+        if (config.MaxConcurrentStreams > 0)
+        {
+            // Use configured limit as the effective max
+            response.EffectiveMaxStreams = config.MaxConcurrentStreams;
+
+            // Available slots is the minimum of:
+            // - What config allows (config limit - plugin streams)
+            // - What providers have available (considering all clients using the credentials)
+            var configAvailableSlots = Math.Max(0, config.MaxConcurrentStreams - response.PluginActiveStreams);
+            response.AvailableSlots = Math.Min(configAvailableSlots, providerAvailableSlots);
+        }
+        else if (onlineProviders.Count > 0)
+        {
+            // No configured limit - use total provider capacity
+            response.EffectiveMaxStreams = providerTotalCapacity;
+            response.AvailableSlots = providerAvailableSlots;
+        }
+        else
+        {
+            response.EffectiveMaxStreams = 1;
+            response.AvailableSlots = 1;
+        }
+
+        // Utilization is based on plugin's own streams vs effective max
+        response.UtilizationPercent =
+            response.EffectiveMaxStreams > 0
+                ? (int)Math.Round(100.0 * response.PluginActiveStreams / response.EffectiveMaxStreams)
+                : 0;
+
+        // Set warning level and message
+        if (response.PluginActiveStreams >= response.EffectiveMaxStreams)
+        {
+            response.WarningLevel = "Critical";
+            response.WarningMessage =
+                $"Connection limit reached! {response.PluginActiveStreams}/{response.EffectiveMaxStreams} streams active.";
+        }
+        else if (response.UtilizationPercent >= 80)
+        {
+            response.WarningLevel = "Warning";
+            response.WarningMessage =
+                $"High utilization: {response.PluginActiveStreams}/{response.EffectiveMaxStreams} streams ({response.UtilizationPercent}%).";
+        }
+        else
+        {
+            response.WarningLevel = "None";
+        }
+
+        // Also check each provider for over-subscription
+        foreach (var providerStatus in response.Providers.Where(p => p.IsOnline))
+        {
+            if (providerStatus.ProviderActiveConnections >= providerStatus.MaxConnections)
+            {
+                response.WarningLevel = "Critical";
+                response.WarningMessage =
+                    $"Provider {providerStatus.ProviderName} at limit: {providerStatus.ProviderActiveConnections}/{providerStatus.MaxConnections} connections.";
+                break;
+            }
+
+            if (
+                providerStatus.ProviderActiveConnections > 0
+                && (double)providerStatus.ProviderActiveConnections / providerStatus.MaxConnections >= 0.8
+            )
+            {
+                if (response.WarningLevel != "Critical")
+                {
+                    response.WarningLevel = "Warning";
+                    response.WarningMessage =
+                        $"Provider {providerStatus.ProviderName} high usage: {providerStatus.ProviderActiveConnections}/{providerStatus.MaxConnections} connections.";
+                }
+            }
+        }
+
+        return Ok(response);
+    }
+
     private static DiscoveredProviderResponse MapToDiscoveryResponse(ProviderTestResult result)
     {
         return new DiscoveredProviderResponse
@@ -1411,16 +1514,174 @@ public class XtreamController : ControllerBase
             Status = result.Status.ToString(),
             ExpirationDate = result.ExpirationDate,
             MaxConnections = result.MaxConnections,
-            HasPolishChannels = result.HasPolishChannels,
-            PolishChannelCount = result.PolishChannelCount,
+            HasCountryChannels = result.HasCountryChannels,
+            CountryChannelCount = result.CountryChannelCount,
+            CountryCode = result.CountryCode,
             TotalChannelCount = result.TotalChannelCount,
             StreamWorks = result.StreamWorks,
             StreamStatus = result.StreamStatus,
             HasEpg = result.HasEpg,
             EpgProgramCount = result.EpgProgramCount,
             IsFullyWorking = result.IsFullyWorking,
+            HasHighQualityStreams = result.HasHighQualityStreams,
+            IsExcellent = result.IsExcellent,
+            QualityScore = result.StreamQuality?.QualityScore,
+            QualityLevel = result.StreamQuality?.QualityLevel.ToString(),
+            QualityIssues = result.StreamQuality?.QualityIssues,
+            TrustScore = result.TrustScore?.Score,
+            TrustLevel = result.TrustScore?.Level.ToString(),
+            TrustSummary = result.TrustScore?.Summary,
             ErrorMessage = result.ErrorMessage,
-            PolishChannelNames = result.PolishChannelNames,
+            CountryChannelNames = result.CountryChannelNames,
         };
+    }
+
+    /// <summary>
+    /// Copy channel selections from one provider to another by matching channel names.
+    /// </summary>
+    /// <param name="request">The copy request with source and target provider IDs.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Result of the copy operation with matched channels.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("CopyChannelSelections")]
+    public async Task<ActionResult<CopyChannelsResponse>> CopyChannelSelections(
+        [FromBody] CopyChannelsRequest request,
+        CancellationToken cancellationToken
+    )
+    {
+        var config = Plugin.Instance.Configuration;
+        var response = new CopyChannelsResponse();
+
+        // Validate providers
+        var sourceProvider = config.Providers.FirstOrDefault(p => p.Id == request.SourceProviderId);
+        var targetProvider = config.Providers.FirstOrDefault(p => p.Id == request.TargetProviderId);
+
+        if (sourceProvider == null)
+        {
+            response.Message = "Source provider not found";
+            return BadRequest(response);
+        }
+
+        if (targetProvider == null)
+        {
+            response.Message = "Target provider not found";
+            return BadRequest(response);
+        }
+
+        if (sourceProvider.Id == targetProvider.Id)
+        {
+            response.Message = "Source and target providers must be different";
+            return BadRequest(response);
+        }
+
+        // Get source provider's selected streams
+        var sourceSelections = sourceProvider.LiveTv ?? new SerializableDictionary<int, HashSet<int>>();
+        if (sourceSelections.Count == 0)
+        {
+            response.Message = "Source provider has no channel selections";
+            return Ok(response);
+        }
+
+        // Count total selected streams in source
+        var sourceSelectedStreamIds = sourceSelections.Values.SelectMany(s => s).ToHashSet();
+        response.SourceSelectedCount = sourceSelectedStreamIds.Count;
+
+        try
+        {
+            // Fetch all streams from both providers
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+
+            var sourceStreams = await client
+                .GetLiveStreamsAsync(sourceProvider.ToConnectionInfo(), cancellationToken)
+                .ConfigureAwait(false);
+
+            var targetStreams = await client
+                .GetLiveStreamsAsync(targetProvider.ToConnectionInfo(), cancellationToken)
+                .ConfigureAwait(false);
+
+            // Build index of target streams for efficient matching
+            var channelMatcher = Service.ChannelMatching.ChannelMatcher.Default;
+            var targetIndex = channelMatcher.BuildIndex(targetStreams);
+
+            // Match source selections to target streams
+            var targetSelections = targetProvider.LiveTv;
+            var matchedChannels = new List<MatchedChannelInfo>();
+            var unmatchedChannels = new List<string>();
+
+            foreach (var sourceStream in sourceStreams.Where(s => sourceSelectedStreamIds.Contains(s.StreamId)))
+            {
+                var matchResult = channelMatcher.FindBestMatch(sourceStream, targetIndex);
+
+                if (matchResult.MatchedStream != null)
+                {
+                    var targetStream = matchResult.MatchedStream;
+                    var categoryId = targetStream.CategoryId ?? 0;
+
+                    // Add to target selections (modify existing dictionary)
+                    if (!targetSelections.TryGetValue(categoryId, out var categoryStreams))
+                    {
+                        categoryStreams = new HashSet<int>();
+                        targetSelections[categoryId] = categoryStreams;
+                    }
+
+                    categoryStreams.Add(targetStream.StreamId);
+
+                    matchedChannels.Add(
+                        new MatchedChannelInfo
+                        {
+                            SourceName = sourceStream.Name ?? string.Empty,
+                            TargetName = targetStream.Name ?? string.Empty,
+                            TargetStreamId = targetStream.StreamId,
+                            TargetCategoryId = categoryId,
+                            NormalizedName = $"{matchResult.NormalizedName} ({matchResult.SimilarityScore}%)",
+                        }
+                    );
+                }
+                else
+                {
+                    // Track unmatched channels
+                    var sourceName = sourceStream.Name ?? string.Empty;
+                    unmatchedChannels.Add($"{sourceName} -> {matchResult.NormalizedName}");
+                    _logger.LogDebug(
+                        "Channel copy: No match for '{SourceName}' (normalized: '{NormalizedName}')",
+                        sourceName,
+                        matchResult.NormalizedName
+                    );
+                }
+            }
+
+            // Save the updated configuration (LiveTv was modified in-place)
+            Plugin.Instance.SaveConfiguration();
+
+            response.Success = true;
+            response.MatchedCount = matchedChannels.Count;
+            response.UnmatchedCount = unmatchedChannels.Count;
+            response.MatchedChannels = matchedChannels;
+            response.UnmatchedChannels = unmatchedChannels;
+            response.Message =
+                $"Matched {matchedChannels.Count} of {response.SourceSelectedCount} channels ({unmatchedChannels.Count} unmatched)";
+
+            _logger.LogInformation(
+                "Copied channel selections from {SourceProvider} to {TargetProvider}: {Matched}/{Total} matched, {Unmatched} unmatched",
+                sourceProvider.Name,
+                targetProvider.Name,
+                matchedChannels.Count,
+                response.SourceSelectedCount,
+                unmatchedChannels.Count
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to copy channel selections from {Source} to {Target}",
+                sourceProvider.Name,
+                targetProvider.Name
+            );
+            response.Message = $"Failed to copy channels: {ex.Message}";
+            return StatusCode(500, response);
+        }
+
+        return Ok(response);
     }
 }

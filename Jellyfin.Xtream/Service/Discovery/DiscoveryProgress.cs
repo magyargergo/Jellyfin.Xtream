@@ -67,6 +67,16 @@ public sealed class DiscoveryProgress
     public int CredentialsFound { get; set; }
 
     /// <summary>
+    /// Gets or sets the count of providers that passed connectivity check.
+    /// </summary>
+    public int ConnectivityPassed { get; set; }
+
+    /// <summary>
+    /// Gets or sets the count of providers that passed authentication.
+    /// </summary>
+    public int AuthenticationPassed { get; set; }
+
+    /// <summary>
     /// Gets or sets the count of working providers (Active + Stream works).
     /// </summary>
     public int WorkingProviders { get; set; }
@@ -82,9 +92,24 @@ public sealed class DiscoveryProgress
     public int FullyWorking { get; set; }
 
     /// <summary>
+    /// Gets or sets the count of excellent providers (fully working + high quality streams).
+    /// </summary>
+    public int ExcellentProviders { get; set; }
+
+    /// <summary>
     /// Gets or sets the current status message.
     /// </summary>
     public string Message { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the count of items currently being processed across all stages.
+    /// </summary>
+    public int InProgress { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the pipeline has finished processing all items.
+    /// </summary>
+    public bool IsComplete { get; set; }
 
     /// <summary>
     /// Gets the progress percentage (0-100).

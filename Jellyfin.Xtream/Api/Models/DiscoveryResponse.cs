@@ -62,14 +62,19 @@ public sealed class DiscoveredProviderResponse
     public int MaxConnections { get; set; }
 
     /// <summary>
-    /// Gets or sets a value indicating whether the provider has Polish channels.
+    /// Gets or sets a value indicating whether the provider has channels matching the country filter.
     /// </summary>
-    public bool HasPolishChannels { get; set; }
+    public bool HasCountryChannels { get; set; }
 
     /// <summary>
-    /// Gets or sets the count of Polish channels.
+    /// Gets or sets the count of channels matching the country filter.
     /// </summary>
-    public int PolishChannelCount { get; set; }
+    public int CountryChannelCount { get; set; }
+
+    /// <summary>
+    /// Gets or sets the country code used for filtering (e.g., "PL", "UK", "DE").
+    /// </summary>
+    public string? CountryCode { get; set; }
 
     /// <summary>
     /// Gets or sets the total channel count.
@@ -102,92 +107,44 @@ public sealed class DiscoveredProviderResponse
     public bool IsFullyWorking { get; set; }
 
     /// <summary>
-    /// Gets or sets any error message.
+    /// Gets or sets a value indicating whether this provider has high quality streams.
     /// </summary>
-    public string? ErrorMessage { get; set; }
+    public bool HasHighQualityStreams { get; set; }
 
     /// <summary>
-    /// Gets or sets the Polish channel names.
+    /// Gets or sets a value indicating whether this provider is excellent (fully working + high quality).
     /// </summary>
-    public List<string> PolishChannelNames { get; set; } = [];
-}
-
-/// <summary>
-/// Backward compatibility alias for DiscoveredProviderResponse.
-/// </summary>
-[SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "DTO requires setter")]
-[SuppressMessage("Design", "CA1002:Do not expose generic lists", Justification = "DTO requires setter")]
-public sealed class ScrapedProviderResponse
-{
-    /// <summary>
-    /// Gets or sets the server URL.
-    /// </summary>
-    public string Server { get; set; } = string.Empty;
+    public bool IsExcellent { get; set; }
 
     /// <summary>
-    /// Gets or sets the port.
+    /// Gets or sets the stream quality score (0-100, higher is better).
     /// </summary>
-    public int Port { get; set; }
+    public int? QualityScore { get; set; }
 
     /// <summary>
-    /// Gets or sets the username.
+    /// Gets or sets the stream quality level (Excellent, Good, Fair, Poor, Unknown).
     /// </summary>
-    public string Username { get; set; } = string.Empty;
+    public string? QualityLevel { get; set; }
 
     /// <summary>
-    /// Gets or sets the password.
+    /// Gets or sets any quality issues found.
     /// </summary>
-    public string Password { get; set; } = string.Empty;
+    public string? QualityIssues { get; set; }
 
     /// <summary>
-    /// Gets or sets the status.
+    /// Gets or sets the comprehensive trust score (0-100).
     /// </summary>
-    public string Status { get; set; } = string.Empty;
+    public int? TrustScore { get; set; }
 
     /// <summary>
-    /// Gets or sets the expiration date.
+    /// Gets or sets the trust level (Excellent, Good, Fair, Poor, Untrusted).
     /// </summary>
-    public DateTime? ExpirationDate { get; set; }
+    public string? TrustLevel { get; set; }
 
     /// <summary>
-    /// Gets or sets the max connections.
+    /// Gets or sets the trust assessment summary.
     /// </summary>
-    public int MaxConnections { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether the provider has Polish channels.
-    /// </summary>
-    public bool HasPolishChannels { get; set; }
-
-    /// <summary>
-    /// Gets or sets the count of Polish channels.
-    /// </summary>
-    public int PolishChannelCount { get; set; }
-
-    /// <summary>
-    /// Gets or sets the total channel count.
-    /// </summary>
-    public int TotalChannelCount { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether streams work.
-    /// </summary>
-    public bool StreamWorks { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether EPG is available.
-    /// </summary>
-    public bool HasEpg { get; set; }
-
-    /// <summary>
-    /// Gets or sets the EPG program count.
-    /// </summary>
-    public int EpgProgramCount { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether this provider is fully working.
-    /// </summary>
-    public bool IsFullyWorking { get; set; }
+    public string? TrustSummary { get; set; }
 
     /// <summary>
     /// Gets or sets any error message.
@@ -195,9 +152,9 @@ public sealed class ScrapedProviderResponse
     public string? ErrorMessage { get; set; }
 
     /// <summary>
-    /// Gets or sets the Polish channel names.
+    /// Gets or sets the channel names matching the country filter.
     /// </summary>
-    public List<string> PolishChannelNames { get; set; } = [];
+    public List<string> CountryChannelNames { get; set; } = [];
 }
 
 /// <summary>
@@ -248,72 +205,29 @@ public sealed class DiscoveryResponse
     public int FullyWorkingCount { get; set; }
 
     /// <summary>
+    /// Gets or sets the count of excellent providers (fully working + high quality).
+    /// </summary>
+    public int ExcellentCount { get; set; }
+
+    /// <summary>
+    /// Gets or sets the country code used for filtering (e.g., "PL", "UK", "DE").
+    /// </summary>
+    public string? CountryCode { get; set; }
+
+    /// <summary>
     /// Gets or sets the working providers.
     /// </summary>
     public List<DiscoveredProviderResponse> WorkingProviders { get; set; } = [];
 
     /// <summary>
-    /// Gets or sets the fully working providers (with EPG, stream, and Polish).
+    /// Gets or sets the fully working providers (with EPG, stream, and country channels).
     /// </summary>
     public List<DiscoveredProviderResponse> FullyWorkingProviders { get; set; } = [];
-}
-
-/// <summary>
-/// Backward compatibility alias for DiscoveryResponse.
-/// </summary>
-[SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "DTO requires setter")]
-[SuppressMessage("Design", "CA1002:Do not expose generic lists", Justification = "DTO requires setter")]
-public sealed class ScrapeResponse
-{
-    /// <summary>
-    /// Gets or sets a value indicating whether the operation was successful.
-    /// </summary>
-    public bool Success { get; set; }
 
     /// <summary>
-    /// Gets or sets any error message.
+    /// Gets or sets the excellent providers (fully working + high quality streams).
     /// </summary>
-    public string? ErrorMessage { get; set; }
-
-    /// <summary>
-    /// Gets or sets the number of pages processed.
-    /// </summary>
-    public int PagesScraped { get; set; }
-
-    /// <summary>
-    /// Gets or sets the total credentials found.
-    /// </summary>
-    public int TotalCredentialsFound { get; set; }
-
-    /// <summary>
-    /// Gets or sets the total credentials tested.
-    /// </summary>
-    public int TotalCredentialsTested { get; set; }
-
-    /// <summary>
-    /// Gets or sets the count of working providers.
-    /// </summary>
-    public int WorkingProviderCount { get; set; }
-
-    /// <summary>
-    /// Gets or sets the count of working providers with EPG.
-    /// </summary>
-    public int WorkingWithEpgCount { get; set; }
-
-    /// <summary>
-    /// Gets or sets the count of fully working providers.
-    /// </summary>
-    public int FullyWorkingCount { get; set; }
-
-    /// <summary>
-    /// Gets or sets the working providers.
-    /// </summary>
-    public List<ScrapedProviderResponse> WorkingProviders { get; set; } = [];
-
-    /// <summary>
-    /// Gets or sets the fully working providers (with EPG, stream, and Polish).
-    /// </summary>
-    public List<ScrapedProviderResponse> FullyWorkingProviders { get; set; } = [];
+    public List<DiscoveredProviderResponse> ExcellentProviders { get; set; } = [];
 }
 
 /// <summary>
@@ -347,55 +261,14 @@ public sealed class DiscoveryProgressResponse
     public int CredentialsFound { get; set; }
 
     /// <summary>
-    /// Gets or sets the working providers found.
+    /// Gets or sets the count of providers that passed connectivity check.
     /// </summary>
-    public int WorkingProviders { get; set; }
+    public int ConnectivityPassed { get; set; }
 
     /// <summary>
-    /// Gets or sets the working providers with EPG found.
+    /// Gets or sets the count of providers that passed authentication.
     /// </summary>
-    public int WorkingWithEpg { get; set; }
-
-    /// <summary>
-    /// Gets or sets the fully working providers found (Working + EPG + Polish).
-    /// </summary>
-    public int FullyWorking { get; set; }
-
-    /// <summary>
-    /// Gets or sets the status message.
-    /// </summary>
-    public string Message { get; set; } = string.Empty;
-}
-
-/// <summary>
-/// Backward compatibility alias for DiscoveryProgressResponse.
-/// </summary>
-public sealed class ScrapeProgressResponse
-{
-    /// <summary>
-    /// Gets or sets the current phase.
-    /// </summary>
-    public string Phase { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Gets or sets the current item.
-    /// </summary>
-    public int CurrentItem { get; set; }
-
-    /// <summary>
-    /// Gets or sets the total items.
-    /// </summary>
-    public int TotalItems { get; set; }
-
-    /// <summary>
-    /// Gets or sets the progress percentage.
-    /// </summary>
-    public int ProgressPercent { get; set; }
-
-    /// <summary>
-    /// Gets or sets the credentials found.
-    /// </summary>
-    public int CredentialsFound { get; set; }
+    public int AuthenticationPassed { get; set; }
 
     /// <summary>
     /// Gets or sets the working providers found.
@@ -408,14 +281,29 @@ public sealed class ScrapeProgressResponse
     public int WorkingWithEpg { get; set; }
 
     /// <summary>
-    /// Gets or sets the fully working providers found (Working + EPG + Polish).
+    /// Gets or sets the fully working providers found (Working + EPG + country channels).
     /// </summary>
     public int FullyWorking { get; set; }
+
+    /// <summary>
+    /// Gets or sets the excellent providers found (fully working + high quality).
+    /// </summary>
+    public int Excellent { get; set; }
 
     /// <summary>
     /// Gets or sets the status message.
     /// </summary>
     public string Message { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the count of items currently being processed across all stages.
+    /// </summary>
+    public int InProgress { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the pipeline has finished processing all items.
+    /// </summary>
+    public bool IsComplete { get; set; }
 }
 
 /// <summary>
@@ -432,20 +320,4 @@ public sealed class DiscoveryStatusResponse
     /// Gets or sets the current progress.
     /// </summary>
     public DiscoveryProgressResponse? Progress { get; set; }
-}
-
-/// <summary>
-/// Backward compatibility alias for DiscoveryStatusResponse.
-/// </summary>
-public sealed class ScrapeStatusResponse
-{
-    /// <summary>
-    /// Gets or sets a value indicating whether discovery is running.
-    /// </summary>
-    public bool IsRunning { get; set; }
-
-    /// <summary>
-    /// Gets or sets the current progress.
-    /// </summary>
-    public ScrapeProgressResponse? Progress { get; set; }
 }

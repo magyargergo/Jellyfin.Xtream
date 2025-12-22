@@ -65,9 +65,12 @@ public sealed class WebCredentialSourceIntegrationTests
             );
         });
 
-        // Act
+        // Act - search last week
+        var startDate = DateTime.UtcNow.Date.AddDays(-7);
+        var endDate = DateTime.UtcNow.Date;
         var result = await source.DiscoverAsync(
-            maxPages: 3,
+            startDate: startDate,
+            endDate: endDate,
             maxWorkers: 3,
             progress: progress,
             cancellationToken: CancellationToken.None
@@ -127,9 +130,12 @@ public sealed class WebCredentialSourceIntegrationTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        // Act
+        // Act - search last 3 days
+        var startDate = DateTime.UtcNow.Date.AddDays(-3);
+        var endDate = DateTime.UtcNow.Date;
         var result = await source.DiscoverAsync(
-            maxPages: 1,
+            startDate: startDate,
+            endDate: endDate,
             maxWorkers: 1,
             progress: null,
             cancellationToken: cts.Token
@@ -168,9 +174,11 @@ public sealed class WebCredentialSourceIntegrationTests
         cts.Cancel();
 
         // Act & Assert - TaskCanceledException derives from OperationCanceledException
+        var startDate = DateTime.UtcNow.Date.AddDays(-7);
+        var endDate = DateTime.UtcNow.Date;
         var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
         {
-            await source.DiscoverAsync(maxPages: 5, maxWorkers: 5, progress: null, cancellationToken: cts.Token);
+            await source.DiscoverAsync(startDate, endDate, maxWorkers: 5, progress: null, cancellationToken: cts.Token);
         });
 
         _output.WriteLine($"Cancellation handled correctly: {ex.GetType().Name}");
