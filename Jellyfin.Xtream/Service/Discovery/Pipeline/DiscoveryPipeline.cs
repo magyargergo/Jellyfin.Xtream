@@ -23,6 +23,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.Discovery.Pipeline.Stages;
+using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.Discovery.Pipeline;
@@ -129,7 +130,7 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
 
         Interlocked.Exchange(ref _totalItems, items.Count);
 
-        _logger.LogInformation("Starting pipeline with {Count} credentials", items.Count);
+        _logger.PluginLogInformation("Starting pipeline with {Count} credentials", items.Count);
 
         // Start all stages
         var stageTasks = new List<Task>();
@@ -182,7 +183,7 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
             _aggregatedEvents.Writer.TryComplete();
         }
 
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Pipeline completed: {Completed} succeeded, {Failed} failed",
             _completedResults.Count,
             _failedItems.Count

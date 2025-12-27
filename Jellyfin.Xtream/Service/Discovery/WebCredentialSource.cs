@@ -25,6 +25,7 @@ using System.Threading.Tasks;
 using AngleSharp;
 using AngleSharp.Dom;
 using AngleSharp.Html.Dom;
+using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.Retry;
@@ -143,7 +144,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
                 return result;
             }
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Found {Count} pages to process for date range {StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd}",
                 urls.Count,
                 startDate,
@@ -188,7 +189,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
                 catch (Exception ex)
                 {
                     Interlocked.Increment(ref pagesFailed);
-                    _logger.LogWarning(ex, "Failed to process page: {Url}", url);
+                    _logger.PluginLogWarning(ex, "Failed to process page: {Url}", url);
                 }
                 finally
                 {
@@ -206,7 +207,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
             result.PagesProcessed = pagesCompleted;
             result.PagesFailed = pagesFailed;
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Discovery complete: {CredentialCount} unique credentials from {PagesProcessed} pages ({PagesFailed} failed)",
                 uniqueCredentials.Count,
                 pagesCompleted,
@@ -220,7 +221,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Discovery failed");
+            _logger.PluginLogError(ex, "Discovery failed");
             result.ErrorMessage = ex.Message;
         }
 

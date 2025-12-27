@@ -24,6 +24,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.Discovery.Pipeline;
+using Jellyfin.Xtream.Utility;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -215,7 +216,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
             var startDate = options.GetStartDate();
             var endDate = options.GetEndDate();
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Starting pipeline discovery: TimeRange={TimeRange} ({StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd}), DiscoveryWorkers={DiscoveryWorkers}",
                 options.TimeRange,
                 startDate,
@@ -252,7 +253,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
                 return;
             }
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Discovered {Count} credentials from {Pages} pages, starting pipeline",
                 discoveryResult.Credentials.Count,
                 discoveryResult.PagesProcessed
@@ -356,7 +357,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
                     _lastResult = result;
                 }
 
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "Pipeline complete: {Total} processed, {Working} working, {WithEpg} with EPG, {Full} fully working, {Excellent} excellent",
                     testResults.Count,
                     result.WorkingProviders.Count,
@@ -387,7 +388,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
             }
             else
             {
-                _logger.LogError(ex, "Discovery pipeline failed");
+                _logger.PluginLogError(ex, "Discovery pipeline failed");
             }
 
             result.ErrorMessage = ex.Message;
@@ -504,7 +505,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
                     _lastResult = cached;
                 }
 
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "Loaded cached discovery results: {Working} working, {WithEpg} with EPG, {Full} fully working",
                     cached.WorkingProviders.Count,
                     cached.WorkingWithEpgProviders.Count,
@@ -514,7 +515,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to load cached discovery results from {Path}", _cachePath);
+            _logger.PluginLogWarning(ex, "Failed to load cached discovery results from {Path}", _cachePath);
         }
     }
 
@@ -535,7 +536,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to save discovery results to cache: {Path}", _cachePath);
+            _logger.PluginLogWarning(ex, "Failed to save discovery results to cache: {Path}", _cachePath);
         }
     }
 
@@ -553,7 +554,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
             if (File.Exists(_cachePath))
             {
                 File.Delete(_cachePath);
-                _logger.LogInformation("Cleared discovery cache: {Path}", _cachePath);
+                _logger.PluginLogInformation("Cleared discovery cache: {Path}", _cachePath);
                 return true;
             }
 
@@ -561,7 +562,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to delete discovery cache: {Path}", _cachePath);
+            _logger.PluginLogWarning(ex, "Failed to delete discovery cache: {Path}", _cachePath);
             return false;
         }
     }

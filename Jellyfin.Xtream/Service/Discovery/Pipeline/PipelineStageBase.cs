@@ -18,6 +18,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.Discovery.Pipeline;
@@ -151,7 +152,7 @@ public abstract class PipelineStageBase : IPipelineStage
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Stage {Stage} failed with unexpected error", StageId);
+            _logger.PluginLogError(ex, "Stage {Stage} failed with unexpected error", StageId);
             throw;
         }
         finally
