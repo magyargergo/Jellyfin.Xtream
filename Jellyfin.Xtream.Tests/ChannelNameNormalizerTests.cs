@@ -64,7 +64,7 @@ public sealed class ChannelNameNormalizerTests
     [InlineData("PL: TVN HD", "TVN")]
     [InlineData("PL | Polsat Sport", "POLSATSPORT")]
     [InlineData("|PL| Discovery", "DISCOVERY")]
-    [InlineData("[PL] National Geographic", "NATIONALGEOGRAPHIC")]
+    [InlineData("[PL] National Geographic", "NATGEO")]
     [InlineData("(PL) HBO", "HBO")]
     [InlineData("PL- Canal+", "CANAL")]
     [InlineData("UK: BBC One", "BBCONE")]
@@ -171,7 +171,7 @@ public sealed class ChannelNameNormalizerTests
     [InlineData("Comedy Central Spain", "COMEDYCENTRAL")]
     [InlineData("Nickelodeon Italy", "NICKELODEON")]
     [InlineData("Cartoon Network USA", "CARTOONNETWORK")]
-    [InlineData("Fox Sports Australia", "FOXSPORTS")]
+    [InlineData("Fox Sports Australia", "FOXSPORT")] // SPORTS -> SPORT
     [InlineData("Discovery Canada", "DISCOVERY")]
     public void Normalize_WithCountrySuffix_StripsSuffix(string input, string expected)
     {
@@ -247,7 +247,7 @@ public sealed class ChannelNameNormalizerTests
 
     [Theory]
     [InlineData("Channel:", "CHANNEL")]
-    [InlineData("Sports: ", "SPORTS")]
+    [InlineData("Sports: ", "SPORT")] // SPORTS -> SPORT
     public void Normalize_WithTrailingColon_StripsColon(string input, string expected)
     {
         var result = _normalizer.Normalize(input);
@@ -262,7 +262,7 @@ public sealed class ChannelNameNormalizerTests
     [Theory]
     [InlineData("Canal_Plus", "CANALPLUS")]
     [InlineData("Eurosport-1", "EUROSPORT1")]
-    [InlineData("National.Geographic", "NATIONALGEOGRAPHIC")]
+    [InlineData("National.Geographic", "NATGEO")]
     [InlineData("Discovery/Science", "DISCOVERYSCIENCE")]
     [InlineData("BBC\\News", "BBCNEWS")]
     [InlineData("Music|Video", "MUSICVIDEO")]
@@ -449,7 +449,7 @@ public sealed class ChannelNameNormalizerTests
     [Theory]
     [InlineData("TVN  HD", "TVN")]
     [InlineData("Polsat   Sport", "POLSATSPORT")]
-    [InlineData("Discovery    Channel", "DISCOVERYCHANNEL")]
+    [InlineData("Discovery    Channel", "DISCOVERY")]
     [InlineData("  HBO  ", "HBO")]
     [InlineData("\tCanal+\t", "CANAL")]
     [InlineData("  Multiple   Spaces   Here  ", "MULTIPLESPACESHERE")]
@@ -464,9 +464,9 @@ public sealed class ChannelNameNormalizerTests
     [InlineData("TVN", "TVN")]
     [InlineData("tvn", "TVN")]
     [InlineData("TvN", "TVN")]
-    [InlineData("DISCOVERY CHANNEL", "DISCOVERYCHANNEL")]
-    [InlineData("discovery channel", "DISCOVERYCHANNEL")]
-    [InlineData("Discovery Channel", "DISCOVERYCHANNEL")]
+    [InlineData("DISCOVERY CHANNEL", "DISCOVERY")]
+    [InlineData("discovery channel", "DISCOVERY")]
+    [InlineData("Discovery Channel", "DISCOVERY")]
     public void Normalize_WithMixedCase_ConvertsToUppercase(string input, string expected)
     {
         var result = _normalizer.Normalize(input);
@@ -484,8 +484,8 @@ public sealed class ChannelNameNormalizerTests
     [InlineData("[UK] BBC One HD HEVC 24/7", "BBCONE")]
     [InlineData("DE: RTL 4K UHD Germany Backup", "RTL")]
     [InlineData("FR | Canal+ Sport France FHD Stream", "CANALSPORT")]
-    [InlineData("123 PL: Discovery Channel HD Poland", "DISCOVERYCHANNEL")]
-    [InlineData("|UK| Sky Sports News HD Primary", "SKYSPORTSNEWS")]
+    [InlineData("123 PL: Discovery Channel HD Poland", "DISCOVERY")]
+    [InlineData("|UK| Sky Sports News HD Primary", "SKYSPORTNEWS")] // SPORTS -> SPORT
     [InlineData("(DE) ProSieben MAXX FHD Alternative", "PROSIEBENMAXX")]
     public void Normalize_WithComplexRealWorldNames_NormalizesCorrectly(string input, string expected)
     {

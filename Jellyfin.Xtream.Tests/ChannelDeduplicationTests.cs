@@ -13,10 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.ChannelMatching;
+using Jellyfin.Xtream.Service.ProviderManagement;
+using Polly.CircuitBreaker;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -232,10 +237,10 @@ public sealed class ChannelDeduplicationTests
     }
 
     /// <summary>
-    /// Tests that availability scorer affects provider ordering.
+    /// Tests that resilience service health scores affect provider ordering.
     /// </summary>
     [Fact]
-    public void Build_WithAvailabilityScorer_AffectsProviderOrdering()
+    public void Build_WithResilienceService_AffectsProviderOrdering()
     {
         var provider1 = CreateProvider("p1", "Provider 1");
         var provider2 = CreateProvider("p2", "Provider 2");
@@ -248,29 +253,31 @@ public sealed class ChannelDeduplicationTests
             new(provider2, CreateStream(2, "TVN HD")),
         };
 
-        // Without availability scorer - 4K wins
-        var mapWithoutScorer = ChannelProviderMap.Build(streams);
-        var channelWithoutScorer = mapWithoutScorer.Channels.First();
-        Assert.Equal("TVN 4K", channelWithoutScorer.Providers[0].Stream.Name);
+        // Without resilience service - 4K wins (quality only)
+        var mapWithoutService = ChannelProviderMap.Build(streams);
+        var channelWithoutService = mapWithoutService.Channels.First();
+        Assert.Equal("TVN 4K", channelWithoutService.Providers[0].Stream.Name);
 
-        // With availability scorer - Provider 1 has low availability (10), Provider 2 has high (100)
-        int AvailabilityScorer(string providerId) => providerId == "p1" ? 10 : 100;
-
-        var mapWithScorer = ChannelProviderMap.Build(streams, AvailabilityScorer);
-        var channelWithScorer = mapWithScorer.Channels.First();
-
-        _output.WriteLine("Without availability scorer:");
-        _output.WriteLine(
-            $"  First: {channelWithoutScorer.Providers[0].Stream.Name} ({channelWithoutScorer.Providers[0].Provider.Name})"
+        // With resilience service - Provider 1 has low health (10), Provider 2 has high (100)
+        var mockService = new MockResilienceService(
+            new Dictionary<string, int>(StringComparer.Ordinal) { ["p1"] = 10, ["p2"] = 100 }
         );
 
-        _output.WriteLine("With availability scorer:");
+        var mapWithService = ChannelProviderMap.Build(streams, mockService);
+        var channelWithService = mapWithService.Channels.First();
+
+        _output.WriteLine("Without resilience service:");
         _output.WriteLine(
-            $"  First: {channelWithScorer.Providers[0].Stream.Name} ({channelWithScorer.Providers[0].Provider.Name})"
+            $"  First: {channelWithoutService.Providers[0].Stream.Name} ({channelWithoutService.Providers[0].Provider.Name})"
         );
 
-        // With significant availability difference, HD from high-availability provider should win
-        Assert.Equal("TVN HD", channelWithScorer.Providers[0].Stream.Name);
+        _output.WriteLine("With resilience service:");
+        _output.WriteLine(
+            $"  First: {channelWithService.Providers[0].Stream.Name} ({channelWithService.Providers[0].Provider.Name})"
+        );
+
+        // With significant health difference, HD from healthy provider should win
+        Assert.Equal("TVN HD", channelWithService.Providers[0].Stream.Name);
     }
 
     /// <summary>
@@ -412,8 +419,8 @@ public sealed class ChannelDeduplicationTests
         var hbo = map.Channels.First(c => c.NormalizedName == "HBO");
         Assert.Equal(1, hbo.ProviderCount);
 
-        // Discovery should have 3 providers
-        var discovery = map.Channels.First(c => c.NormalizedName == "DISCOVERYCHANNEL");
+        // Discovery Channel should have 3 providers (normalized to DISCOVERY)
+        var discovery = map.Channels.First(c => c.NormalizedName == "DISCOVERY");
         Assert.Equal(3, discovery.ProviderCount);
     }
 
@@ -504,5 +511,63 @@ public sealed class ChannelDeduplicationTests
         // Should have all 600 unique channels
         Assert.Equal(600, map.ChannelCount);
         Assert.Equal(0, map.SkippedCount);
+    }
+
+    /// <summary>
+    /// Mock resilience service for testing.
+    /// </summary>
+    private sealed class MockResilienceService(
+        Dictionary<string, int> scores,
+        Dictionary<string, bool>? capacity = null
+    ) : IProviderAvailabilityService
+    {
+        private readonly Dictionary<string, int> _scores = scores;
+        private readonly Dictionary<string, bool> _capacity =
+            capacity ?? new Dictionary<string, bool>(StringComparer.Ordinal);
+
+        public bool IsAvailable(string providerId) => true;
+
+        public CircuitState GetCircuitState(string providerId) => CircuitState.Closed;
+
+        public int GetSelectionScore(string providerId) => _scores.TryGetValue(providerId, out var score) ? score : 50;
+
+        public IReadOnlyList<ProviderStreamInfo> GetSortedProviders(
+            IEnumerable<ProviderStreamInfo> providers,
+            bool forceIncludeAll = false
+        ) => [.. providers.OrderByDescending(p => GetSelectionScore(p.Provider.Id))];
+
+        public void RecordSuccess(string providerId) { }
+
+        public bool RecordFailure(string providerId, ProviderFailureReason reason, string? providerName = null) =>
+            false;
+
+        public Task RecordConnectionLimitAsync(string providerId) => Task.CompletedTask;
+
+        public Task ResetCircuitAsync(string providerId) => Task.CompletedTask;
+
+        public IReadOnlyDictionary<string, ProviderResilienceState> GetSnapshot() =>
+            new Dictionary<string, ProviderResilienceState>(StringComparer.Ordinal);
+
+        public void UpdateCapacity(string providerId, int availableSlots, int maxConnections) { }
+
+        public bool HasCapacity(string providerId) =>
+            !_capacity.TryGetValue(providerId, out var hasCapacity) || hasCapacity;
+
+        public bool IsCircuitAvailable(string providerId) => true;
+
+        public Task IsolateCircuitAsync(string providerId) => Task.CompletedTask;
+
+        public int GetAvailableSlots(string providerId) => -1;
+
+        public int GetMaxConnections(string providerId) => 0;
+
+        public ProviderResilienceState? GetStatus(string providerId) => null;
+
+        public Task RefreshAsync(
+            IEnumerable<XtreamProvider> providers,
+            CancellationToken cancellationToken = default
+        ) => Task.CompletedTask;
+
+        public bool NeedsRefresh() => false;
     }
 }
