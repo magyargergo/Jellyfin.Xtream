@@ -18,6 +18,10 @@ using Jellyfin.Xtream.Providers;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Discovery;
 using Jellyfin.Xtream.Service.Epg;
+using Jellyfin.Xtream.Service.Logging;
+using Jellyfin.Xtream.Service.ProviderManagement;
+using Jellyfin.Xtream.Service.Switching;
+using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.LiveTv;
@@ -84,7 +88,88 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<ICredentialParser, CredentialParser>();
         serviceCollection.AddSingleton<IProviderDiscoveryService, ProviderDiscoveryService>();
 
-        // Register provider connection cache for connection-aware channel ordering
-        serviceCollection.AddSingleton<ProviderConnectionCache>();
+        // Register unified provider resilience service (combines circuit breaker, health scoring, capacity, and connection status)
+        serviceCollection.AddSingleton<ProviderAvailabilityService>(sp => new ProviderAvailabilityService(
+            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
+            sp.GetRequiredService<ILoggerFactory>(),
+            sp.GetRequiredService<IDiscordNotificationService>(),
+            () => Plugin.Instance?.Configuration
+        ));
+        serviceCollection.AddSingleton<IProviderAvailabilityService>(sp =>
+            sp.GetRequiredService<ProviderAvailabilityService>()
+        );
+
+        // Register segregated interfaces for consumers that need specific capabilities
+        serviceCollection.AddSingleton<ICircuitBreakerService>(sp =>
+            sp.GetRequiredService<ProviderAvailabilityService>()
+        );
+        serviceCollection.AddSingleton<IProviderHealthScorer>(sp =>
+            sp.GetRequiredService<ProviderAvailabilityService>()
+        );
+        serviceCollection.AddSingleton<IProviderCapacityTracker>(sp =>
+            sp.GetRequiredService<ProviderAvailabilityService>()
+        );
+
+        // Register provider metrics tracker for latency/throughput/error tracking
+        serviceCollection.AddSingleton<IProviderMetricsTracker, ProviderMetricsTracker>();
+
+        // Register health trend tracker for predictive failover
+        serviceCollection.AddSingleton<IHealthTrendTracker, HealthTrendTracker>();
+
+        // Register automatic failover service (combines health scoring + metrics + trends for optimal selection)
+        serviceCollection.AddSingleton<AutomaticFailoverService>(sp => new AutomaticFailoverService(
+            sp.GetRequiredService<IProviderHealthScorer>(),
+            sp.GetRequiredService<ICircuitBreakerService>(),
+            sp.GetRequiredService<IProviderMetricsTracker>(),
+            sp.GetRequiredService<IHealthTrendTracker>(),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<AutomaticFailoverService>()
+        ));
+        serviceCollection.AddSingleton<IAutomaticFailoverService>(sp =>
+            sp.GetRequiredService<AutomaticFailoverService>()
+        );
+
+        // Register provider monitoring service as both interface and hosted service
+        // This runs in the background and refreshes provider status without impacting streaming
+        serviceCollection.AddSingleton<ProviderMonitoringService>();
+        serviceCollection.AddSingleton<IProviderMonitoringService>(sp =>
+            sp.GetRequiredService<ProviderMonitoringService>()
+        );
+        serviceCollection.AddHostedService(sp => sp.GetRequiredService<ProviderMonitoringService>());
+
+        // Register hot-swap streaming services for mid-stream provider switching
+
+        // PreconnectPool maintains warm connections to backup providers for <50ms switches
+        serviceCollection.AddSingleton<IPreconnectPool>(sp => new PreconnectPool(
+            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient("XtreamClient"),
+            sp.GetRequiredService<IProviderAvailabilityService>()
+        ));
+
+        // HotSwapStreamManager coordinates provider switches during active streams
+        serviceCollection.AddSingleton<IHotSwapStreamManager>(sp => new HotSwapStreamManager(
+            sp.GetRequiredService<IProviderAvailabilityService>(),
+            sp.GetRequiredService<IAutomaticFailoverService>(),
+            sp.GetRequiredService<IPreconnectPool>(),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<HotSwapStreamManager>()
+        ));
+
+        // ProviderUrlResolver resolves alternative provider URLs based on health scores
+        serviceCollection.AddSingleton<IProviderUrlResolver>(sp => new ProviderUrlResolver(
+            sp.GetRequiredService<IProviderAvailabilityService>(),
+            sp.GetRequiredService<ILogger<ProviderUrlResolver>>()
+        ));
+
+        // StreamHotSwapService orchestrates hot-swap with cooldown, attempt limits, and timeouts
+        serviceCollection.AddSingleton<IStreamHotSwapService>(sp => new StreamHotSwapService(
+            sp.GetRequiredService<IProviderUrlResolver>(),
+            sp.GetRequiredService<ILogger<StreamHotSwapService>>()
+        ));
+
+        // Register plugin log service and initialize PluginLogger
+        serviceCollection.AddSingleton<IPluginLogService>(_ =>
+        {
+            var logService = new PluginLogService();
+            PluginLogger.Initialize(logService);
+            return logService;
+        });
     }
 }

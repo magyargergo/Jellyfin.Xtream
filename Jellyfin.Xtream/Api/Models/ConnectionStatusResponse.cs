@@ -68,6 +68,30 @@ public sealed class ProviderConnectionStatus
     /// Gets or sets a value indicating whether connection info was successfully retrieved.
     /// </summary>
     public bool IsOnline { get; set; }
+
+    // ========== Resilience Service Data ==========
+
+    /// <summary>
+    /// Gets or sets the circuit breaker state (Closed, Open, HalfOpen, Isolated).
+    /// </summary>
+    public string CircuitState { get; set; } = "Closed";
+
+    /// <summary>
+    /// Gets or sets the health selection score (0-100, higher = better).
+    /// Combines success rate, capacity, and recent activity.
+    /// </summary>
+    public int SelectionScore { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the provider is available for new connections.
+    /// False when circuit is open or provider is blacklisted.
+    /// </summary>
+    public bool IsAvailable { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the number of consecutive failures.
+    /// </summary>
+    public int ConsecutiveFailures { get; set; }
 }
 
 /// <summary>

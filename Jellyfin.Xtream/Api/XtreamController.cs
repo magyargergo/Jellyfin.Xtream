@@ -29,6 +29,8 @@ using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Discovery;
 using Jellyfin.Xtream.Service.Epg;
+using Jellyfin.Xtream.Service.Logging;
+using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -52,7 +54,10 @@ public class XtreamController : ControllerBase
     private readonly ILoggerFactory _loggerFactory;
     private readonly IMemoryCache _cache;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly ProviderConnectionCache _connectionCache;
+    private readonly IProviderAvailabilityService _resilienceService;
+    private readonly IProviderMonitoringService _monitoringService;
+    private readonly IProviderMetricsTracker _metricsTracker;
+    private readonly IAutomaticFailoverService _failoverService;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="XtreamController"/> class.
@@ -61,20 +66,29 @@ public class XtreamController : ControllerBase
     /// <param name="loggerFactory">The logger factory instance.</param>
     /// <param name="cache">The memory cache instance.</param>
     /// <param name="httpClientFactory">The HTTP client factory.</param>
-    /// <param name="connectionCache">The provider connection cache.</param>
+    /// <param name="resilienceService">The provider resilience service.</param>
+    /// <param name="monitoringService">The provider monitoring service.</param>
+    /// <param name="metricsTracker">The provider metrics tracker.</param>
+    /// <param name="failoverService">The automatic failover service.</param>
     public XtreamController(
         ILogger<XtreamController> logger,
         ILoggerFactory loggerFactory,
         IMemoryCache cache,
         IHttpClientFactory httpClientFactory,
-        ProviderConnectionCache connectionCache
+        IProviderAvailabilityService resilienceService,
+        IProviderMonitoringService monitoringService,
+        IProviderMetricsTracker metricsTracker,
+        IAutomaticFailoverService failoverService
     )
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
         _cache = cache;
         _httpClientFactory = httpClientFactory;
-        _connectionCache = connectionCache;
+        _resilienceService = resilienceService;
+        _monitoringService = monitoringService;
+        _metricsTracker = metricsTracker;
+        _failoverService = failoverService;
     }
 
     private XtreamProvider? GetProvider(string? providerId)
@@ -431,12 +445,12 @@ public class XtreamController : ControllerBase
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogError(ex, "Failed to test provider {ProviderId}", providerId);
+            _logger.PluginLogError(ex, "Failed to test provider {ProviderId}", providerId);
             return Ok(new { success = false, message = "Connection failed: " + ex.Message });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error testing provider {ProviderId}", providerId);
+            _logger.PluginLogError(ex, "Unexpected error testing provider {ProviderId}", providerId);
             return Ok(new { success = false, message = ex.Message });
         }
     }
@@ -475,7 +489,7 @@ public class XtreamController : ControllerBase
         bool hasLegacyChannels = config.LiveTv.Count > 0 || config.Vod.Count > 0 || config.Series.Count > 0;
         bool hasLegacyConfig = hasLegacyCredentials || hasLegacyChannels;
 
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Legacy config check: BaseUrl={BaseUrl}, Username={Username}, LiveTv={LiveTvCount}, Vod={VodCount}, Series={SeriesCount}",
             config.BaseUrl,
             config.Username,
@@ -543,7 +557,7 @@ public class XtreamController : ControllerBase
 
         Plugin.Instance.SaveConfiguration();
 
-        _logger.LogInformation("Legacy configuration migrated to provider {ProviderId}", migratedProvider.Id);
+        _logger.PluginLogInformation("Legacy configuration migrated to provider {ProviderId}", migratedProvider.Id);
 
         return Ok(
             new
@@ -615,7 +629,7 @@ public class XtreamController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send buffer diagnostics");
+            _logger.PluginLogError(ex, "Failed to send buffer diagnostics");
             return Ok(
                 new
                 {
@@ -665,7 +679,7 @@ public class XtreamController : ControllerBase
                 .ToList();
 
             response.Success = true;
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "EPG test for stream {StreamId}: {Count} programs from {Provider}",
                 streamId,
                 response.Programs.Count,
@@ -674,7 +688,7 @@ public class XtreamController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "EPG test failed for stream {StreamId}", streamId);
+            _logger.PluginLogError(ex, "EPG test failed for stream {StreamId}", streamId);
             response.Success = false;
             response.ErrorMessage = ex.Message;
         }
@@ -715,7 +729,7 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        _logger.LogInformation("Starting parallel EPG refresh via API");
+        _logger.PluginLogInformation("Starting parallel EPG refresh via API");
 
         try
         {
@@ -746,7 +760,7 @@ public class XtreamController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "EPG refresh failed");
+            _logger.PluginLogError(ex, "EPG refresh failed");
             return Ok(
                 new
                 {
@@ -768,7 +782,7 @@ public class XtreamController : ControllerBase
     public ActionResult<IReadOnlyList<StreamInfoSnapshot>> GetActiveStreams()
     {
         IReadOnlyList<StreamInfoSnapshot> streams = Restream.GetActiveStreamSnapshots();
-        _logger.LogInformation("Retrieved {Count} active stream(s)", streams.Count);
+        _logger.PluginLogInformation("Retrieved {Count} active stream(s)", streams.Count);
         return Ok(streams);
     }
 
@@ -781,15 +795,15 @@ public class XtreamController : ControllerBase
     [HttpDelete("ActiveStreams/{streamId}")]
     public ActionResult<object> KillStream(string streamId)
     {
-        _logger.LogWarning("Killing stream {StreamId} via API", streamId);
+        _logger.PluginLogWarning("Killing stream {StreamId} via API", streamId);
 
         if (Restream.KillStream(streamId))
         {
-            _logger.LogInformation("Successfully killed stream {StreamId}", streamId);
+            _logger.PluginLogInformation("Successfully killed stream {StreamId}", streamId);
             return Ok(new { success = true, message = "Stream " + streamId + " killed successfully" });
         }
 
-        _logger.LogWarning("Stream {StreamId} not found", streamId);
+        _logger.PluginLogWarning("Stream {StreamId} not found", streamId);
         return NotFound(new { success = false, message = "Stream " + streamId + " not found" });
     }
 
@@ -801,9 +815,9 @@ public class XtreamController : ControllerBase
     [HttpDelete("ActiveStreams")]
     public ActionResult<object> KillAllStreams()
     {
-        _logger.LogWarning("Killing all active streams via API");
+        _logger.PluginLogWarning("Killing all active streams via API");
         int count = Restream.KillAllStreams();
-        _logger.LogInformation("Killed {Count} active stream(s)", count);
+        _logger.PluginLogInformation("Killed {Count} active stream(s)", count);
         return Ok(
             new
             {
@@ -869,7 +883,7 @@ public class XtreamController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get connection info from provider");
+            _logger.PluginLogError(ex, "Failed to get connection info from provider");
             return Ok(new { success = false, message = ex.Message });
         }
     }
@@ -957,7 +971,7 @@ public class XtreamController : ControllerBase
         var startDate = options.GetStartDate();
         var endDate = options.GetEndDate();
 
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Starting background discovery: TimeRange={TimeRange} ({StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd}), DiscoveryWorkers={DiscoveryWorkers}",
             options.TimeRange,
             startDate,
@@ -1270,7 +1284,7 @@ public class XtreamController : ControllerBase
     public ActionResult<object> CancelDiscovery([FromServices] IProviderDiscoveryService discoveryService)
     {
         discoveryService.Cancel();
-        _logger.LogInformation("Discovery operation cancelled by user");
+        _logger.PluginLogInformation("Discovery operation cancelled by user");
         return Ok(new { success = true, message = "Discovery cancelled" });
     }
 
@@ -1284,7 +1298,7 @@ public class XtreamController : ControllerBase
     public ActionResult<object> ClearDiscoveryCache([FromServices] IProviderDiscoveryService discoveryService)
     {
         var cleared = discoveryService.ClearCache();
-        _logger.LogInformation("Discovery cache cleared by user");
+        _logger.PluginLogInformation("Discovery cache cleared by user");
         return Ok(
             new
             {
@@ -1342,7 +1356,7 @@ public class XtreamController : ControllerBase
         config.Providers.Add(newProvider);
         Plugin.Instance.SaveConfiguration();
 
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Imported discovered provider: {Name} ({Username}@{Server})",
             newProvider.Name,
             newProvider.Username,
@@ -1362,145 +1376,63 @@ public class XtreamController : ControllerBase
 
     /// <summary>
     /// Get comprehensive connection status for all providers.
+    /// Returns cached data from the background monitoring service to avoid impacting streaming.
     /// </summary>
+    /// <param name="forceRefresh">If true, triggers a background refresh and waits briefly for new data.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Connection status with per-provider details and utilization warnings.</returns>
     [Authorize(Policy = "RequiresElevation")]
     [HttpGet("ConnectionStatus")]
-    public async Task<ActionResult<ConnectionStatusResponse>> GetConnectionStatus(CancellationToken cancellationToken)
+    public async Task<ActionResult<ConnectionStatusResponse>> GetConnectionStatus(
+        [FromQuery] bool forceRefresh = false,
+        CancellationToken cancellationToken = default
+    )
     {
+        // Use cached data from the background monitoring service
+        // This avoids making HTTP calls during streaming which could cause disruption
+        var cachedStatus = _monitoringService.GetCachedStatus();
+
+        if (cachedStatus != null && !forceRefresh)
+        {
+            // Update active stream count in real-time (this is local, no network call)
+            cachedStatus.PluginActiveStreams = Restream.GetActiveStreamCount();
+            return Ok(cachedStatus);
+        }
+
+        // If no cached data or force refresh requested, trigger a background refresh
+        _monitoringService.TriggerRefresh();
+
+        // Wait briefly for data to become available (max 2 seconds)
+        const int maxWaitMs = 2000;
+        const int pollIntervalMs = 100;
+        var waited = 0;
+
+        while (waited < maxWaitMs && !cancellationToken.IsCancellationRequested)
+        {
+            cachedStatus = _monitoringService.GetCachedStatus();
+            if (cachedStatus != null)
+            {
+                cachedStatus.PluginActiveStreams = Restream.GetActiveStreamCount();
+                return Ok(cachedStatus);
+            }
+
+            await Task.Delay(pollIntervalMs, cancellationToken).ConfigureAwait(false);
+            waited += pollIntervalMs;
+        }
+
+        // If still no data, return a minimal response
         var config = Plugin.Instance.Configuration;
-        var enabledProviders = config.GetEnabledProviders().ToList();
-        var response = new ConnectionStatusResponse
-        {
-            PluginActiveStreams = Restream.GetActiveStreamCount(),
-            ConfiguredMaxStreams = config.MaxConcurrentStreams,
-            EnforcementEnabled = config.EnforceConnectionLimit,
-            AutoKillEnabled = config.AutoKillOldestStream,
-        };
-
-        // Always refresh the shared connection cache to get fresh data
-        // This ensures both UI display and channel deduplication use the same data
-        await _connectionCache.RefreshAsync(enabledProviders, cancellationToken).ConfigureAwait(false);
-
-        // Build provider status from the shared cache (same data used for channel ordering)
-        response.Providers = enabledProviders
-            .Select(provider =>
+        return Ok(
+            new ConnectionStatusResponse
             {
-                var status = new ProviderConnectionStatus { ProviderId = provider.Id, ProviderName = provider.Name };
-
-                // Get cached status (just refreshed above)
-                var cachedStatus = _connectionCache.GetStatus(provider.Id);
-                if (cachedStatus != null)
-                {
-                    status.MaxConnections = cachedStatus.MaxConnections;
-                    status.ProviderActiveConnections = cachedStatus.ActiveConnections;
-                    status.Status = cachedStatus.Status;
-                    status.ExpirationDate = cachedStatus.ExpirationDate;
-                    status.IsTrial = cachedStatus.IsTrial;
-                    status.IsOnline = cachedStatus.IsOnline;
-                    status.ErrorMessage = cachedStatus.ErrorMessage;
-                }
-                else
-                {
-                    status.ErrorMessage = "No cached status";
-                    status.IsOnline = false;
-                }
-
-                return status;
-            })
-            .ToList();
-
-        // Calculate effective max streams and available slots
-        // Available slots must consider BOTH:
-        // 1. The configured max streams limit (if set)
-        // 2. The actual provider capacity (MaxConnections - ProviderActiveConnections)
-        var onlineProviders = response.Providers.Where(p => p.IsOnline).ToList();
-
-        // Calculate provider-side availability (accounts for external usage of the same credentials)
-        var providerAvailableSlots = onlineProviders.Sum(p =>
-            Math.Max(0, p.MaxConnections - p.ProviderActiveConnections)
+                PluginActiveStreams = Restream.GetActiveStreamCount(),
+                ConfiguredMaxStreams = config.MaxConcurrentStreams,
+                EnforcementEnabled = config.EnforceConnectionLimit,
+                AutoKillEnabled = config.AutoKillOldestStream,
+                WarningLevel = "None",
+                WarningMessage = "Monitoring data not yet available. Refresh in progress.",
+            }
         );
-        var providerTotalCapacity = onlineProviders.Sum(p => p.MaxConnections);
-        var providerTotalActiveConnections = onlineProviders.Sum(p => p.ProviderActiveConnections);
-
-        // Set provider-side totals for UI transparency
-        response.TotalProviderActiveConnections = providerTotalActiveConnections;
-        response.TotalProviderCapacity = providerTotalCapacity;
-
-        if (config.MaxConcurrentStreams > 0)
-        {
-            // Use configured limit as the effective max
-            response.EffectiveMaxStreams = config.MaxConcurrentStreams;
-
-            // Available slots is the minimum of:
-            // - What config allows (config limit - plugin streams)
-            // - What providers have available (considering all clients using the credentials)
-            var configAvailableSlots = Math.Max(0, config.MaxConcurrentStreams - response.PluginActiveStreams);
-            response.AvailableSlots = Math.Min(configAvailableSlots, providerAvailableSlots);
-        }
-        else if (onlineProviders.Count > 0)
-        {
-            // No configured limit - use total provider capacity
-            response.EffectiveMaxStreams = providerTotalCapacity;
-            response.AvailableSlots = providerAvailableSlots;
-        }
-        else
-        {
-            response.EffectiveMaxStreams = 1;
-            response.AvailableSlots = 1;
-        }
-
-        // Utilization is based on plugin's own streams vs effective max
-        response.UtilizationPercent =
-            response.EffectiveMaxStreams > 0
-                ? (int)Math.Round(100.0 * response.PluginActiveStreams / response.EffectiveMaxStreams)
-                : 0;
-
-        // Set warning level and message
-        if (response.PluginActiveStreams >= response.EffectiveMaxStreams)
-        {
-            response.WarningLevel = "Critical";
-            response.WarningMessage =
-                $"Connection limit reached! {response.PluginActiveStreams}/{response.EffectiveMaxStreams} streams active.";
-        }
-        else if (response.UtilizationPercent >= 80)
-        {
-            response.WarningLevel = "Warning";
-            response.WarningMessage =
-                $"High utilization: {response.PluginActiveStreams}/{response.EffectiveMaxStreams} streams ({response.UtilizationPercent}%).";
-        }
-        else
-        {
-            response.WarningLevel = "None";
-        }
-
-        // Also check each provider for over-subscription
-        foreach (var providerStatus in response.Providers.Where(p => p.IsOnline))
-        {
-            if (providerStatus.ProviderActiveConnections >= providerStatus.MaxConnections)
-            {
-                response.WarningLevel = "Critical";
-                response.WarningMessage =
-                    $"Provider {providerStatus.ProviderName} at limit: {providerStatus.ProviderActiveConnections}/{providerStatus.MaxConnections} connections.";
-                break;
-            }
-
-            if (
-                providerStatus.ProviderActiveConnections > 0
-                && (double)providerStatus.ProviderActiveConnections / providerStatus.MaxConnections >= 0.8
-            )
-            {
-                if (response.WarningLevel != "Critical")
-                {
-                    response.WarningLevel = "Warning";
-                    response.WarningMessage =
-                        $"Provider {providerStatus.ProviderName} high usage: {providerStatus.ProviderActiveConnections}/{providerStatus.MaxConnections} connections.";
-                }
-            }
-        }
-
-        return Ok(response);
     }
 
     private static DiscoveredProviderResponse MapToDiscoveryResponse(ProviderTestResult result)
@@ -1661,7 +1593,7 @@ public class XtreamController : ControllerBase
             response.Message =
                 $"Matched {matchedChannels.Count} of {response.SourceSelectedCount} channels ({unmatchedChannels.Count} unmatched)";
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Copied channel selections from {SourceProvider} to {TargetProvider}: {Matched}/{Total} matched, {Unmatched} unmatched",
                 sourceProvider.Name,
                 targetProvider.Name,
@@ -1672,7 +1604,7 @@ public class XtreamController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(
+            _logger.PluginLogError(
                 ex,
                 "Failed to copy channel selections from {Source} to {Target}",
                 sourceProvider.Name,
@@ -1683,5 +1615,228 @@ public class XtreamController : ControllerBase
         }
 
         return Ok(response);
+    }
+
+    /// <summary>
+    /// Get plugin log entries with optional filtering.
+    /// </summary>
+    /// <param name="logService">The log service.</param>
+    /// <param name="minLevel">Minimum log level (0=Trace, 1=Debug, 2=Info, 3=Warning, 4=Error, 5=Critical).</param>
+    /// <param name="includeDebug">Whether to include debug entries.</param>
+    /// <param name="category">Optional category filter.</param>
+    /// <param name="streamId">Optional stream ID filter.</param>
+    /// <param name="searchText">Optional text search.</param>
+    /// <param name="skip">Number of entries to skip for pagination.</param>
+    /// <param name="take">Number of entries to return (max 500).</param>
+    /// <returns>List of log entries.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Logs")]
+    public ActionResult<IReadOnlyList<PluginLogEntry>> GetLogs(
+        [FromServices] IPluginLogService logService,
+        [FromQuery] int minLevel = 0,
+        [FromQuery] bool includeDebug = true,
+        [FromQuery] string? category = null,
+        [FromQuery] string? streamId = null,
+        [FromQuery] string? searchText = null,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 100
+    )
+    {
+        var level = (LogLevel)Math.Clamp(minLevel, 0, 5);
+        var entries = logService.GetEntries(
+            level,
+            includeDebug,
+            category,
+            streamId,
+            searchText,
+            skip,
+            Math.Min(take, 500)
+        );
+        return Ok(entries);
+    }
+
+    /// <summary>
+    /// Get new log entries since a specific ID (for polling).
+    /// </summary>
+    /// <param name="logService">The log service.</param>
+    /// <param name="afterId">Return entries with ID greater than this value.</param>
+    /// <param name="minLevel">Minimum log level.</param>
+    /// <param name="includeDebug">Whether to include debug entries.</param>
+    /// <returns>New log entries.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Logs/After/{afterId}")]
+    public ActionResult<IReadOnlyList<PluginLogEntry>> GetLogsAfter(
+        [FromServices] IPluginLogService logService,
+        long afterId,
+        [FromQuery] int minLevel = 0,
+        [FromQuery] bool includeDebug = true
+    )
+    {
+        var level = (LogLevel)Math.Clamp(minLevel, 0, 5);
+        var entries = logService.GetEntriesAfter(afterId, level, includeDebug);
+        return Ok(entries);
+    }
+
+    /// <summary>
+    /// Get log buffer statistics.
+    /// </summary>
+    /// <param name="logService">The log service.</param>
+    /// <returns>Log statistics.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Logs/Stats")]
+    public ActionResult<PluginLogStats> GetLogStats([FromServices] IPluginLogService logService)
+    {
+        return Ok(logService.GetStats());
+    }
+
+    /// <summary>
+    /// Clear all log entries.
+    /// </summary>
+    /// <param name="logService">The log service.</param>
+    /// <returns>Success result.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpDelete("Logs")]
+    public ActionResult<object> ClearLogs([FromServices] IPluginLogService logService)
+    {
+        logService.Clear();
+        _logger.PluginLogInformation("Log buffer cleared by user");
+        return Ok(new { success = true, message = "Log buffer cleared" });
+    }
+
+    /// <summary>
+    /// Get resilience metrics for all providers.
+    /// </summary>
+    /// <returns>Provider resilience states, circuit breaker status, and performance metrics.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("ResilienceMetrics")]
+    public ActionResult<object> GetResilienceMetrics()
+    {
+        var states = _resilienceService.GetSnapshot();
+        var config = Plugin.Instance.Configuration;
+        var enabledProviders = config.GetEnabledProviders().ToList();
+        var healthSummaries = _failoverService.GetHealthSummaries(enabledProviders);
+
+        var providerMetrics = states
+            .Select(kvp =>
+            {
+                var provider = config.GetProvider(kvp.Key);
+                var perfMetrics = _metricsTracker.GetSnapshot(kvp.Key);
+                var healthSummary = healthSummaries.FirstOrDefault(h => h.ProviderId == kvp.Key);
+
+                return new
+                {
+                    providerId = kvp.Key,
+                    providerName = provider?.Name ?? kvp.Key,
+                    circuitState = kvp.Value.CircuitState.ToString(),
+                    selectionScore = kvp.Value.SelectionScore,
+                    isAvailable = kvp.Value.IsAvailable,
+                    consecutiveFailures = kvp.Value.ConsecutiveFailures,
+                    availableSlots = kvp.Value.AvailableSlots,
+                    maxConnections = kvp.Value.MaxConnections,
+                    timestamp = kvp.Value.Timestamp,
+
+                    // Combined health metrics
+                    combinedHealthScore = healthSummary.CombinedScore,
+                    metricsScore = healthSummary.MetricsScore,
+                    healthStatus = healthSummary.Status,
+
+                    // Trend analysis (predictive)
+                    trend = new
+                    {
+                        direction = healthSummary.Trend.ToString(),
+                        currentScore = healthSummary.TrendSnapshot.CurrentScore,
+                        predictedScore30s = healthSummary.TrendSnapshot.PredictedScore30s,
+                        predictedScore60s = healthSummary.TrendSnapshot.PredictedScore60s,
+                        velocity = Math.Round(healthSummary.TrendSnapshot.Velocity, 2),
+                        suggestsImminentFailure = healthSummary.PredictedFailure,
+                    },
+
+                    // Performance metrics
+                    performance = new
+                    {
+                        avgLatencyMs = Math.Round(perfMetrics.AvgLatencyMs, 1),
+                        minLatencyMs = Math.Round(perfMetrics.MinLatencyMs, 1),
+                        maxLatencyMs = Math.Round(perfMetrics.MaxLatencyMs, 1),
+                        avgThroughputMBps = Math.Round(perfMetrics.AvgThroughputMBps, 2),
+                        maxThroughputMBps = Math.Round(perfMetrics.MaxThroughputMBps, 2),
+                        packetErrors = perfMetrics.PacketErrors,
+                        continuityErrors = perfMetrics.ContinuityErrors,
+                        syncErrors = perfMetrics.SyncErrors,
+                        timeoutErrors = perfMetrics.TimeoutErrors,
+                        networkErrors = perfMetrics.NetworkErrors,
+                        totalErrors = perfMetrics.TotalErrors,
+                        disconnections = perfMetrics.DisconnectionCount,
+                        totalStreamTimeMs = perfMetrics.TotalStreamTimeMs,
+                        totalSamples = perfMetrics.TotalSamples,
+                    },
+                };
+            })
+            .OrderByDescending(p => p.combinedHealthScore)
+            .ToList();
+
+        return Ok(
+            new
+            {
+                providers = providerMetrics,
+                summary = new
+                {
+                    totalProviders = providerMetrics.Count,
+                    availableProviders = providerMetrics.Count(p => p.isAvailable),
+                    openCircuits = providerMetrics.Count(p => p.circuitState == "Open" || p.circuitState == "Isolated"),
+                    halfOpenCircuits = providerMetrics.Count(p => p.circuitState == "HalfOpen"),
+                    healthyProviders = providerMetrics.Count(p => p.healthStatus == "Healthy"),
+                    degradedProviders = providerMetrics.Count(p => p.healthStatus == "Degraded"),
+                    poorProviders = providerMetrics.Count(p => p.healthStatus == "Poor"),
+                    criticalProviders = providerMetrics.Count(p => p.healthStatus == "Critical"),
+                    avgHealthScore = providerMetrics.Count > 0
+                        ? Math.Round(providerMetrics.Average(p => p.combinedHealthScore), 1)
+                        : 0,
+                    // Trend analysis summary
+                    improvingProviders = providerMetrics.Count(p => p.trend.direction == "Improving"),
+                    degradingProviders = providerMetrics.Count(p =>
+                        p.trend.direction == "Degrading" || p.trend.direction == "RapidlyDegrading"
+                    ),
+                    imminentFailures = providerMetrics.Count(p => p.trend.suggestsImminentFailure),
+                },
+                configuration = new
+                {
+                    enableHedging = config.EnableHedging,
+                    hedgingDelayMs = config.HedgingDelayMs,
+                    maxHedgedAttempts = config.MaxHedgedAttempts,
+                    providerBlacklistSeconds = config.ProviderBlacklistSeconds,
+                    maxFailoverAttempts = config.MaxFailoverAttempts,
+                    failoverBudgetSeconds = config.FailoverBudgetSeconds,
+                },
+            }
+        );
+    }
+
+    /// <summary>
+    /// Reset a provider's circuit breaker to closed state.
+    /// </summary>
+    /// <param name="providerId">The provider ID to reset.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("ResetCircuit/{providerId}")]
+    public async Task<ActionResult<object>> ResetProviderCircuit(string providerId)
+    {
+        var provider = Plugin.Instance.Configuration.GetProvider(providerId);
+        if (provider == null)
+        {
+            return NotFound(new { success = false, message = "Provider not found" });
+        }
+
+        await _resilienceService.ResetCircuitAsync(providerId).ConfigureAwait(false);
+        _logger.PluginLogInformation("Circuit breaker reset for provider {ProviderId}", providerId);
+
+        return Ok(
+            new
+            {
+                success = true,
+                message = $"Circuit breaker reset for provider {provider.Name}",
+                providerId,
+                newState = _resilienceService.GetCircuitState(providerId).ToString(),
+            }
+        );
     }
 }

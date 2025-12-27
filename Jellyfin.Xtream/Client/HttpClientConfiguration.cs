@@ -14,11 +14,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.RateLimiting;
 using Jellyfin.Xtream.Configuration;
+using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -156,23 +158,55 @@ public static class HttpClientConfiguration
             // This matches how SocketsHttpHandler works internally when ConnectCallback is not provided.
             ConnectCallback = async (context, cancellationToken) =>
             {
+                var connectStartTime = DateTime.UtcNow;
+                logger?.LogDebugIfEnabled(
+                    "ConnectCallback: resolving DNS for host '{Host}:{Port}'...",
+                    context.DnsEndPoint.Host,
+                    context.DnsEndPoint.Port
+                );
+
                 // Resolve DNS to get all IP addresses for the host
                 var addresses = await System
                     .Net.Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellationToken)
                     .ConfigureAwait(false);
 
+                var dnsResolveMs = (DateTime.UtcNow - connectStartTime).TotalMilliseconds;
+                logger?.LogDebugIfEnabled(
+                    "ConnectCallback: DNS resolved for '{Host}' in {DnsMs}ms - found {AddressCount} address(es): [{Addresses}]",
+                    context.DnsEndPoint.Host,
+                    dnsResolveMs,
+                    addresses.Length,
+                    string.Join(", ", addresses.Select(a => a.ToString()))
+                );
+
                 if (addresses.Length == 0)
                 {
+                    logger?.LogDebugIfEnabled(
+                        "ConnectCallback: No addresses found for host '{Host}'",
+                        context.DnsEndPoint.Host
+                    );
                     throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound);
                 }
 
                 // Try each address until one succeeds (create fresh socket for each attempt)
                 Exception? lastException = null;
+                int attemptNumber = 0;
 
                 foreach (var address in addresses)
                 {
+                    attemptNumber++;
+
                     // Determine address family based on resolved address
                     var addressFamily = address.AddressFamily;
+
+                    logger?.LogDebugIfEnabled(
+                        "ConnectCallback: attempting connection to {Address}:{Port} (attempt {Attempt}/{Total}, family={Family})",
+                        address,
+                        context.DnsEndPoint.Port,
+                        attemptNumber,
+                        addresses.Length,
+                        addressFamily
+                    );
 
                     var socket = new System.Net.Sockets.Socket(
                         addressFamily,
@@ -191,9 +225,21 @@ public static class HttpClientConfiguration
 
                     try
                     {
+                        var socketConnectStart = DateTime.UtcNow;
                         // Connect to specific IP address (not DnsEndPoint) to avoid multi-address issues
                         var endpoint = new System.Net.IPEndPoint(address, context.DnsEndPoint.Port);
                         await socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
+
+                        var socketConnectMs = (DateTime.UtcNow - socketConnectStart).TotalMilliseconds;
+                        var totalConnectMs = (DateTime.UtcNow - connectStartTime).TotalMilliseconds;
+                        logger?.LogDebugIfEnabled(
+                            "ConnectCallback: connected to {Address}:{Port} in {SocketMs}ms (total: {TotalMs}ms)",
+                            address,
+                            context.DnsEndPoint.Port,
+                            socketConnectMs,
+                            totalConnectMs
+                        );
+
                         return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
                     }
                     catch (Exception ex)
@@ -201,15 +247,35 @@ public static class HttpClientConfiguration
                         socket.Dispose();
                         lastException = ex;
 
+                        logger?.LogDebugIfEnabled(
+                            "ConnectCallback: connection to {Address}:{Port} FAILED: {ExceptionType} - {Message}",
+                            address,
+                            context.DnsEndPoint.Port,
+                            ex.GetType().Name,
+                            ex.Message
+                        );
+
                         // If cancellation was requested, don't try more addresses
                         if (cancellationToken.IsCancellationRequested)
                         {
+                            logger?.LogDebugIfEnabled(
+                                "ConnectCallback: cancellation requested, stopping connection attempts"
+                            );
                             break;
                         }
 
                         // Continue to next address
                     }
                 }
+
+                var totalFailedMs = (DateTime.UtcNow - connectStartTime).TotalMilliseconds;
+                logger?.LogDebugIfEnabled(
+                    "ConnectCallback: ALL {Count} addresses failed for '{Host}' after {TotalMs}ms. Last error: {Error}",
+                    addresses.Length,
+                    context.DnsEndPoint.Host,
+                    totalFailedMs,
+                    lastException?.Message ?? "unknown"
+                );
 
                 // All addresses failed - throw the last exception
                 throw lastException
@@ -251,10 +317,11 @@ public static class HttpClientConfiguration
             // Live streams use Transfer-Encoding: chunked with infinite duration
             // Keep-alive prevents NAT/firewall timeouts during streaming
             //
-            // ConnectTimeout: 15s fail-fast for unreachable servers
+            // ConnectTimeout: Configurable (default 5s) fail-fast for unreachable servers
+            // Industry standard: 1-5 seconds for CDN failover scenarios
             // KeepAlivePingDelay: 60s - ping during active requests to prevent connection drops
             // KeepAlivePingTimeout: 30s - allow time for ping response over slow networks
-            ConnectTimeout = TimeSpan.FromSeconds(15),
+            ConnectTimeout = TimeSpan.FromMilliseconds(StreamingTimeoutPolicy.GetConnectTimeoutMs(config)),
             KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
             KeepAlivePingDelay = TimeSpan.FromSeconds(60),
             KeepAlivePingPolicy = System.Net.Http.HttpKeepAlivePingPolicy.WithActiveRequests,
@@ -414,7 +481,8 @@ public static class HttpClientConfiguration
         }
 
         logger?.LogDebugIfEnabled(
-            "Configuring HTTP proxy: {ProxyUri} (BypassLocal: {BypassLocal}, HasCredentials: {HasCredentials})",
+            "Configuring {ProxyType} proxy: {ProxyUri} (BypassLocal: {BypassLocal}, HasCredentials: {HasCredentials})",
+            config.ProxyType,
             proxyUri,
             config.ProxyBypassLocal,
             !string.IsNullOrWhiteSpace(config.ProxyUsername)
@@ -448,25 +516,66 @@ public static class HttpClientConfiguration
             return false;
         }
 
-        // Sanitize address: remove protocol and trailing slash
+        // Sanitize address: remove any existing protocol prefix and trailing slash
         address = address
             .Replace("http://", string.Empty, StringComparison.OrdinalIgnoreCase)
             .Replace("https://", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("socks5://", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("socks4a://", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("socks4://", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("socks://", string.Empty, StringComparison.OrdinalIgnoreCase)
             .TrimEnd('/');
 
         // Validate and normalize port
-        var port = config.ProxyPort is > 0 and <= 65535 ? config.ProxyPort : 8080;
+        var port = config.ProxyPort is > 0 and <= 65535 ? config.ProxyPort : GetDefaultPort(config.ProxyType);
+
+        // Get the URI scheme based on proxy type
+        var scheme = GetProxyScheme(config.ProxyType);
 
         // Construct proxy URI
         try
         {
-            proxyUri = new Uri($"http://{address}:{port}");
+            proxyUri = new Uri(
+                $"{scheme}://{address}:{port.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+            );
             return true;
         }
         catch (UriFormatException ex)
         {
-            logger?.LogError(ex, "Invalid proxy URI format: address='{Address}', port={Port}", address, port);
+            logger?.LogError(
+                ex,
+                "Invalid proxy URI format: type={ProxyType}, address='{Address}', port={Port}",
+                config.ProxyType,
+                address,
+                port
+            );
             return false;
         }
     }
+
+    /// <summary>
+    /// Gets the URI scheme for the specified proxy type.
+    /// </summary>
+    /// <param name="proxyType">The proxy type.</param>
+    /// <returns>The URI scheme string.</returns>
+    private static string GetProxyScheme(ProxyType proxyType) =>
+        proxyType switch
+        {
+            ProxyType.Socks4 => "socks4",
+            ProxyType.Socks4a => "socks4a",
+            ProxyType.Socks5 => "socks5",
+            _ => "http",
+        };
+
+    /// <summary>
+    /// Gets the default port for the specified proxy type.
+    /// </summary>
+    /// <param name="proxyType">The proxy type.</param>
+    /// <returns>The default port number.</returns>
+    private static int GetDefaultPort(ProxyType proxyType) =>
+        proxyType switch
+        {
+            ProxyType.Socks4 or ProxyType.Socks4a or ProxyType.Socks5 => 1080,
+            _ => 8080,
+        };
 }

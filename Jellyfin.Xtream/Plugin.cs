@@ -21,6 +21,7 @@ using System.Reflection;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
+using Jellyfin.Xtream.Utility;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
@@ -120,6 +121,10 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             CreateStatic("XtreamEpgTest.js"),
             CreateStatic("XtreamStreams.html"),
             CreateStatic("XtreamStreams.js"),
+            CreateStatic("XtreamMonitor.html"),
+            CreateStatic("XtreamMonitor.js"),
+            CreateStatic("XtreamLogs.html"),
+            CreateStatic("XtreamLogs.js"),
         };
     }
 
@@ -138,7 +143,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     private void LogConfigurationState()
     {
         PluginConfiguration config = Configuration;
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Plugin startup - Configuration state: BaseUrl={BaseUrl}, Username={Username}, Providers={ProviderCount}, LiveTv={LiveTvCount}, EnableProxy={EnableProxy}, ProxyAddress={ProxyAddress}",
             config.BaseUrl,
             config.Username,
@@ -157,7 +162,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
         foreach (XtreamProvider provider in providers)
         {
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Provider {ProviderId} ({ProviderName}): LiveTv={LiveTvCount}, Vod={VodCount}, Series={SeriesCount}, LiveTvOverrides={OverridesCount}",
                 provider.Id,
                 provider.Name,
@@ -199,7 +204,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
         if (config.NeedsMigration)
         {
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Migrating legacy configuration to new multi-provider format. LiveTv categories: {LiveTvCount}, Vod categories: {VodCount}, Series categories: {SeriesCount}",
                 config.LiveTv?.Count ?? 0,
                 config.Vod?.Count ?? 0,
@@ -231,7 +236,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
             SaveConfiguration();
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Legacy configuration migrated successfully to provider: {ProviderId}. Migrated LiveTv: {LiveTvCount}, Vod: {VodCount}, Series: {SeriesCount}",
                 migratedProvider.Id,
                 migratedProvider.LiveTv?.Count ?? 0,

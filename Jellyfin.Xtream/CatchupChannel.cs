@@ -23,6 +23,7 @@ using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
+using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Channels;
@@ -108,7 +109,7 @@ public class CatchupChannel(ILogger<CatchupChannel> logger) : IChannel, IDisable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get channel items");
+            _logger.PluginLogError(ex, "Failed to get channel items");
             throw;
         }
     }

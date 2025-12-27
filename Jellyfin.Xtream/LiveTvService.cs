@@ -26,6 +26,7 @@ using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Epg;
+using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
@@ -51,7 +52,7 @@ namespace Jellyfin.Xtream;
 /// <param name="epgProvider">Instance of the <see cref="IEpgProvider"/> interface.</param>
 /// <param name="externalEpgProvider">Instance of the <see cref="ExternalXmltvEpgProvider"/> for logo fallback.</param>
 /// <param name="epgRefreshTracker">Instance of the <see cref="EpgRefreshTracker"/> for batch tracking.</param>
-/// <param name="connectionCache">Instance of the <see cref="ProviderConnectionCache"/> for connection-aware ordering.</param>
+/// <param name="resilienceService">Instance of the <see cref="IProviderAvailabilityService"/> for unified resilience.</param>
 public class LiveTvService(
     IServerApplicationHost appHost,
     IHttpClientFactory httpClientFactory,
@@ -62,7 +63,7 @@ public class LiveTvService(
     IEpgProvider epgProvider,
     ExternalXmltvEpgProvider externalEpgProvider,
     EpgRefreshTracker epgRefreshTracker,
-    ProviderConnectionCache connectionCache
+    IProviderAvailabilityService resilienceService
 ) : ILiveTvService, ISupportsDirectStreamProvider
 {
     private const int MaxParallelEpgRequests = 10;
@@ -76,7 +77,7 @@ public class LiveTvService(
     private readonly IEpgProvider _epgProvider = epgProvider;
     private readonly ExternalXmltvEpgProvider _externalEpgProvider = externalEpgProvider;
     private readonly EpgRefreshTracker _epgRefreshTracker = epgRefreshTracker;
-    private readonly ProviderConnectionCache _connectionCache = connectionCache;
+    private readonly IProviderAvailabilityService _resilienceService = resilienceService;
 
     private volatile ChannelProviderMap? _channelProviderMap;
 
@@ -102,16 +103,61 @@ public class LiveTvService(
     {
         // Refresh connection status for all enabled providers to get current availability
         var enabledProviders = Plugin.Instance.Configuration.GetEnabledProviders().ToList();
-        if (_connectionCache.NeedsRefresh() && enabledProviders.Count > 0)
+        if (_resilienceService.NeedsRefresh() && enabledProviders.Count > 0)
         {
             _logger.LogDebug("Refreshing provider connection status for connection-aware channel ordering");
-            await _connectionCache.RefreshAsync(enabledProviders, cancellationToken).ConfigureAwait(false);
+            await _resilienceService.RefreshAsync(enabledProviders, cancellationToken).ConfigureAwait(false);
         }
 
-        // Build channel map with connection-aware provider ordering
+        // Build channel map with health-aware provider ordering
+        // Uses resilience service for unified health scoring (success rate + capacity + circuit state)
+        // Optionally filter out channels from providers at capacity
+        var config = Plugin.Instance.Configuration;
+
         ChannelProviderMap channelMap = _channelProviderMap = await StreamService
-            .GetDeduplicatedChannelMap(_connectionCache.GetAvailabilityScore, cancellationToken)
+            .GetDeduplicatedChannelMap(_resilienceService, config.FilterChannelsByCapacity, cancellationToken)
             .ConfigureAwait(false);
+
+        // Log channel map statistics for debugging failover
+        var multiProviderChannels = channelMap.Channels.Where(c => c.ProviderCount > 1).ToList();
+        var singleProviderChannels = channelMap.Channels.Where(c => c.ProviderCount == 1).ToList();
+        _logger.LogDebugIfEnabled(
+            "Channel map built: {TotalChannels} unique channels, {GuidCount} total GUIDs, {MultiProvider} with failover ({MultiProviderPct}%), {SingleProvider} single-provider, {SkippedCount} skipped",
+            channelMap.ChannelCount,
+            channelMap.GuidCount,
+            multiProviderChannels.Count,
+            channelMap.ChannelCount > 0 ? (multiProviderChannels.Count * 100 / channelMap.ChannelCount) : 0,
+            singleProviderChannels.Count,
+            channelMap.SkippedCount
+        );
+
+        // Log top multi-provider channels for verification
+        if (multiProviderChannels.Count > 0)
+        {
+            foreach (var ch in multiProviderChannels.OrderByDescending(c => c.ProviderCount).Take(5))
+            {
+                _logger.LogDebugIfEnabled(
+                    "  Multi-provider channel: '{ChannelName}' ({ProviderCount} providers: {Providers})",
+                    ch.DisplayName,
+                    ch.ProviderCount,
+                    string.Join(", ", ch.Providers.Select(p => p.Provider.Name))
+                );
+            }
+        }
+
+        // Log sample single-provider channels to check for potential matching issues
+        if (singleProviderChannels.Count > 0)
+        {
+            foreach (var ch in singleProviderChannels.Take(3))
+            {
+                _logger.LogDebugIfEnabled(
+                    "  Single-provider channel: '{ChannelName}' (normalized: '{NormalizedName}', provider: {Provider})",
+                    ch.DisplayName,
+                    ch.NormalizedName,
+                    ch.Providers.Count > 0 ? ch.Providers[0].Provider.Name : "none"
+                );
+            }
+        }
 
         if (Plugin.Instance.Configuration.UseExternalLogoFallback)
         {
@@ -160,13 +206,13 @@ public class LiveTvService(
         }
 
         // Log connection-aware ordering status
-        var statuses = _connectionCache.GetAllStatuses();
+        var statuses = _resilienceService.GetSnapshot();
         if (statuses.Count > 0)
         {
             var onlineCount = statuses.Values.Count(s => s.IsOnline);
             var totalCapacity = statuses.Values.Where(s => s.IsOnline).Sum(s => s.MaxConnections);
             var totalActive = statuses.Values.Where(s => s.IsOnline).Sum(s => s.ActiveConnections);
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Loaded {ChannelCount} deduplicated channels from {ProviderCount} providers with connection-aware ordering ({OnlineProviders} online, {ActiveConnections}/{TotalCapacity} connections)",
                 items.Count,
                 enabledProviders.Count,
@@ -177,7 +223,7 @@ public class LiveTvService(
         }
         else
         {
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Loaded {ChannelCount} deduplicated channels from {ProviderCount} providers (quality-only ordering, no connection data)",
                 items.Count,
                 enabledProviders.Count
@@ -186,7 +232,7 @@ public class LiveTvService(
 
         if (channelMap.SkippedCount > 0)
         {
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 "Skipped {SkippedCount} streams with empty names after normalization (e.g., channels named only 'HD' or '4K')",
                 channelMap.SkippedCount
             );
@@ -297,7 +343,7 @@ public class LiveTvService(
     /// <inheritdoc />
     public async Task CloseLiveStream(string id, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Closing livestream {ChannelId}", id);
+        _logger.PluginLogInformation("Closing livestream {ChannelId}", id);
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
@@ -327,7 +373,7 @@ public class LiveTvService(
         CancellationToken cancellationToken
     )
     {
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "GetProgramsAsync called for channel {ChannelId}, date range: {StartDate} to {EndDate}",
             channelId,
             startDateUtc,
@@ -352,7 +398,7 @@ public class LiveTvService(
             List<ProgramInfo> cachedFiltered = cachedItems
                 .Where(epg => epg.EndDate >= startDateUtc && epg.StartDate < endDateUtc)
                 .ToList();
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Returning {Count} cached programs for channel {ChannelId}",
                 cachedFiltered.Count,
                 channelId
@@ -395,7 +441,7 @@ public class LiveTvService(
                     continue;
                 }
 
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "EPG provider '{ProviderName}' returned {Count} programs for channel {ChannelId}",
                     providerInfo.Provider.Name,
                     programs.Count,
@@ -432,7 +478,7 @@ public class LiveTvService(
 
                 if (invalidTimeCount > 0)
                 {
-                    _logger.LogWarning(
+                    _logger.PluginLogWarning(
                         "Skipped {InvalidCount} EPG entries with invalid times for channel {ChannelId}",
                         invalidTimeCount,
                         channelId
@@ -443,7 +489,7 @@ public class LiveTvService(
                 {
                     DateTime minDate = items.Min(x => x.StartDate);
                     DateTime maxDate = items.Max(x => x.EndDate);
-                    _logger.LogInformation(
+                    _logger.PluginLogInformation(
                         "EPG data range for channel {ChannelId}: {MinDate} to {MaxDate} (from provider '{ProviderName}')",
                         channelId,
                         minDate,
@@ -469,7 +515,7 @@ public class LiveTvService(
             }
             catch (Exception exception)
             {
-                _logger.LogWarning(
+                _logger.PluginLogWarning(
                     exception,
                     "Error loading EPG from provider '{ProviderName}' for channel {ChannelId}",
                     providerInfo.Provider.Name,
@@ -489,7 +535,7 @@ public class LiveTvService(
             .Where(epg => epg.EndDate >= startDateUtc && epg.StartDate < endDateUtc)
             .ToList();
 
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Returning {FilteredCount} programs (of {TotalCount}) for channel {ChannelId} within date range {StartDate} to {EndDate}",
             filtered.Count,
             items.Count,
@@ -551,7 +597,7 @@ public class LiveTvService(
                 return items;
             }
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "External EPG returned {Count} programs for channel '{ChannelName}'",
                 programs.Count,
                 channelName
@@ -585,7 +631,7 @@ public class LiveTvService(
 
             if (invalidTimeCount > 0)
             {
-                _logger.LogWarning(
+                _logger.PluginLogWarning(
                     "Skipped {InvalidCount} external EPG entries with invalid times for channel '{ChannelName}'",
                     invalidTimeCount,
                     channelName
@@ -594,7 +640,7 @@ public class LiveTvService(
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 ex,
                 "Error loading external EPG for channel '{ChannelName}': {Error}",
                 channelName,
@@ -649,21 +695,21 @@ public class LiveTvService(
 
         if (_epgProvider is IEpgProviderWithPrewarm prewarmProvider)
         {
-            _logger.LogInformation("Pre-warming EPG providers before refresh...");
+            _logger.PluginLogInformation("Pre-warming EPG providers before refresh...");
             try
             {
                 await prewarmProvider.PrewarmAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "EPG provider pre-warming failed, continuing with refresh");
+                _logger.PluginLogWarning(ex, "EPG provider pre-warming failed, continuing with refresh");
             }
         }
 
         List<ProviderStreamInfo> channelList = (
             await StreamService.GetAllLiveStreams(cancellationToken).ConfigureAwait(false)
         ).ToList();
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Starting parallel EPG refresh for {Count} channels across all providers",
             channelList.Count
         );
@@ -720,7 +766,7 @@ public class LiveTvService(
             // Retry failed HTTP requests after a short delay
             if (!retryQueue.IsEmpty)
             {
-                _logger.LogInformation("Retrying {Count} failed EPG requests after delay...", retryQueue.Count);
+                _logger.PluginLogInformation("Retrying {Count} failed EPG requests after delay...", retryQueue.Count);
                 await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
 
                 List<ProviderStreamInfo> retryItems = new List<ProviderStreamInfo>();
@@ -767,11 +813,11 @@ public class LiveTvService(
         catch (Exception ex)
         {
             errorMessage = ex.Message;
-            _logger.LogError(ex, "EPG refresh failed with unexpected error");
+            _logger.PluginLogError(ex, "EPG refresh failed with unexpected error");
         }
 
         TimeSpan elapsed = DateTime.UtcNow - startTime;
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Parallel EPG refresh complete: {SuccessCount}/{TotalCount} channels with EPG data in {Elapsed:F1}s (retried: {RetriedCount}, HTTP errors: {HttpErrors}, no data: {NoData})",
             successCount,
             channelList.Count,
@@ -850,7 +896,7 @@ public class LiveTvService(
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 "HTTP error fetching EPG for channel {ChannelName} (stream {StreamId}): {Error}",
                 channel.Name,
                 channel.StreamId,
@@ -860,7 +906,7 @@ public class LiveTvService(
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 "Error fetching EPG for channel {ChannelName} (stream {StreamId}): {Error}",
                 channel.Name,
                 channel.StreamId,
@@ -888,77 +934,289 @@ public class LiveTvService(
         PluginConfiguration config = Plugin.Instance.Configuration;
         HashSet<string> failedProviders = new HashSet<string>(StringComparer.Ordinal);
         Exception? lastException = null;
+        int attemptNumber = 0;
 
-        IEnumerable<ProviderStreamInfo> providersToTry = GetProvidersForChannel(guid, config);
+        // Time-budgeted failover: industry standard 5-10s total before returning error
+        int failoverBudgetMs = StreamingTimeoutPolicy.GetFailoverBudgetMs(config);
+        int maxAttempts = StreamingTimeoutPolicy.GetMaxFailoverAttempts(config);
+        DateTime failoverDeadline = DateTime.UtcNow.AddMilliseconds(failoverBudgetMs);
+
+        _logger.LogDebugIfEnabled(
+            "Starting failover for channel {ChannelId} with {BudgetMs}ms budget, max {MaxAttempts} attempts",
+            channelId,
+            failoverBudgetMs,
+            maxAttempts
+        );
+
+        // Get providers, filtering out blacklisted ones and sorting by health
+        List<ProviderStreamInfo> providersToTry = GetProvidersForChannelWithHealth(guid, config);
+        bool isSingleProviderScenario = providersToTry.Count == 1;
+
+        _logger.LogDebugIfEnabled(
+            "Found {ProviderCount} provider(s) for channel {ChannelId}: [{ProviderNames}]",
+            providersToTry.Count,
+            channelId,
+            string.Join(
+                ", ",
+                providersToTry.Select(p =>
+                    $"{p.Provider.Name} (score:{_resilienceService.GetSelectionScore(p.Provider.Id).ToString(CultureInfo.InvariantCulture)})"
+                )
+            )
+        );
+
+        // Warn if budget is too small for effective failover
+        const int MinPerAttemptMs = StreamingTimeoutPolicy.MinPerAttemptTimeoutMs;
+        var effectiveMaxAttempts = failoverBudgetMs / MinPerAttemptMs;
+        if (providersToTry.Count > 1 && effectiveMaxAttempts < 2)
+        {
+            _logger.PluginLogWarning(
+                "Failover budget ({BudgetMs}ms) is too small for multiple providers. "
+                    + "With {MinPerAttemptMs}ms minimum per attempt, only {EffectiveAttempts} attempt(s) possible. "
+                    + "Consider increasing FailoverBudgetSeconds to {RecommendedSeconds}s in Advanced settings.",
+                failoverBudgetMs,
+                MinPerAttemptMs,
+                effectiveMaxAttempts,
+                MinPerAttemptMs * 3 / 1000
+            );
+        }
+
+        if (isSingleProviderScenario)
+        {
+            _logger.LogDebugIfEnabled(
+                "Single provider scenario for channel {ChannelId} - blacklist will be bypassed",
+                channelId
+            );
+        }
+
         foreach (ProviderStreamInfo providerInfo in providersToTry)
         {
+            // Check total failover budget
+            int remainingBudgetMs = (int)(failoverDeadline - DateTime.UtcNow).TotalMilliseconds;
+            if (remainingBudgetMs <= 0)
+            {
+                _logger.PluginLogWarning(
+                    "Failover budget exhausted ({BudgetMs}ms) after {Attempts} attempts for channel {ChannelId}",
+                    failoverBudgetMs,
+                    attemptNumber,
+                    channelId
+                );
+                break;
+            }
+
+            // Check user cancellation (pressing stop)
+            cancellationToken.ThrowIfCancellationRequested();
+
             XtreamProvider provider = providerInfo.Provider;
             int providerStreamId = providerInfo.Stream.StreamId;
 
+            // Skip unavailable providers unless it's the only provider available
+            if (!isSingleProviderScenario && !_resilienceService.IsAvailable(provider.Id))
+            {
+                _logger.LogDebugIfEnabled(
+                    "Skipping blacklisted provider '{ProviderName}' for channel {ChannelId}",
+                    provider.Name,
+                    channelId
+                );
+                continue;
+            }
+
+            attemptNumber++;
+
+            // Check max attempts
+            if (attemptNumber > maxAttempts)
+            {
+                _logger.LogDebugIfEnabled(
+                    "Max failover attempts ({MaxAttempts}) reached for channel {ChannelId}",
+                    maxAttempts,
+                    channelId
+                );
+                break;
+            }
+
+            // Apply fast backoff delay between failover attempts (not on first attempt)
+            if (failedProviders.Count > 0)
+            {
+                int backoffMs = StreamingTimeoutPolicy.CalculateFailoverBackoff(attemptNumber);
+                _logger.PluginLogInformation(
+                    "Failover attempt {Attempt}/{Max}: trying '{ProviderName}' in {BackoffMs}ms ({RemainingMs}ms budget remaining)",
+                    attemptNumber,
+                    maxAttempts,
+                    provider.Name,
+                    backoffMs,
+                    remainingBudgetMs
+                );
+                await Task.Delay(Math.Min(backoffMs, remainingBudgetMs), cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                _logger.PluginLogInformation(
+                    "Failover attempt {Attempt}/{Max}: trying '{ProviderName}' ({RemainingMs}ms budget remaining)",
+                    attemptNumber,
+                    maxAttempts,
+                    provider.Name,
+                    remainingBudgetMs
+                );
+            }
+
             try
             {
+                // Calculate per-attempt timeout to allow multiple providers within budget
+                // Uses fair-share allocation: budget / remaining attempts (with minimum threshold)
+                int attemptsRemaining = maxAttempts - attemptNumber + 1;
+                int perAttemptTimeoutMs = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(
+                    remainingBudgetMs,
+                    attemptsRemaining,
+                    config
+                );
+
+                _logger.LogDebugIfEnabled(
+                    "Per-attempt timeout: {TimeoutMs}ms (budget: {BudgetMs}ms, attempts remaining: {Remaining})",
+                    perAttemptTimeoutMs,
+                    remainingBudgetMs,
+                    attemptsRemaining
+                );
+
+                using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                attemptCts.CancelAfter(perAttemptTimeoutMs);
+
                 ILiveStream stream = await TryGetStreamFromProvider(
                         provider,
                         providerStreamId,
                         providerInfo.Stream.Name,
                         currentLiveStreams,
-                        cancellationToken
+                        attemptCts.Token
                     )
                     .ConfigureAwait(false);
+
+                // Record success in resilience service
+                _resilienceService.RecordSuccess(provider.Id);
+
                 if (failedProviders.Count > 0)
                 {
-                    _logger.LogInformation(
-                        "Failover successful: Connected to '{ProviderName}' after {FailCount} failed attempts",
+                    int elapsedMs = failoverBudgetMs - (int)(failoverDeadline - DateTime.UtcNow).TotalMilliseconds;
+                    _logger.PluginLogInformation(
+                        "Failover successful: Connected to '{ProviderName}' after {FailCount} failed attempts in {ElapsedMs}ms",
                         provider.Name,
-                        failedProviders.Count
+                        failedProviders.Count,
+                        elapsedMs
                     );
                 }
 
                 return stream;
             }
-            catch (Exception ex)
-                when (config.EnableProviderFailover && failedProviders.Count < config.MaxFailoverAttempts)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Per-attempt timeout (not user cancellation)
+                failedProviders.Add(provider.Id);
+                lastException = new TimeoutException($"Provider '{provider.Name}' timed out");
+
+                // Don't blacklist single providers - they're our only option
+                const ProviderFailureReason failureReason = ProviderFailureReason.Timeout;
+                bool wasBlacklisted = false;
+                if (!isSingleProviderScenario)
+                {
+                    wasBlacklisted = _resilienceService.RecordFailure(provider.Id, failureReason, provider.Name);
+                }
+
+                _logger.PluginLogWarning(
+                    "Provider '{ProviderName}' timed out for channel {ChannelId} ({Reason}), attempting failover ({AttemptCount}/{MaxAttempts}){Blacklisted}",
+                    provider.Name,
+                    channelId,
+                    failureReason,
+                    failedProviders.Count,
+                    maxAttempts,
+                    wasBlacklisted ? " [BLACKLISTED]" : (isSingleProviderScenario ? " [SINGLE PROVIDER]" : string.Empty)
+                );
+            }
+            catch (Exception ex) when (config.EnableProviderFailover && failedProviders.Count < maxAttempts)
             {
                 failedProviders.Add(provider.Id);
                 lastException = ex;
-                _logger.LogWarning(
+
+                // Record failure and potentially blacklist (but not for single providers)
+                var failureReason = CategorizeException(ex);
+                bool wasBlacklisted = false;
+                if (!isSingleProviderScenario)
+                {
+                    wasBlacklisted = _resilienceService.RecordFailure(provider.Id, failureReason, provider.Name);
+                }
+
+                _logger.PluginLogWarning(
                     ex,
-                    "Failed to connect to provider '{ProviderName}' for channel, attempting failover ({AttemptCount}/{MaxAttempts})",
+                    "Failed to connect to provider '{ProviderName}' for channel {ChannelId} ({Reason}), attempting failover ({AttemptCount}/{MaxAttempts}){Blacklisted}",
                     provider.Name,
+                    channelId,
+                    failureReason,
                     failedProviders.Count,
-                    config.MaxFailoverAttempts
+                    maxAttempts,
+                    wasBlacklisted ? " [BLACKLISTED]" : (isSingleProviderScenario ? " [SINGLE PROVIDER]" : string.Empty)
                 );
             }
         }
 
+        int totalElapsedMs =
+            failoverBudgetMs - Math.Max(0, (int)(failoverDeadline - DateTime.UtcNow).TotalMilliseconds);
         throw new InvalidOperationException(
-            $"Failed to connect to any provider for channel {channelId} after {failedProviders.Count} attempts",
+            $"Failed to connect to any provider for channel {channelId} after {failedProviders.Count} attempts in {totalElapsedMs}ms",
             lastException
         );
     }
 
     private IEnumerable<ProviderStreamInfo> GetProvidersForChannel(Guid channelGuid, PluginConfiguration config)
     {
+        _logger.LogDebugIfEnabled(
+            "GetProvidersForChannel: GUID={ChannelGuid}, MergeDuplicateChannels={MergeEnabled}, ChannelMapExists={MapExists}, MapCount={MapCount}",
+            channelGuid,
+            config.MergeDuplicateChannels,
+            _channelProviderMap != null,
+            _channelProviderMap?.ChannelCount ?? 0
+        );
+
         if (config.MergeDuplicateChannels && _channelProviderMap != null)
         {
             ChannelWithProviders? channelWithProviders = _channelProviderMap.GetByGuid(channelGuid);
             if (channelWithProviders != null)
             {
+                _logger.LogDebugIfEnabled(
+                    "Channel GUID {ChannelGuid} found in map: '{ChannelName}' with {ProviderCount} provider(s): [{Providers}]",
+                    channelGuid,
+                    channelWithProviders.DisplayName,
+                    channelWithProviders.Providers.Count,
+                    string.Join(", ", channelWithProviders.Providers.Select(p => p.Provider.Name))
+                );
                 return channelWithProviders.Providers;
             }
 
-            _logger.LogDebugIfEnabled(
-                "Channel GUID {ChannelGuid} not found in channel map (map has {Count} entries). Falling back to direct provider lookup.",
+            // GUID not found - this is a bug! Log detailed diagnostics
+            StreamService.FromGuid(channelGuid, out var prefix, out var streamId, out var providerHash, out var _);
+            var matchingProvider = StreamService.FindProviderForGuid(channelGuid);
+            _logger.PluginLogWarning(
+                "Channel GUID {ChannelGuid} NOT found in channel map! Map has {ChannelCount} channels, {GuidCount} GUIDs. "
+                    + "GUID parts: prefix={Prefix}, streamId={StreamId}, providerHash={ProviderHash}. "
+                    + "Provider for hash: {ProviderName}. This may indicate the channel map is stale - try refreshing Live TV channels.",
                 channelGuid,
-                _channelProviderMap.ChannelCount
+                _channelProviderMap.ChannelCount,
+                _channelProviderMap.GuidCount,
+                prefix,
+                streamId,
+                providerHash,
+                matchingProvider?.Name ?? "NOT FOUND"
             );
+        }
+        else if (!config.MergeDuplicateChannels)
+        {
+            _logger.LogDebugIfEnabled("MergeDuplicateChannels is DISABLED - failover between providers will not work");
+        }
+        else if (_channelProviderMap == null)
+        {
+            _logger.LogDebugIfEnabled("Channel map is NULL - need to refresh Live TV channels to enable failover");
         }
 
         XtreamProvider? provider = StreamService.FindProviderForGuid(channelGuid);
         if (provider == null)
         {
             StreamService.FromGuid(channelGuid, out var prefix, out var streamId, out var providerHash, out var _);
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 "No provider found for channel GUID {ChannelGuid} (prefix={Prefix}, streamId={StreamId}, providerHash={ProviderHash}). This can happen after upgrading the plugin or if the provider was removed. Try refreshing Live TV channels in Jellyfin settings.",
                 channelGuid,
                 prefix,
@@ -974,6 +1232,45 @@ public class LiveTvService(
         return new[] { new ProviderStreamInfo(provider, streamInfo) };
     }
 
+    /// <summary>
+    /// Categorizes an exception to determine the appropriate failure reason for resilience tracking.
+    /// </summary>
+    private static ProviderFailureReason CategorizeException(Exception ex)
+    {
+        return ex switch
+        {
+            HttpRequestException httpEx when httpEx.StatusCode == System.Net.HttpStatusCode.TooManyRequests =>
+                ProviderFailureReason.RateLimited,
+            HttpRequestException httpEx when (int?)httpEx.StatusCode >= 400 && (int?)httpEx.StatusCode < 500 =>
+                ProviderFailureReason.ClientError,
+            HttpRequestException httpEx when (int?)httpEx.StatusCode >= 500 => ProviderFailureReason.ServerError,
+            HttpRequestException => ProviderFailureReason.NetworkError,
+            TimeoutException => ProviderFailureReason.Timeout,
+            OperationCanceledException => ProviderFailureReason.Timeout,
+            _ when ex.Message.Contains("connection limit", StringComparison.OrdinalIgnoreCase) =>
+                ProviderFailureReason.ConnectionLimit,
+            _ => ProviderFailureReason.Unknown,
+        };
+    }
+
+    /// <summary>
+    /// Gets providers for a channel, sorted by selection score (best first).
+    /// Unavailable providers are included but will be filtered in the failover loop.
+    /// </summary>
+    private List<ProviderStreamInfo> GetProvidersForChannelWithHealth(Guid channelGuid, PluginConfiguration config)
+    {
+        var baseProviders = GetProvidersForChannel(channelGuid, config).ToList();
+
+        if (baseProviders.Count <= 1)
+        {
+            return baseProviders;
+        }
+
+        // Use resilience service to sort by selection score (combines health + availability)
+        // This provides real-time ordering based on current provider state
+        return [.. _resilienceService.GetSortedProviders(baseProviders, forceIncludeAll: true)];
+    }
+
     private async Task<ILiveStream> TryGetStreamFromProvider(
         XtreamProvider provider,
         int streamId,
@@ -982,15 +1279,25 @@ public class LiveTvService(
         CancellationToken cancellationToken
     )
     {
+        _logger.LogDebugIfEnabled(
+            "TryGetStreamFromProvider: provider='{ProviderName}' ({ProviderId}), streamId={StreamId}, streamName='{StreamName}'",
+            provider.Name,
+            provider.Id,
+            streamId,
+            streamName
+        );
+
         Plugin plugin = Plugin.Instance;
         string? channelName = null;
 
         if (!string.IsNullOrEmpty(streamName))
         {
             channelName = StreamService.ParseName(streamName).Title;
+            _logger.LogDebugIfEnabled("Parsed channel name from streamName: '{ChannelName}'", channelName);
         }
         else
         {
+            _logger.LogDebugIfEnabled("No streamName provided, looking up channel info from provider API...");
             try
             {
                 StreamInfo? info = (
@@ -1001,11 +1308,16 @@ public class LiveTvService(
                 if (info != null)
                 {
                     channelName = StreamService.ParseName(info.Name).Title;
+                    _logger.LogDebugIfEnabled("Found channel name from API: '{ChannelName}'", channelName);
+                }
+                else
+                {
+                    _logger.LogDebugIfEnabled("Stream {StreamId} not found in provider's stream list", streamId);
                 }
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogWarning(ex, "Failed to look up channel name for stream {StreamId}", streamId);
+                _logger.PluginLogWarning(ex, "Failed to look up channel name for stream {StreamId}", streamId);
             }
         }
 
@@ -1034,13 +1346,23 @@ public class LiveTvService(
                 return stream;
             }
 
-            _logger.LogWarning("Found disposed Restream instance for stream {StreamId}, creating new one", streamId);
+            _logger.PluginLogWarning(
+                "Found disposed Restream instance for stream {StreamId}, creating new one",
+                streamId
+            );
         }
 
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Creating new Restream instance for stream {StreamId} from provider '{ProviderName}'",
             streamId,
             provider.Name
+        );
+
+        _logger.LogDebugIfEnabled(
+            "MediaSourceInfo: Id={MediaSourceId}, Path={Path}, Container={Container}",
+            mediaSourceInfo.Id,
+            mediaSourceInfo.Path,
+            mediaSourceInfo.Container
         );
 
         Restream newStream = new Restream(
@@ -1052,12 +1374,28 @@ public class LiveTvService(
             discordService: _discordService
         );
 
+        _logger.LogDebugIfEnabled("Restream instance created, calling Open() for stream {StreamId}...", streamId);
+
         try
         {
+            var openStartTime = DateTime.UtcNow;
             await newStream.Open(cancellationToken).ConfigureAwait(false);
+            var openDuration = (DateTime.UtcNow - openStartTime).TotalMilliseconds;
+
+            _logger.LogDebugIfEnabled(
+                "Restream.Open() completed successfully for stream {StreamId} in {DurationMs}ms",
+                streamId,
+                openDuration
+            );
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebugIfEnabled(
+                "Restream.Open() FAILED for stream {StreamId}: {ExceptionType} - {Message}",
+                streamId,
+                ex.GetType().Name,
+                ex.Message
+            );
             newStream.Dispose();
             throw;
         }
@@ -1103,7 +1441,7 @@ public class LiveTvService(
                 }
                 catch (HttpRequestException ex)
                 {
-                    _logger.LogWarning(ex, "Failed to get provider connection limits, defaulting to 1");
+                    _logger.PluginLogWarning(ex, "Failed to get provider connection limits, defaulting to 1");
                     maxConnections = 1;
                 }
             }
@@ -1137,7 +1475,7 @@ public class LiveTvService(
             {
                 StreamInfoSnapshot oldest = snapshots[i];
                 TimeSpan streamAge = DateTime.UtcNow - oldest.StartTime;
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "Connection limit exceeded ({CurrentStreams}/{MaxConnections}). Killing oldest stream: {StreamName} ({StreamId}), age: {Age}",
                     currentStreams,
                     maxConnections,
