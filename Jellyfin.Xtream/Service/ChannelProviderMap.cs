@@ -23,6 +23,7 @@ using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.ChannelMatching;
+using Jellyfin.Xtream.Service.ProviderManagement;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -37,22 +38,31 @@ public sealed partial class ChannelProviderMap
 
     private readonly FrozenDictionary<string, ChannelWithProviders> _channels;
     private readonly FrozenDictionary<Guid, string> _guidToNormalizedName;
+    private readonly IProviderAvailabilityService? _resilienceService;
 
     private ChannelProviderMap(
         FrozenDictionary<string, ChannelWithProviders> channels,
         FrozenDictionary<Guid, string> guidToNormalizedName,
-        int skippedCount
+        int skippedCount,
+        IProviderAvailabilityService? resilienceService = null
     )
     {
         _channels = channels;
         _guidToNormalizedName = guidToNormalizedName;
         SkippedCount = skippedCount;
+        _resilienceService = resilienceService;
     }
 
     /// <summary>
     /// Gets the number of unique channels (after deduplication).
     /// </summary>
     public int ChannelCount => _channels.Count;
+
+    /// <summary>
+    /// Gets the total number of GUIDs in the lookup table.
+    /// This equals the total number of stream-provider combinations across all providers.
+    /// </summary>
+    public int GuidCount => _guidToNormalizedName.Count;
 
     /// <summary>
     /// Gets the number of streams that were skipped due to empty names after normalization.
@@ -70,23 +80,13 @@ public sealed partial class ChannelProviderMap
     /// and combined name normalization to avoid redundant regex operations.
     /// </summary>
     /// <param name="providerStreams">All streams from all providers.</param>
+    /// <param name="resilienceService">Optional resilience service for health-aware sorting and filtering.</param>
+    /// <param name="filterByCapacity">When true, channels with no providers having capacity are filtered out.</param>
     /// <returns>A new <see cref="ChannelProviderMap"/> with channels grouped and sorted by quality.</returns>
-    public static ChannelProviderMap Build(IEnumerable<ProviderStreamInfo> providerStreams)
-    {
-        return Build(providerStreams, availabilityScorer: null);
-    }
-
-    /// <summary>
-    /// Builds the channel map with connection-aware provider ordering.
-    /// Providers are sorted by a combination of quality and availability scores.
-    /// </summary>
-    /// <param name="providerStreams">All streams from all providers.</param>
-    /// <param name="availabilityScorer">Function to get availability score (0-100) for a provider ID.
-    /// Higher scores indicate more available capacity. Pass null to use quality-only sorting.</param>
-    /// <returns>A new <see cref="ChannelProviderMap"/> with channels grouped and sorted.</returns>
     public static ChannelProviderMap Build(
         IEnumerable<ProviderStreamInfo> providerStreams,
-        Func<string, int>? availabilityScorer
+        IProviderAvailabilityService? resilienceService = null,
+        bool filterByCapacity = false
     )
     {
         // Materialize once to avoid multiple enumeration
@@ -97,25 +97,27 @@ public sealed partial class ChannelProviderMap
             return new ChannelProviderMap(
                 FrozenDictionary<string, ChannelWithProviders>.Empty,
                 FrozenDictionary<Guid, string>.Empty,
-                skippedCount: 0
+                skippedCount: 0,
+                resilienceService
             );
         }
 
         // Use parallel processing for large datasets
         return streamsList.Count >= ParallelThreshold
-            ? BuildParallel(streamsList, availabilityScorer)
-            : BuildSequential(streamsList, availabilityScorer);
+            ? BuildParallel(streamsList, resilienceService, filterByCapacity)
+            : BuildSequential(streamsList, resilienceService, filterByCapacity);
     }
 
     private static ChannelProviderMap BuildSequential(
         IList<ProviderStreamInfo> streamsList,
-        Func<string, int>? availabilityScorer
+        IProviderAvailabilityService? resilienceService,
+        bool filterByCapacity
     )
     {
-        var channelDict = new Dictionary<string, List<(ProviderStreamInfo Stream, int Score, string DisplayName)>>(
-            streamsList.Count / 2,
-            StringComparer.OrdinalIgnoreCase
-        );
+        var channelDict = new Dictionary<
+            string,
+            List<(ProviderStreamInfo Stream, int Score, string DisplayName, bool HasCapacity)>
+        >(streamsList.Count / 2, StringComparer.OrdinalIgnoreCase);
 
         var guidMapping = new Dictionary<Guid, string>(streamsList.Count);
         int skippedCount = 0;
@@ -129,7 +131,8 @@ public sealed partial class ChannelProviderMap
                 continue;
             }
 
-            int score = CalculateProviderScore(ps, availabilityScorer);
+            int score = CalculateProviderScore(ps, resilienceService);
+            bool hasCapacity = resilienceService?.HasCapacity(ps.Provider.Id) ?? true;
 
             ref var listRef = ref CollectionsMarshal.GetValueRefOrAddDefault(
                 channelDict,
@@ -138,41 +141,42 @@ public sealed partial class ChannelProviderMap
             );
             if (!exists)
             {
-                listRef = new List<(ProviderStreamInfo, int, string)>(4);
+                listRef = new List<(ProviderStreamInfo, int, string, bool)>(4);
             }
 
-            listRef!.Add((ps, score, displayName));
+            listRef!.Add((ps, score, displayName, hasCapacity));
 
             var guid = StreamService.ToProviderGuid(StreamService.LiveTvPrefix, ps.Provider, ps.Stream.StreamId);
             guidMapping[guid] = normalizedName;
         }
 
-        return BuildFromGrouped(channelDict, guidMapping, skippedCount);
+        return BuildFromGrouped(channelDict, guidMapping, skippedCount, filterByCapacity, resilienceService);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int CalculateProviderScore(ProviderStreamInfo ps, Func<string, int>? availabilityScorer)
+    private static int CalculateProviderScore(ProviderStreamInfo ps, IProviderAvailabilityService? resilienceService)
     {
         int qualityScore = QualityScorer.ScoreStream(ps.Stream);
-        if (availabilityScorer == null)
+        if (resilienceService == null)
         {
             return qualityScore;
         }
 
-        int availabilityScore = availabilityScorer(ps.Provider.Id);
-        return QualityScorer.CombinedScore(qualityScore, availabilityScore);
+        int healthScore = resilienceService.GetSelectionScore(ps.Provider.Id);
+        return QualityScorer.CombinedScore(qualityScore, healthScore);
     }
 
     private static ChannelProviderMap BuildParallel(
         IList<ProviderStreamInfo> streamsList,
-        Func<string, int>? availabilityScorer
+        IProviderAvailabilityService? resilienceService,
+        bool filterByCapacity
     )
     {
         // Thread-safe collections for parallel grouping
-        var channelDict = new Dictionary<string, List<(ProviderStreamInfo Stream, int Score, string DisplayName)>>(
-            streamsList.Count / 2,
-            StringComparer.OrdinalIgnoreCase
-        );
+        var channelDict = new Dictionary<
+            string,
+            List<(ProviderStreamInfo Stream, int Score, string DisplayName, bool HasCapacity)>
+        >(streamsList.Count / 2, StringComparer.OrdinalIgnoreCase);
 
         var guidMapping = new Dictionary<Guid, string>(streamsList.Count);
         int skippedCount = 0;
@@ -185,9 +189,14 @@ public sealed partial class ChannelProviderMap
             Partitioner.Create(0, streamsList.Count),
             () =>
                 (
-                    List: new List<(ProviderStreamInfo Ps, int Score, string Normalized, string Display, Guid Guid)>(
-                        64
-                    ),
+                    List: new List<(
+                        ProviderStreamInfo Ps,
+                        int Score,
+                        string Normalized,
+                        string Display,
+                        Guid Guid,
+                        bool HasCapacity
+                    )>(64),
                     Skipped: 0
                 ),
             (range, _, local) =>
@@ -202,14 +211,15 @@ public sealed partial class ChannelProviderMap
                         continue;
                     }
 
-                    int score = CalculateProviderScore(ps, availabilityScorer);
+                    int score = CalculateProviderScore(ps, resilienceService);
+                    bool hasCapacity = resilienceService?.HasCapacity(ps.Provider.Id) ?? true;
 
                     var guid = StreamService.ToProviderGuid(
                         StreamService.LiveTvPrefix,
                         ps.Provider,
                         ps.Stream.StreamId
                     );
-                    local.List.Add((ps, score, normalizedName, displayName, guid));
+                    local.List.Add((ps, score, normalizedName, displayName, guid, hasCapacity));
                 }
 
                 return local;
@@ -233,23 +243,28 @@ public sealed partial class ChannelProviderMap
                         );
                         if (!exists)
                         {
-                            listRef = new List<(ProviderStreamInfo, int, string)>(4);
+                            listRef = new List<(ProviderStreamInfo, int, string, bool)>(4);
                         }
 
-                        listRef!.Add((item.Ps, item.Score, item.Display));
+                        listRef!.Add((item.Ps, item.Score, item.Display, item.HasCapacity));
                         guidMapping[item.Guid] = item.Normalized;
                     }
                 }
             }
         );
 
-        return BuildFromGrouped(channelDict, guidMapping, skippedCount);
+        return BuildFromGrouped(channelDict, guidMapping, skippedCount, filterByCapacity, resilienceService);
     }
 
     private static ChannelProviderMap BuildFromGrouped(
-        Dictionary<string, List<(ProviderStreamInfo Stream, int Score, string DisplayName)>> channelDict,
+        Dictionary<
+            string,
+            List<(ProviderStreamInfo Stream, int Score, string DisplayName, bool HasCapacity)>
+        > channelDict,
         Dictionary<Guid, string> guidMapping,
-        int skippedCount
+        int skippedCount,
+        bool filterByCapacity,
+        IProviderAvailabilityService? resilienceService = null
     )
     {
         var channels = new Dictionary<string, ChannelWithProviders>(
@@ -257,8 +272,18 @@ public sealed partial class ChannelProviderMap
             StringComparer.OrdinalIgnoreCase
         );
 
+        // Track channels filtered out due to no capacity
+        int filteredOutCount = 0;
+
         foreach (var (name, streamScores) in channelDict)
         {
+            // When filtering by capacity, skip channels where no provider has capacity
+            if (filterByCapacity && !streamScores.Any(s => s.HasCapacity))
+            {
+                filteredOutCount++;
+                continue;
+            }
+
             // Sort by score descending, then by provider name for stability
             streamScores.Sort(
                 (a, b) =>
@@ -285,7 +310,8 @@ public sealed partial class ChannelProviderMap
         return new ChannelProviderMap(
             channels.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase),
             guidMapping.ToFrozenDictionary(),
-            skippedCount
+            skippedCount + filteredOutCount,
+            resilienceService
         );
     }
 
@@ -336,10 +362,11 @@ public sealed partial class ChannelProviderMap
 
     /// <summary>
     /// Gets the next best provider for failover.
+    /// Uses the circuit breaker registry to skip unavailable providers.
     /// </summary>
     /// <param name="channelGuid">The channel GUID.</param>
     /// <param name="failedProviderIds">Provider IDs that have already failed.</param>
-    /// <returns>The next available provider, or null if all have failed.</returns>
+    /// <returns>The next available provider, or null if all have failed or are unavailable.</returns>
     public ProviderStreamInfo? GetNextProvider(Guid channelGuid, ISet<string> failedProviderIds)
     {
         var channel = GetByGuid(channelGuid);
@@ -351,10 +378,19 @@ public sealed partial class ChannelProviderMap
         var providers = channel.Providers;
         for (int i = 0; i < providers.Count; i++)
         {
-            if (!failedProviderIds.Contains(providers[i].Provider.Id))
+            var providerId = providers[i].Provider.Id;
+
+            if (failedProviderIds.Contains(providerId))
             {
-                return providers[i];
+                continue;
             }
+
+            if (_resilienceService?.IsAvailable(providerId) == false)
+            {
+                continue;
+            }
+
+            return providers[i];
         }
 
         return null;

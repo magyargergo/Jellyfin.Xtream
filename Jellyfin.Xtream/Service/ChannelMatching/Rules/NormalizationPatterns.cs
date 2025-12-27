@@ -36,10 +36,11 @@ public static partial class NormalizationPatterns
 
     /// <summary>
     /// Matches video quality and resolution indicators.
-    /// Examples: "HD", "FHD", "4K", "UHD", "1080p", "720i", "H.264", "HEVC".
+    /// Examples: "HD", "FHD", "4K", "4K+", "UHD", "1080p", "720i", "H.264", "HEVC".
+    /// Also matches multi-language indicators like "MULTI" and quality variations.
     /// </summary>
     [GeneratedRegex(
-        @"\b(HD|FHD|SD|4K|UHD|HEVC|H\.?265|H\.?264|1080[PI]?|720[PI]?|480[PI]?|576[PI]?|2160[PI]?)\b",
+        @"\b(HD|FHD|SD|4K\+?|8K|UHD|HEVC|H\.?265|H\.?264|1080[PI]?|720[PI]?|480[PI]?|576[PI]?|2160[PI]?|MULTI|DUAL|AAC|AC3|DTS|DOLBY|ATMOS)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
         matchTimeoutMilliseconds: 100
     )]
@@ -47,10 +48,11 @@ public static partial class NormalizationPatterns
 
     /// <summary>
     /// Matches country name suffixes at the end of channel names.
-    /// Examples: "Channel Poland", "HBO UK", "Discovery Germany".
+    /// Examples: "Channel Poland", "HBO UK", "Discovery Germany", "MTV POLSKA".
+    /// Includes native language country names like "POLSKA" (Polish), "DEUTSCHLAND" (German), etc.
     /// </summary>
     [GeneratedRegex(
-        @"\s+(Poland|PL|UK|Germany|DE|France|FR|Spain|ES|Italy|IT|Netherlands|NL|USA|US|Canada|CA|Australia|AU|Austria|AT|Belgium|BE|Switzerland|CH|Czech|CZ|Slovakia|SK|Hungary|HU|Romania|RO|Bulgaria|BG|Croatia|HR|Serbia|RS|Slovenia|SI|Portugal|PT|Brazil|BR|Mexico|MX|Argentina|AR|Chile|CL|Colombia|CO|Peru|PE|Venezuela|VE|India|IN|Pakistan|PK|Bangladesh|BD|Russia|RU|Ukraine|UA|Belarus|BY|Kazakhstan|KZ|Turkey|TR|Greece|GR|Israel|IL|Egypt|EG|South Africa|ZA|Nigeria|NG|Kenya|KE|Morocco|MA|Tunisia|TN|Algeria|DZ|Japan|JP|China|CN|Korea|KR|Taiwan|TW|Hong Kong|HK|Singapore|SG|Malaysia|MY|Indonesia|ID|Thailand|TH|Vietnam|VN|Philippines|PH|Sweden|SE|Norway|NO|Denmark|DK|Finland|FI|Iceland|IS|Ireland|IE|Scotland|Wales|England|Latvia|LV|Lithuania|LT|Estonia|EE)\s*$",
+        @"\s+(Poland|Polska|PL|UK|Germany|Deutschland|DE|France|FR|Spain|Espana|España|ES|Italy|Italia|IT|Netherlands|Nederland|NL|USA|US|Canada|CA|Australia|AU|Austria|Osterreich|Österreich|AT|Belgium|Belgique|België|BE|Switzerland|Schweiz|Suisse|CH|Czech|Cesko|Česko|CZ|Slovakia|Slovensko|SK|Hungary|Magyarorszag|Magyarország|HU|Romania|RO|Bulgaria|BG|Croatia|Hrvatska|HR|Serbia|Srbija|RS|Slovenia|Slovenija|SI|Portugal|PT|Brazil|Brasil|BR|Mexico|México|MX|Argentina|AR|Chile|CL|Colombia|CO|Peru|Perú|PE|Venezuela|VE|India|IN|Pakistan|PK|Bangladesh|BD|Russia|Rossiya|Россия|RU|Ukraine|Ukraina|Україна|UA|Belarus|BY|Kazakhstan|KZ|Turkey|Turkiye|Türkiye|TR|Greece|Hellas|GR|Israel|IL|Egypt|EG|South Africa|ZA|Nigeria|NG|Kenya|KE|Morocco|MA|Tunisia|TN|Algeria|DZ|Japan|Nippon|JP|China|CN|Korea|KR|Taiwan|TW|Hong Kong|HK|Singapore|SG|Malaysia|MY|Indonesia|ID|Thailand|TH|Vietnam|VN|Philippines|PH|Sweden|Sverige|SE|Norway|Norge|NO|Denmark|Danmark|DK|Finland|Suomi|FI|Iceland|IS|Ireland|IE|Scotland|Wales|England|Latvia|Latvija|LV|Lithuania|Lietuva|LT|Estonia|Eesti|EE)\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
         matchTimeoutMilliseconds: 100
     )]

@@ -29,10 +29,10 @@ public sealed class ChannelMatcher : IChannelMatcher
 {
     /// <summary>
     /// The similarity threshold (0-100) for fuzzy matching.
-    /// 95% is strict enough to avoid false positives like "TVN" matching "TVN24"
-    /// while allowing minor variations like spacing differences.
+    /// 90% balances matching variations like "Sports" vs "Sport" (92% similarity)
+    /// while still avoiding false positives like "TVN" vs "TVN24" (75% similarity).
     /// </summary>
-    public const int SimilarityThreshold = 95;
+    public const int SimilarityThreshold = 90;
 
     private readonly IChannelNameNormalizer _normalizer;
 

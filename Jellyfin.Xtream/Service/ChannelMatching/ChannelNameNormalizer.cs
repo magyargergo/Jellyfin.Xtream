@@ -64,8 +64,9 @@ public sealed class ChannelNameNormalizer(IReadOnlyList<INormalizationRule> rule
     /// 6. Normalize special characters (separators -> spaces, diacritics -> base chars)
     /// 7. Remove remaining diacritics via Unicode normalization
     /// 8. Collapse whitespace and trim
-    /// 9. Remove all non-alphanumeric characters
-    /// 10. Convert to uppercase for case-insensitive comparison.
+    /// 9. Normalize common word variations (e.g., "Sports" -> "Sport")
+    /// 10. Remove all non-alphanumeric characters
+    /// 11. Convert to uppercase for case-insensitive comparison.
     /// </summary>
     private static ChannelNameNormalizer CreateDefault()
     {
@@ -87,9 +88,11 @@ public sealed class ChannelNameNormalizer(IReadOnlyList<INormalizationRule> rule
             DiacriticsRule.Instance,
             // 8. Collapse whitespace and trim
             WhitespaceRule.Instance,
-            // 9. Remove all non-alphanumeric characters
+            // 9. Normalize common word variations (e.g., "Sports" -> "Sport")
+            WordNormalizationRule.Instance,
+            // 10. Remove all non-alphanumeric characters
             new RegexReplacementRule(NormalizationPatterns.NonAlphanumericPattern()),
-            // 10. Convert to uppercase for case-insensitive comparison
+            // 11. Convert to uppercase for case-insensitive comparison
             UppercaseRule.Instance,
         };
 
