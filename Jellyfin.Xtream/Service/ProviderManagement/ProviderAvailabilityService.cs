@@ -43,12 +43,12 @@ namespace Jellyfin.Xtream.Service.ProviderManagement;
 /// <param name="httpClientFactory">HTTP client factory for API calls.</param>
 /// <param name="loggerFactory">Logger factory for creating loggers.</param>
 /// <param name="discordService">Optional Discord notification service.</param>
-/// <param name="configurationProvider">Function to retrieve plugin configuration.</param>
+/// <param name="configurationProvider">Provider for retrieving plugin configuration.</param>
 public sealed class ProviderAvailabilityService(
     IHttpClientFactory httpClientFactory,
     ILoggerFactory loggerFactory,
     IDiscordNotificationService? discordService,
-    Func<PluginConfiguration?> configurationProvider
+    IPluginConfigurationProvider configurationProvider
 ) : IProviderAvailabilityService, IDisposable
 {
     // Scoring weights (must sum to 100 for base score)
@@ -74,25 +74,12 @@ public sealed class ProviderAvailabilityService(
     private readonly ILogger<ProviderAvailabilityService> _logger =
         loggerFactory.CreateLogger<ProviderAvailabilityService>();
     private readonly IDiscordNotificationService? _discordService = discordService;
-    private readonly Func<PluginConfiguration?> _configurationProvider = configurationProvider;
+    private readonly IPluginConfigurationProvider _configurationProvider = configurationProvider;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
     // High-performance provider indexing for O(1) score lookups
     private FastProviderIndex? _providerIndex;
     private DateTime _lastFullRefresh = DateTime.MinValue;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ProviderAvailabilityService"/> class.
-    /// </summary>
-    /// <param name="httpClientFactory">HTTP client factory.</param>
-    /// <param name="loggerFactory">Logger factory.</param>
-    /// <param name="discordService">Optional Discord notification service.</param>
-    public ProviderAvailabilityService(
-        IHttpClientFactory httpClientFactory,
-        ILoggerFactory loggerFactory,
-        IDiscordNotificationService? discordService = null
-    )
-        : this(httpClientFactory, loggerFactory, discordService, GetDefaultConfiguration) { }
 
     private FastProviderIndex ProviderIndex => _providerIndex ??= new FastProviderIndex();
 
@@ -104,10 +91,10 @@ public sealed class ProviderAvailabilityService(
         var circuitState = state.CircuitStateProvider.CircuitState;
 
         // Available if circuit is closed or half-open (testing)
-        bool circuitAvailable = circuitState != CircuitState.Open && circuitState != CircuitState.Isolated;
+        var circuitAvailable = circuitState is not CircuitState.Open and not CircuitState.Isolated;
 
         // Also check capacity if tracked
-        bool hasCapacity = state.MaxConnections == 0 || state.AvailableSlots > 0;
+        var hasCapacity = state.MaxConnections == 0 || state.AvailableSlots > 0;
 
         return circuitAvailable && hasCapacity;
     }
@@ -626,7 +613,7 @@ public sealed class ProviderAvailabilityService(
 
     private ProviderState CreateProviderState(string providerId)
     {
-        var config = _configurationProvider();
+        var config = _configurationProvider.GetConfiguration();
         var breakDuration =
             config?.ProviderBlacklistSeconds > 0
                 ? TimeSpan.FromSeconds(config.ProviderBlacklistSeconds)
@@ -757,7 +744,7 @@ public sealed class ProviderAvailabilityService(
 
     private TimeSpan GetDefaultBlacklistDuration()
     {
-        var config = _configurationProvider();
+        var config = _configurationProvider.GetConfiguration();
         var seconds = config?.ProviderBlacklistSeconds ?? 0;
         return seconds > 0
             ? TimeSpan.FromSeconds(seconds)
@@ -796,18 +783,6 @@ public sealed class ProviderAvailabilityService(
                 // Ignore notification failures
             }
         });
-    }
-
-    private static PluginConfiguration? GetDefaultConfiguration()
-    {
-        try
-        {
-            return Plugin.Instance?.Configuration;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     /// <inheritdoc />

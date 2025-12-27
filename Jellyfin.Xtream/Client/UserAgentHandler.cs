@@ -30,23 +30,23 @@ namespace Jellyfin.Xtream.Client;
 public sealed class UserAgentHandler : DelegatingHandler
 {
     private readonly IUserAgentProvider _userAgentProvider;
-    private readonly Func<PluginConfiguration> _getConfiguration;
+    private readonly IPluginConfigurationProvider _configurationProvider;
     private readonly ILogger? _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="UserAgentHandler"/> class.
     /// </summary>
     /// <param name="userAgentProvider">The User-Agent provider.</param>
-    /// <param name="getConfiguration">Function to get current configuration.</param>
+    /// <param name="configurationProvider">Provider for current configuration.</param>
     /// <param name="logger">Optional logger.</param>
     public UserAgentHandler(
         IUserAgentProvider userAgentProvider,
-        Func<PluginConfiguration> getConfiguration,
+        IPluginConfigurationProvider configurationProvider,
         ILogger? logger = null
     )
     {
         _userAgentProvider = userAgentProvider;
-        _getConfiguration = getConfiguration;
+        _configurationProvider = configurationProvider;
         _logger = logger;
     }
 
@@ -56,10 +56,10 @@ public sealed class UserAgentHandler : DelegatingHandler
         CancellationToken cancellationToken
     )
     {
-        var config = _getConfiguration();
+        var config = _configurationProvider.GetConfiguration();
 
         // Only rotate User-Agent if rotation is enabled
-        if (config.EnableUserAgentRotation)
+        if (config?.EnableUserAgentRotation == true)
         {
             // Remove any existing User-Agent header
             request.Headers.Remove("User-Agent");

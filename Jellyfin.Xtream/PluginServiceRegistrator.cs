@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using Jellyfin.Xtream.Client;
+using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Providers;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Discovery;
@@ -38,16 +39,14 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     /// <inheritdoc />
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
+        // Register configuration provider (singleton for consistent access)
+        serviceCollection.AddSingleton<IPluginConfigurationProvider, PluginConfigurationProvider>();
+
         // Register UserAgentProvider
-        serviceCollection.AddSingleton<IUserAgentProvider>(sp => new UserAgentProvider(
-            () => Plugin.Instance.Configuration,
-            sp.GetRequiredService<ILogger<UserAgentProvider>>()
-        ));
+        serviceCollection.AddSingleton<IUserAgentProvider, UserAgentProvider>();
 
         // Configure HTTP client for Xtream API
-        serviceCollection
-            .AddHttpClient(HttpClientConfiguration.XtreamClientName)
-            .ConfigureXtreamClient(() => Plugin.Instance.Configuration);
+        serviceCollection.AddHttpClient(HttpClientConfiguration.XtreamClientName).ConfigureXtreamClient();
 
         // Register XtreamClient as transient (each request gets fresh instance)
         serviceCollection.AddTransient<XtreamClient>();
@@ -89,12 +88,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IProviderDiscoveryService, ProviderDiscoveryService>();
 
         // Register unified provider resilience service (combines circuit breaker, health scoring, capacity, and connection status)
-        serviceCollection.AddSingleton<ProviderAvailabilityService>(sp => new ProviderAvailabilityService(
-            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
-            sp.GetRequiredService<ILoggerFactory>(),
-            sp.GetRequiredService<IDiscordNotificationService>(),
-            () => Plugin.Instance?.Configuration
-        ));
+        serviceCollection.AddSingleton<ProviderAvailabilityService>();
         serviceCollection.AddSingleton<IProviderAvailabilityService>(sp =>
             sp.GetRequiredService<ProviderAvailabilityService>()
         );

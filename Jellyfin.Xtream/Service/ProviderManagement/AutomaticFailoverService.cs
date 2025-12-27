@@ -36,14 +36,14 @@ namespace Jellyfin.Xtream.Service.ProviderManagement;
 /// <param name="metrics">The provider metrics tracker.</param>
 /// <param name="trends">The health trend tracker.</param>
 /// <param name="logger">The logger instance.</param>
-/// <param name="configProvider">Configuration provider function.</param>
+/// <param name="configProvider">Configuration provider.</param>
 public sealed class AutomaticFailoverService(
     IProviderHealthScorer healthScorer,
     ICircuitBreakerService circuitBreaker,
     IProviderMetricsTracker metrics,
     IHealthTrendTracker trends,
     ILogger logger,
-    Func<PluginConfiguration?>? configProvider = null
+    IPluginConfigurationProvider? configProvider = null
 ) : IAutomaticFailoverService
 {
     private readonly IProviderHealthScorer _healthScorer = healthScorer;
@@ -51,7 +51,7 @@ public sealed class AutomaticFailoverService(
     private readonly IProviderMetricsTracker _metrics = metrics;
     private readonly IHealthTrendTracker _trends = trends;
     private readonly ILogger _logger = logger;
-    private readonly Func<PluginConfiguration?> _configProvider = configProvider ?? GetDefaultConfiguration;
+    private readonly IPluginConfigurationProvider _configProvider = configProvider ?? new PluginConfigurationProvider();
 
     /// <summary>
     /// Gets the health trend tracker for external access.
@@ -66,7 +66,7 @@ public sealed class AutomaticFailoverService(
     /// <returns>Providers ordered by combined health score (best first).</returns>
     public IReadOnlyList<ProviderStreamInfo> GetOrderedProviders(IEnumerable<ProviderStreamInfo> providers)
     {
-        var config = _configProvider();
+        var config = _configProvider.GetConfiguration();
         var skipUnavailable = config?.SkipUnavailableProviders ?? true;
 
         // Delegate to the optimized resilience service for base sorting
@@ -433,18 +433,6 @@ public sealed class AutomaticFailoverService(
 
         double combined = (resilienceScore * ResilienceWeight) + (metricsScore * MetricsWeight);
         return Math.Clamp((int)combined, 0, 100);
-    }
-
-    private static PluginConfiguration? GetDefaultConfiguration()
-    {
-        try
-        {
-            return Plugin.Instance?.Configuration;
-        }
-        catch
-        {
-            return null;
-        }
     }
 }
 

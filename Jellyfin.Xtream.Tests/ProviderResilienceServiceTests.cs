@@ -48,7 +48,7 @@ public sealed class ProviderResilienceServiceTests : IDisposable
             new SimpleHttpClientFactory(),
             NullLoggerFactory.Instance,
             discordService: null,
-            configurationProvider: () => null
+            configurationProvider: new TestConfigurationProvider()
         );
     }
 
@@ -56,6 +56,12 @@ public sealed class ProviderResilienceServiceTests : IDisposable
     private sealed class SimpleHttpClientFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new HttpClient();
+    }
+
+    // Simple IPluginConfigurationProvider implementation for testing
+    private sealed class TestConfigurationProvider : IPluginConfigurationProvider
+    {
+        public PluginConfiguration? GetConfiguration() => null;
     }
 
     public void Dispose()

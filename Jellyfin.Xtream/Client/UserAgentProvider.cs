@@ -29,14 +29,16 @@ namespace Jellyfin.Xtream.Client;
 /// <remarks>
 /// Initializes a new instance of the <see cref="UserAgentProvider"/> class.
 /// </remarks>
-/// <param name="getConfiguration">Function to retrieve current configuration.</param>
+/// <param name="configurationProvider">Provider for retrieving current configuration.</param>
 /// <param name="logger">Logger instance.</param>
-public sealed class UserAgentProvider(Func<PluginConfiguration> getConfiguration, ILogger<UserAgentProvider> logger)
-    : IUserAgentProvider
+public sealed class UserAgentProvider(
+    IPluginConfigurationProvider configurationProvider,
+    ILogger<UserAgentProvider> logger
+) : IUserAgentProvider
 {
     private static readonly FrozenDictionary<BrowserFamily, string[]> UserAgentsByFamily = CreateUserAgentDictionary();
 
-    private readonly Func<PluginConfiguration> _getConfiguration = getConfiguration;
+    private readonly IPluginConfigurationProvider _configurationProvider = configurationProvider;
     private readonly ILogger<UserAgentProvider> _logger = logger;
     private readonly object _lock = new();
     private int _roundRobinIndex = Random.Shared.Next(TotalUserAgentCount);
@@ -68,7 +70,11 @@ public sealed class UserAgentProvider(Func<PluginConfiguration> getConfiguration
     /// <inheritdoc />
     public string GetUserAgent()
     {
-        var config = _getConfiguration();
+        var config = _configurationProvider.GetConfiguration();
+        if (config is null)
+        {
+            return GetRandomUserAgent();
+        }
 
         // Custom User-Agent takes precedence
         var customUserAgent = config.CustomUserAgent?.Trim();

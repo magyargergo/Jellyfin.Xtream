@@ -41,18 +41,14 @@ public static class HttpClientConfiguration
     /// Configures the HttpClient builder with proxy, User-Agent, rate limiting, retry policies, and certificate validation settings.
     /// </summary>
     /// <param name="builder">The IHttpClientBuilder to configure.</param>
-    /// <param name="getConfiguration">Function to get the current plugin configuration.</param>
     /// <returns>The configured IHttpClientBuilder for chaining.</returns>
-    public static IHttpClientBuilder ConfigureXtreamClient(
-        this IHttpClientBuilder builder,
-        Func<PluginConfiguration> getConfiguration
-    )
+    public static IHttpClientBuilder ConfigureXtreamClient(this IHttpClientBuilder builder)
     {
         return builder
-            .ConfigurePrimaryHttpMessageHandler(sp => CreateHttpMessageHandler(getConfiguration, sp))
-            .AddHttpMessageHandler(sp => CreateRateLimitingHandler(getConfiguration, sp))
+            .ConfigurePrimaryHttpMessageHandler(sp => CreateHttpMessageHandler(sp))
+            .AddHttpMessageHandler(sp => CreateRateLimitingHandler(sp))
             // Add User-Agent rotation handler (rotates UA per-request when enabled)
-            .AddHttpMessageHandler(sp => CreateUserAgentHandler(getConfiguration, sp))
+            .AddHttpMessageHandler(sp => CreateUserAgentHandler(sp))
             // Add retry handler for transient errors and Cloudflare-specific issues
             .AddHttpMessageHandler(sp => new RetryHandler(CreateLogger(sp, "Jellyfin.Xtream.Retry")))
             .ConfigureHttpClient((sp, client) => ConfigureHttpClient(client, sp))
@@ -61,11 +57,9 @@ public static class HttpClientConfiguration
             .SetHandlerLifetime(TimeSpan.FromMinutes(5));
     }
 
-    private static UserAgentHandler CreateUserAgentHandler(
-        Func<PluginConfiguration> getConfiguration,
-        IServiceProvider serviceProvider
-    )
+    private static UserAgentHandler CreateUserAgentHandler(IServiceProvider serviceProvider)
     {
+        var configProvider = serviceProvider.GetRequiredService<IPluginConfigurationProvider>();
         var userAgentProvider = serviceProvider.GetService<IUserAgentProvider>();
         var logger = CreateLogger(serviceProvider, "Jellyfin.Xtream.UserAgent");
 
@@ -74,23 +68,21 @@ public static class HttpClientConfiguration
         {
             logger?.LogWarning("IUserAgentProvider not registered, User-Agent rotation will use fallback");
             var providerLogger = serviceProvider.GetService<ILoggerFactory>()?.CreateLogger<UserAgentProvider>();
-            userAgentProvider = new UserAgentProvider(getConfiguration, providerLogger!);
+            userAgentProvider = new UserAgentProvider(configProvider, providerLogger!);
         }
 
-        return new UserAgentHandler(userAgentProvider, getConfiguration, logger);
+        return new UserAgentHandler(userAgentProvider, configProvider, logger);
     }
 
-    private static RateLimitingHandler CreateRateLimitingHandler(
-        Func<PluginConfiguration> getConfiguration,
-        IServiceProvider serviceProvider
-    )
+    private static RateLimitingHandler CreateRateLimitingHandler(IServiceProvider serviceProvider)
     {
-        var config = getConfiguration();
+        var configProvider = serviceProvider.GetRequiredService<IPluginConfigurationProvider>();
+        var config = configProvider.GetConfiguration();
         var logger = CreateLogger(serviceProvider, "Jellyfin.Xtream.RateLimit");
 
         RateLimiter rateLimiter;
 
-        if (config.EnableRateLimiting)
+        if (config?.EnableRateLimiting == true)
         {
             var requestsPerSecond = config.RequestsPerSecond is > 0 and <= 100 ? config.RequestsPerSecond : 5;
             var burstSize = config.BurstSize is > 0 and <= 1000 ? config.BurstSize : 20;
@@ -120,12 +112,10 @@ public static class HttpClientConfiguration
         return new RateLimitingHandler(rateLimiter, logger);
     }
 
-    private static SocketsHttpHandler CreateHttpMessageHandler(
-        Func<PluginConfiguration> getConfiguration,
-        IServiceProvider serviceProvider
-    )
+    private static SocketsHttpHandler CreateHttpMessageHandler(IServiceProvider serviceProvider)
     {
-        var config = getConfiguration();
+        var configProvider = serviceProvider.GetRequiredService<IPluginConfigurationProvider>();
+        var config = configProvider.GetConfiguration() ?? new PluginConfiguration();
         var logger = CreateLogger(serviceProvider, "Jellyfin.Xtream.Proxy");
 
         var handler = new SocketsHttpHandler

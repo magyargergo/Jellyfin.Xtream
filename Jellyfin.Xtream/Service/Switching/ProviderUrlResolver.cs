@@ -33,17 +33,17 @@ namespace Jellyfin.Xtream.Service.Switching;
 /// </remarks>
 /// <param name="resilienceService">The provider resilience service.</param>
 /// <param name="logger">The logger.</param>
-/// <param name="configProvider">Optional configuration provider.</param>
+/// <param name="configProvider">Configuration provider.</param>
 public sealed class ProviderUrlResolver(
     IProviderAvailabilityService resilienceService,
     ILogger<ProviderUrlResolver> logger,
-    Func<PluginConfiguration?>? configProvider = null
+    IPluginConfigurationProvider? configProvider = null
 ) : IProviderUrlResolver
 {
     private readonly IProviderAvailabilityService _resilienceService =
         resilienceService ?? throw new ArgumentNullException(nameof(resilienceService));
     private readonly ILogger<ProviderUrlResolver> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    private readonly Func<PluginConfiguration?> _configProvider = configProvider ?? GetDefaultConfiguration;
+    private readonly IPluginConfigurationProvider _configProvider = configProvider ?? new PluginConfigurationProvider();
 
     /// <inheritdoc />
     public Task<string?> GetAlternativeUrlAsync(
@@ -62,7 +62,7 @@ public sealed class ProviderUrlResolver(
         }
 
         // Get configuration
-        var config = _configProvider();
+        var config = _configProvider.GetConfiguration();
         if (config == null)
         {
             return Task.FromResult<string?>(null);
@@ -172,7 +172,7 @@ public sealed class ProviderUrlResolver(
         try
         {
             var uri = new Uri(url);
-            var config = _configProvider();
+            var config = _configProvider.GetConfiguration();
             if (config == null)
             {
                 return null;
@@ -268,17 +268,5 @@ public sealed class ProviderUrlResolver(
 
         // Rebuild with new credentials
         return $"{prefix}/{newProvider.Username}/{newProvider.Password}/{streamIdPart}";
-    }
-
-    private static PluginConfiguration? GetDefaultConfiguration()
-    {
-        try
-        {
-            return Plugin.Instance?.Configuration;
-        }
-        catch
-        {
-            return null;
-        }
     }
 }
