@@ -1,3 +1,18 @@
+// Copyright (C) 2025  Gergo Magyar
+
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -6,14 +21,46 @@ namespace Jellyfin.Xtream.Service.MpegTs;
 
 /// <summary>
 /// Tracks PTS/DTS timestamps for audio and video streams to detect A/V drift.
+/// This is a monitor-only class - it does not modify stream data.
 /// Thread-safe for concurrent access from the indexer.
 /// </summary>
+/// <remarks>
+/// <para>
+/// A/V sync correction is intentionally NOT performed server-side because:
+/// </para>
+/// <list type="bullet">
+/// <item><description>Players have sophisticated A/V sync algorithms that work best with original timestamps</description></item>
+/// <item><description>Modifying audio PTS without video/PCR creates timing inconsistency</description></item>
+/// <item><description>We cannot distinguish encoder drift from network jitter</description></item>
+/// </list>
+/// <para>Drift thresholds based on human perception research:</para>
+/// <list type="bullet">
+/// <item><description>±20ms: Professional broadcast target (EBU R37)</description></item>
+/// <item><description>±45ms: Human lip-sync detection threshold</description></item>
+/// <item><description>±100ms: Clearly noticeable to most viewers</description></item>
+/// </list>
+/// </remarks>
 public sealed class TimestampTracker
 {
     private const int MaxSamples = 50;
-    private const double DriftThresholdMs = 40.0;
+
+    /// <summary>
+    /// Drift threshold for status reporting.
+    /// Set to 20ms (professional broadcast standard) for proactive detection.
+    /// Human lip-sync detection starts at ~45ms, so 20ms gives us headroom.
+    /// </summary>
+    private const double DriftThresholdMs = 20.0;
+
+    /// <summary>
+    /// Severe drift threshold requiring attention.
+    /// At 100ms, most viewers will notice lip-sync issues.
+    /// </summary>
     private const double SevereDriftThresholdMs = 100.0;
-    private const int UpdateIntervalSamples = 8;
+
+    /// <summary>
+    /// Update sync status every 4 samples for faster response.
+    /// </summary>
+    private const int UpdateIntervalSamples = 4;
 
     private readonly RingBuffer<StreamTimestamp> _videoTimestamps = new(MaxSamples);
     private readonly RingBuffer<StreamTimestamp> _audioTimestamps = new(MaxSamples);
@@ -224,6 +271,27 @@ public sealed class TimestampTracker
         Interlocked.Exchange(ref _driftViolationCount, 0);
         _peakDriftMs = 0;
         _currentStatus = SyncStatus.Unknown;
+    }
+
+    /// <summary>
+    /// Gets diagnostic information about tracking state.
+    /// </summary>
+    /// <returns>Formatted diagnostic string.</returns>
+    public string GetDiagnostics()
+    {
+        string status = _currentStatus.ToString();
+        double drift = CurrentDriftMs;
+        double avgDrift = GetAverageDriftMs();
+        double peak = _peakDriftMs;
+        long violations = DriftViolationCount;
+
+        return $"TimestampTracker [{status}]:\n"
+            + $"  Current drift: {drift:F2}ms\n"
+            + $"  Average drift: {avgDrift:F2}ms\n"
+            + $"  Peak drift: {peak:F2}ms\n"
+            + $"  Violations: {violations}\n"
+            + $"  Video samples: {VideoSampleCount}\n"
+            + $"  Audio samples: {AudioSampleCount}";
     }
 
     private void UpdateSyncStatus()

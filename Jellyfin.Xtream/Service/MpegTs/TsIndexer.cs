@@ -1,15 +1,22 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Text;
 using System.Threading;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
+
+// Performance: Skip zero-initialization of local variables in this module.
+// All locals are explicitly initialized before use in hot paths.
+// See: https://www.meziantou.net/csharp-9-improve-performance-using-skiplocalsinit.htm
+[module: SkipLocalsInit]
 
 namespace Jellyfin.Xtream.Service.MpegTs;
 
@@ -76,6 +83,23 @@ public class TsIndexer : ITsQualityMonitor
 
     // Cache for first video program to avoid LINQ allocations in hot path
     private ProgramInfo? _cachedFirstVideoProgram;
+
+    // Performance: Cached array of programs to avoid ConcurrentDictionary enumeration in hot path
+    // Updated when programs are added/modified
+    private volatile ProgramInfo[] _programsCache = Array.Empty<ProgramInfo>();
+
+    // Performance: PID → ProgramInfo lookup table for O(1) routing (13-bit PID = 8192 entries)
+    // null = not a known program PID, non-null = the program that owns this PID
+    private readonly ProgramInfo?[] _pidToProgram = new ProgramInfo?[8192];
+
+    // Performance: PID type classification for fast routing
+    // 0 = unknown, 1 = video, 2 = audio, 3 = PCR-only
+    private readonly byte[] _pidType = new byte[8192];
+
+    private const byte PidTypeUnknown = 0;
+    private const byte PidTypeVideo = 1;
+    private const byte PidTypeAudio = 2;
+    private const byte PidTypePcr = 3;
 
     static TsIndexer()
     {
@@ -396,11 +420,22 @@ public class TsIndexer : ITsQualityMonitor
 
         // Step 3: Store any trailing partial packet for next chunk
         int remaining = data.Length - offset;
-        if (remaining > 0)
+        if (remaining is > 0 and < TsConstants.PacketSize)
         {
+            // Only store partial data if it's less than a full packet
+            // (remaining >= PacketSize would indicate a bug in the loop above)
             data.Slice(offset, remaining).CopyTo(_partialPacket.AsSpan(0, remaining));
             _partialLength = remaining;
             _partialStartOffset = baseOffset + offset;
+        }
+        else if (remaining >= TsConstants.PacketSize)
+        {
+            // This shouldn't happen - indicates a bug in the processing loop
+            // Log and discard to avoid corruption
+            _logger?.LogWarning(
+                "TsIndexer: Unexpected remaining bytes ({Remaining}) at end of chunk - discarding to prevent buffer overflow",
+                remaining
+            );
         }
 
         // Step 4: Prune old keyframes outside buffer window for all programs
@@ -875,7 +910,7 @@ public class TsIndexer : ITsQualityMonitor
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-    private void ParsePacket(ReadOnlySpan<byte> packet, long absoluteOffset)
+    private unsafe void ParsePacket(ReadOnlySpan<byte> packet, long absoluteOffset)
     {
         // Bounds check
         if (packet.Length < 4)
@@ -893,37 +928,62 @@ public class TsIndexer : ITsQualityMonitor
             ValidatePcrPids();
         }
 
+        // Performance: Read all 4 header bytes in a single operation
+        // This is faster than 4 separate byte reads on modern CPUs
+        uint header = Unsafe.ReadUnaligned<uint>(ref MemoryMarshal.GetReference(packet));
+
         // INDUSTRY STANDARD: Check Transport Error Indicator (TEI) - ISO/IEC 13818-1 Section 2.4.3.2
         // Bit 7 of byte 1: Set when uncorrectable error detected at transmission layer
-        bool transportError = (packet[1] & 0x80) != 0;
-        if (transportError)
+        // In little-endian: byte 1 is at bits 8-15 of uint, TEI is bit 15
+        if ((header & 0x8000) != 0)
         {
             Interlocked.Increment(ref _totalPacketErrors);
             _logger?.LogDebugIfEnabled("TS Indexer: Transport error detected at offset {Offset}", absoluteOffset);
             return; // Drop corrupted packet - cannot trust its contents
         }
 
-        // Header: 4 bytes
-        int pid = ((packet[1] & 0x1F) << 8) | packet[2];
+        // Header: 4 bytes (little-endian layout)
+        // Byte 0: sync byte (0x47)
+        // Byte 1: TEI(1) | PUSI(1) | Priority(1) | PID_hi(5)
+        // Byte 2: PID_lo(8)
+        // Byte 3: Scramble(2) | Adaptation(2) | CC(4)
+        // In little-endian uint value 0xDDCCBBAA: byte0=AA, byte1=BB, byte2=CC, byte3=DD
+        // PID = (byte1 & 0x1F) << 8 | byte2
+        // byte1 is at bits 8-15, byte2 is at bits 16-23
+        int pid = (int)((((header >> 8) & 0x1F) << 8) | ((header >> 16) & 0xFF));
 
         // TR 101 290 Priority 1: PID validation (must be 0-8191)
-        if (pid < 0 || pid > 8191)
+        // Branchless: unsigned comparison catches negative values too
+        if ((uint)pid > 8191)
         {
             return; // Invalid PID - skip
         }
 
-        int adaptationFieldControl = (packet[3] & 0x30) >> 4;
+        // Performance: Prefetch PID type lookup table while we do other work
+        // This hides memory latency by starting the cache line fetch early
+        // Note: Can only prefetch unmanaged types (byte[]), not managed ProgramInfo[]
+        if (Sse.IsSupported)
+        {
+            fixed (byte* pidTypePtr = _pidType)
+            {
+                Sse.Prefetch0(pidTypePtr + pid);
+            }
+        }
+
+        // Extract byte 3 fields
+        int byte3 = (int)(header >> 24);
+        int adaptationFieldControl = (byte3 & 0x30) >> 4;
 
         bool hasAdaptation = (adaptationFieldControl & 0x02) != 0;
         bool hasPayload = (adaptationFieldControl & 0x01) != 0;
 
         // INDUSTRY STANDARD: Extract Continuity Counter (ISO/IEC 13818-1)
         // Bits 0-3 of byte 3: Wraps 0-15, increments only for packets with payload
-        int continuityCounter = packet[3] & 0x0F;
+        int continuityCounter = byte3 & 0x0F;
 
         // TR 101 290: Check scrambling control bits (bits 6-7 of byte 3)
         // 0x00 = not scrambled, 0x01 = reserved, 0x02/0x03 = scrambled
-        int scrambleControl = (packet[3] & 0xC0) >> 6;
+        int scrambleControl = (byte3 & 0xC0) >> 6;
         if (scrambleControl != 0)
         {
             // Track scrambled PIDs for reporting
@@ -931,27 +991,55 @@ public class TsIndexer : ITsQualityMonitor
             return; // Scrambled packet - skip parsing
         }
 
-        // Validate continuity for known programs
-        foreach (var program in _programs.Values)
+        // Fast path: O(1) PID lookup for known video/audio/PCR PIDs
+        var knownProgram = _pidToProgram[pid];
+        if (knownProgram != null)
         {
-            // Only validate CCs for PIDs we care about (PMT, Video, PCR)
-            if (pid == program.PmtPid || pid == program.VideoPid || pid == program.PcrPid)
+            // Validate continuity counter for this PID
+            if (!knownProgram.ValidateContinuityCounter(pid, continuityCounter, hasPayload))
             {
-                if (!program.ValidateContinuityCounter(pid, continuityCounter, hasPayload))
-                {
-                    Interlocked.Increment(ref _totalContinuityErrors);
-                    _logger?.LogDebugIfEnabled(
-                        "TS Indexer: Continuity error on PID {Pid} (program {ProgramNumber}) at offset {Offset}",
-                        pid,
-                        program.ProgramNumber,
-                        absoluteOffset
-                    );
-                }
-
-                break;
+                Interlocked.Increment(ref _totalContinuityErrors);
+                _logger?.LogDebugIfEnabled(
+                    "TS Indexer: Continuity error on PID {Pid} (program {ProgramNumber}) at offset {Offset}",
+                    pid,
+                    knownProgram.ProgramNumber,
+                    absoluteOffset
+                );
             }
+
+            // Route based on PID type (branchless using lookup table)
+            byte pidType = _pidType[pid];
+
+            // Handle PCR extraction (PCR PID may also be video PID)
+            if (pidType == PidTypePcr || (pidType == PidTypeVideo && pid == knownProgram.PcrPid))
+            {
+                if (hasAdaptation)
+                {
+                    var pcrBuffer = knownProgram.GetOrCreatePcrJitterBuffer(_logger);
+                    if (pcrBuffer.ProcessPacket(packet, hasAdaptation))
+                    {
+                        knownProgram.PcrPacketsReceived++;
+                    }
+                }
+            }
+
+            if (pidType == PidTypeVideo)
+            {
+                HandleVideoPacket(packet, absoluteOffset, knownProgram, hasAdaptation, hasPayload);
+                return;
+            }
+
+            if (pidType == PidTypeAudio)
+            {
+                HandleAudioPacket(packet, absoluteOffset, knownProgram, hasPayload);
+                return;
+            }
+
+            // PCR-only PID (no video/audio data)
+            return;
         }
 
+        // Slow path: System tables and PMT discovery
         if (pid == PatPid)
         {
             if (hasPayload)
@@ -972,78 +1060,77 @@ public class TsIndexer : ITsQualityMonitor
             return;
         }
 
+        // Check PMT PIDs (not in fast lookup since they're rarely hit after initial parsing)
+        var programs = _programsCache;
+        for (int i = 0; i < programs.Length; i++)
         {
-            // Check if this PID belongs to any program's PMT
-            foreach (var program in _programs.Values)
+            var program = programs[i];
+            if (pid == program.PmtPid)
             {
-                if (pid == program.PmtPid)
+                // Validate CC for PMT
+                if (!program.ValidateContinuityCounter(pid, continuityCounter, hasPayload))
                 {
-                    if (hasPayload)
-                    {
-                        ParsePmt(packet, hasAdaptation, program);
-                    }
-
-                    return;
+                    Interlocked.Increment(ref _totalContinuityErrors);
                 }
 
-                // INDUSTRY STANDARD: Extract PCR for clock recovery (ISO/IEC 13818-1, TR 101 290)
-                // PCR provides 27 MHz reference clock for dejitter and smooth playout
-                // Check PCR FIRST because PCR PID often equals Video PID (common in SPTS)
-                if (pid == program.PcrPid && hasAdaptation)
+                if (hasPayload)
                 {
-                    var pcrBuffer = program.GetOrCreatePcrJitterBuffer(_logger);
-                    if (pcrBuffer.ProcessPacket(packet, hasAdaptation))
-                    {
-                        // TR 101 290 Priority 1: Track that declared PCR PID actually carries PCR values
-                        program.PcrPacketsReceived++;
-                    }
-
-                    // Don't return here - continue to check if this is also the video PID
+                    ParsePmt(packet, hasAdaptation, program);
                 }
 
-                // Check if this is the video PID for this program
-                if (pid == program.VideoPid)
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Handles video PID packets - extracts keyframes and PTS.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void HandleVideoPacket(
+        ReadOnlySpan<byte> packet,
+        long absoluteOffset,
+        ProgramInfo program,
+        bool hasAdaptation,
+        bool hasPayload
+    )
+    {
+        // Check for Random Access Indicator (RAI) in adaptation field
+        if (hasAdaptation && packet.Length > 5)
+        {
+            int adaptLen = packet[4];
+
+            // Bounds check: adaptation length must be valid
+            if (adaptLen > 0 && adaptLen < 184 && adaptLen + 5 <= packet.Length)
+            {
+                byte flags = packet[5];
+                bool randomAccess = (flags & 0x40) != 0; // Bit 6 = RAI
+
+                if (randomAccess)
                 {
-                    // Check for Random Access Indicator (RAI) in adaptation field
-                    if (hasAdaptation && packet.Length > 5)
-                    {
-                        int adaptLen = packet[4];
-
-                        // Bounds check: adaptation length must be valid
-                        if (adaptLen > 0 && adaptLen < 184 && adaptLen + 5 <= packet.Length)
-                        {
-                            byte flags = packet[5];
-                            bool randomAccess = (flags & 0x40) != 0; // Bit 6 = RAI
-
-                            if (randomAccess)
-                            {
-                                AddKeyframe(program, absoluteOffset);
-                            }
-                        }
-                    }
-
-                    // Extract video PTS for sync tracking (only on PES start)
-                    bool pusi = (packet[1] & 0x40) != 0;
-                    if (pusi && hasPayload)
-                    {
-                        ExtractAndRecordPts(packet, hasAdaptation, program, absoluteOffset, isVideo: true);
-                    }
-
-                    return;
-                }
-
-                // Check if this is the audio PID for this program
-                if (pid == program.Audio.Pid)
-                {
-                    bool pusi = (packet[1] & 0x40) != 0;
-                    if (pusi && hasPayload)
-                    {
-                        ExtractAndRecordPts(packet, hasAdaptation, program, absoluteOffset, isVideo: false);
-                    }
-
-                    return;
+                    AddKeyframe(program, absoluteOffset);
                 }
             }
+        }
+
+        // Extract video PTS for sync tracking (only on PES start)
+        bool pusi = (packet[1] & 0x40) != 0;
+        if (pusi && hasPayload)
+        {
+            ExtractAndRecordPts(packet, hasAdaptation, program, absoluteOffset, isVideo: true);
+        }
+    }
+
+    /// <summary>
+    /// Handles audio PID packets - extracts PTS for sync tracking.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void HandleAudioPacket(ReadOnlySpan<byte> packet, long absoluteOffset, ProgramInfo program, bool hasPayload)
+    {
+        bool pusi = (packet[1] & 0x40) != 0;
+        if (pusi && hasPayload)
+        {
+            ExtractAndRecordPts(packet, hasAdaptation: false, program, absoluteOffset, isVideo: false);
         }
     }
 
@@ -1078,7 +1165,7 @@ public class TsIndexer : ITsQualityMonitor
         {
             var tracker = program.GetOrCreateTimestampTracker();
 
-            // Wire up drift event on first use
+            // Wire up drift detection events on first use
             if (tracker.VideoSampleCount == 0 && tracker.AudioSampleCount == 0)
             {
                 tracker.DriftDetected += OnSyncDriftDetected;
@@ -1096,10 +1183,7 @@ public class TsIndexer : ITsQualityMonitor
         }
     }
 
-    private void OnSyncDriftDetected(object? sender, SyncDriftEventArgs e)
-    {
-        SyncDriftDetected?.Invoke(this, e);
-    }
+    private void OnSyncDriftDetected(object? sender, SyncDriftEventArgs e) => SyncDriftDetected?.Invoke(this, e);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     private void ParsePat(ReadOnlySpan<byte> packet, bool hasAdaptation)
@@ -1363,6 +1447,10 @@ public class TsIndexer : ITsQualityMonitor
                 if (program.VideoPid == -1)
                 {
                     program.VideoPid = elemPid;
+
+                    // Register in PID lookup table for O(1) routing in ParsePacket
+                    RegisterPidMapping(elemPid, program, PidTypeVideo);
+
                     _logger?.LogDebugIfEnabled(
                         "TS Indexer: Program {ProgramNumber} video PID detected: {VideoPid} (stream type: 0x{StreamType:X2})",
                         program.ProgramNumber,
@@ -1378,6 +1466,10 @@ public class TsIndexer : ITsQualityMonitor
                 {
                     program.Audio.Pid = elemPid;
                     program.Audio.StreamType = streamType;
+
+                    // Register in PID lookup table for O(1) routing in ParsePacket
+                    RegisterPidMapping(elemPid, program, PidTypeAudio);
+
                     _logger?.LogDebugIfEnabled(
                         "TS Indexer: Program {ProgramNumber} audio PID detected: {AudioPid} (stream type: 0x{StreamType:X2}, codec: {Codec})",
                         program.ProgramNumber,
@@ -1391,6 +1483,65 @@ public class TsIndexer : ITsQualityMonitor
             offset += 5 + esInfoLength;
             remainingBytes -= 5 + esInfoLength;
         }
+
+        // Register PCR PID if different from video PID
+        if (program.PcrPid >= 0 && program.PcrPid != program.VideoPid)
+        {
+            RegisterPidMapping(program.PcrPid, program, PidTypePcr);
+        }
+
+        // Update programs cache for hot path iteration
+        UpdateProgramsCache();
+    }
+
+    /// <summary>
+    /// Registers a PID to program mapping for O(1) lookup in packet routing.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RegisterPidMapping(int pid, ProgramInfo program, byte pidType)
+    {
+        if ((uint)pid < 8192)
+        {
+            _pidToProgram[pid] = program;
+            _pidType[pid] = pidType;
+        }
+    }
+
+    /// <summary>
+    /// Clears PID mappings for a program (called on version change).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ClearProgramPidMappings(ProgramInfo program)
+    {
+        if (program.VideoPid >= 0 && program.VideoPid < 8192)
+        {
+            _pidToProgram[program.VideoPid] = null;
+            _pidType[program.VideoPid] = PidTypeUnknown;
+        }
+
+        if (program.Audio.Pid >= 0 && program.Audio.Pid < 8192)
+        {
+            _pidToProgram[program.Audio.Pid] = null;
+            _pidType[program.Audio.Pid] = PidTypeUnknown;
+        }
+
+        if (program.PcrPid >= 0 && program.PcrPid < 8192)
+        {
+            _pidToProgram[program.PcrPid] = null;
+            _pidType[program.PcrPid] = PidTypeUnknown;
+        }
+    }
+
+    /// <summary>
+    /// Updates the cached programs array for allocation-free iteration in hot path.
+    /// </summary>
+    private void UpdateProgramsCache()
+    {
+        // Copy to array without LINQ to avoid allocation in builds without System.Linq
+        var values = _programs.Values;
+        var cache = new ProgramInfo[values.Count];
+        values.CopyTo(cache, 0);
+        _programsCache = cache;
     }
 
     /// <summary>
