@@ -134,4 +134,21 @@ public readonly record struct StreamInfoSnapshot
     /// Gets a summary of quality issues.
     /// </summary>
     public string? QualityIssues { get; init; }
+
+    // Reconnection/Discontinuity Metrics
+
+    /// <summary>
+    /// Gets the number of stream reconnections (discontinuities) that have occurred.
+    /// </summary>
+    public int ReconnectionCount { get; init; }
+
+    /// <summary>
+    /// Gets the offset where the last discontinuity occurred (0 if none).
+    /// </summary>
+    public long LastDiscontinuityOffset { get; init; }
+
+    /// <summary>
+    /// Gets the time since the last reconnection in seconds (null if no reconnections).
+    /// </summary>
+    public double? SecondsSinceLastReconnection { get; init; }
 }

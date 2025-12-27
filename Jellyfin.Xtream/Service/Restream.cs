@@ -24,6 +24,8 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.ProviderManagement;
+using Jellyfin.Xtream.Service.Switching;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
@@ -46,12 +48,29 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     public const string TunerHost = "Xtream-Restream";
 
+    // Buffer sizes based on stream quality
     private const int SdBufferSize = 33554432;
     private const int HdBufferSize = 67108864;
     private const int UhdBufferSize = 134217728;
     private const int CopyBufferSizeSd = 32768;
     private const int CopyBufferSizeHd = 65536;
     private const int CopyBufferSizeUhd = 262144;
+
+    // Connection and retry limits
+    private const int MaxRedirects = 10;
+    private const int MaxConnectionAttempts = 10;
+    private const int MaxConsecutiveTransientFailures = 5;
+    private const int Max406Retries = 3;
+
+    // Cleanup and timing constants
+    private const int ConsumerDisconnectGraceSeconds = 5;
+    private const int FirstBytePollIntervalMs = 50;
+    private const int ProgressLogIntervalSeconds = 60;
+    private const int HealthCheckIntervalSeconds = 30;
+    private const double BufferUnderrunThresholdPercent = 10.0;
+    private const double BufferNearFullThresholdPercent = 90.0;
+    private const int BufferUnderrunNotificationThreshold = 5;
+    private const int MinimumBytesForHealthyStream = 1048576;
 
     /// <summary>
     /// Global registry of all active Restream instances for monitoring and management.
@@ -91,6 +110,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private byte[]? _networkBuffer;
     private string? _killReason;
     private CancellationTokenSource? _cleanupCts;
+
+    // Hot-swap: depends on abstraction (DIP), not concrete implementation
+    private readonly IStreamHotSwapService? _hotSwapService;
+    private volatile string _currentSourceUrl;
 
     /// <inheritdoc />
     public int ConsumerCount
@@ -137,11 +160,34 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         MediaSourceInfo mediaSource,
         IDiscordNotificationService? discordService = null
     )
+        : this(appHost, httpClientFactory, logger, loggerFactory, mediaSource, discordService, null) { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="Restream"/> class with hot-swap support.
+    /// Follows DIP: depends on IStreamHotSwapService abstraction, not concrete implementation.
+    /// </summary>
+    /// <param name="appHost">Instance of the <see cref="IServerApplicationHost"/> interface.</param>
+    /// <param name="httpClientFactory">Instance of the <see cref="IHttpClientFactory"/> interface.</param>
+    /// <param name="logger">Instance of the <see cref="ILogger{Restream}"/> interface.</param>
+    /// <param name="loggerFactory">Instance of the <see cref="ILoggerFactory"/> interface.</param>
+    /// <param name="mediaSource">The media which must be restreamed.</param>
+    /// <param name="discordService">Optional Discord notification service.</param>
+    /// <param name="hotSwapService">Optional hot-swap service for mid-stream provider switching (DIP).</param>
+    public Restream(
+        IServerApplicationHost appHost,
+        IHttpClientFactory httpClientFactory,
+        ILogger<Restream> logger,
+        ILoggerFactory loggerFactory,
+        MediaSourceInfo mediaSource,
+        IDiscordNotificationService? discordService,
+        IStreamHotSwapService? hotSwapService
+    )
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _loggerFactory = loggerFactory;
         _discordService = discordService;
+        _hotSwapService = hotSwapService;
         MediaSource = mediaSource;
         _tokenSource = new CancellationTokenSource();
         _streamQuality = DetectStreamQuality(mediaSource);
@@ -149,7 +195,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory);
         _buffer.TsIndexer.StreamQualityViolation += OnStreamQualityViolation;
         _buffer.TsIndexer.SyncDriftDetected += OnSyncDriftDetected;
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Initialized stream {StreamId} ({Quality}) with automatic quality-based buffering ({BufferSizeMB}MB buffer)",
             mediaSource.Id,
             _streamQuality,
@@ -158,6 +204,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         OriginalStreamId = MediaSource.Id;
         UniqueId = Guid.NewGuid().ToString();
         _sourceUrl = MediaSource.Path;
+        _currentSourceUrl = _sourceUrl;
         string path = "/LiveTv/LiveStreamFiles/" + UniqueId + "/stream.ts";
         MediaSource.Path = appHost.GetSmartApiUrl(IPAddress.Any) + path;
         MediaSource.EncoderPath = appHost.GetApiUrlForLocalAccess() + path;
@@ -165,9 +212,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _readerPool = new RefCountedResourcePool<CircularBufferReadStream>(CreateReaderStream, OnConsumerCountChanged);
         _activeStreams.TryAdd(MediaSource.Id, this);
         _logger.LogDebugIfEnabled(
-            "Registered Restream {StreamId} (total active: {Count})",
+            "Registered Restream {StreamId} (total active: {Count}){HotSwap}",
             MediaSource.Id,
-            _activeStreams.Count
+            _activeStreams.Count,
+            hotSwapService != null ? " [hot-swap enabled]" : string.Empty
         );
     }
 
@@ -194,7 +242,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     private void OnConsumerCountChanged(int newCount)
     {
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Consumer count changed for channel {ChannelId}: {Count} active",
             MediaSource.Id,
             newCount
@@ -220,7 +268,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 return;
             }
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "All consumers disconnected from channel {ChannelId}. Scheduling cleanup in 5 seconds.",
                 MediaSource.Id
             );
@@ -234,10 +282,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 {
                     try
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(5.0), cancellationToken).ConfigureAwait(false);
+                        await Task.Delay(TimeSpan.FromSeconds(ConsumerDisconnectGraceSeconds), cancellationToken)
+                            .ConfigureAwait(false);
                         if (ConsumerCount == 0 && !_isDisposed)
                         {
-                            _logger.LogInformation(
+                            _logger.PluginLogInformation(
                                 "No consumers reconnected to channel {ChannelId} after grace period. Cleaning up.",
                                 MediaSource.Id
                             );
@@ -261,7 +310,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <inheritdoc />
     public async Task Open(CancellationToken openCancellationToken)
     {
-        await _openLock.WaitAsync(openCancellationToken).ConfigureAwait(false);
+        // Create timeout-aware cancellation for fast-fail on connection + first byte
+        // Industry standard: 5-10s total for initial connection phase
+        int streamOpenTimeoutMs = StreamingTimeoutPolicy.GetStreamOpenTimeoutMs();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(openCancellationToken);
+        timeoutCts.CancelAfter(streamOpenTimeoutMs);
+
+        await _openLock.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
         try
         {
             if (_broadcastTask != null)
@@ -271,9 +326,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             }
 
             _logger.LogDebugIfEnabled(
-                "Starting broadcast for channel {ChannelId} from URL: {Url}",
+                "Starting broadcast for channel {ChannelId} from URL: {Url} (timeout: {TimeoutMs}ms)",
                 MediaSource.Id,
-                _sourceUrl
+                _sourceUrl,
+                streamOpenTimeoutMs
             );
             _buffer.Reset();
             _logger.LogDebugIfEnabled(
@@ -292,38 +348,95 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 _tokenSource = new CancellationTokenSource();
             }
 
-            _resolvedUrl = await ResolveStreamUrlAsync(_sourceUrl, openCancellationToken).ConfigureAwait(false);
+            _resolvedUrl = await ResolveStreamUrlAsync(_sourceUrl, timeoutCts.Token).ConfigureAwait(false);
             _broadcastTask = BroadcastFromSourceAsync(_tokenSource.Token);
+
+            // Wait for first data with timeout (fast-fail if no data)
+            // This detects "connected but no data" scenarios common with overloaded providers
+            int firstByteTimeoutMs = StreamingTimeoutPolicy.GetFirstByteTimeoutMs();
+            if (!await WaitForFirstDataAsync(firstByteTimeoutMs, timeoutCts.Token).ConfigureAwait(false))
+            {
+                _logger.PluginLogWarning(
+                    "Stream {ChannelId} did not produce data within {TimeoutMs}ms first-byte timeout",
+                    MediaSource.Id,
+                    firstByteTimeoutMs
+                );
+                throw new TimeoutException($"Stream did not produce data within {firstByteTimeoutMs}ms");
+            }
+
             _logger.LogDebugIfEnabled(
-                "Broadcast started for channel {ChannelId} from {ResolvedUrl}",
+                "Broadcast started for channel {ChannelId} from {ResolvedUrl} (first data received)",
                 MediaSource.Id,
                 _resolvedUrl
             );
 
-            if (_discordService != null)
-            {
-                _ = Task.Run(
-                    async () =>
-                    {
-                        try
-                        {
-                            await _discordService
-                                .NotifyStreamStartAsync(MediaSource.Id, MediaSource.Name ?? "Unknown Channel")
-                                .ConfigureAwait(false);
-                        }
-                        catch
-                        {
-                            // Ignore notification failures
-                        }
-                    },
-                    CancellationToken.None
-                );
-            }
+            _discordService.SendFireAndForget(svc =>
+                svc.NotifyStreamStartAsync(MediaSource.Id, MediaSource.Name ?? "Unknown Channel")
+            );
+        }
+        catch (OperationCanceledException) when (!openCancellationToken.IsCancellationRequested)
+        {
+            // Timeout occurred (not user cancellation)
+            _logger.PluginLogWarning(
+                "Stream {ChannelId} connection timed out after {TimeoutMs}ms",
+                MediaSource.Id,
+                streamOpenTimeoutMs
+            );
+            throw new TimeoutException($"Stream connection timed out after {streamOpenTimeoutMs}ms");
         }
         finally
         {
             _openLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Waits for first data to appear in the buffer with timeout.
+    /// Enables fast-fail detection for "connected but no data" scenarios.
+    /// </summary>
+    /// <param name="timeoutMs">Maximum time to wait for first byte.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if data was received, false if timeout expired.</returns>
+    private async Task<bool> WaitForFirstDataAsync(int timeoutMs, CancellationToken cancellationToken)
+    {
+        var startTime = DateTime.UtcNow;
+        var deadline = startTime.AddMilliseconds(timeoutMs);
+
+        _logger.LogDebugIfEnabled(
+            "WaitForFirstDataAsync: channel {ChannelId}, timeout={TimeoutMs}ms, starting wait...",
+            MediaSource.Id,
+            timeoutMs
+        );
+
+        int pollCount = 0;
+        while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
+        {
+            if (_buffer.TotalBytesWritten > 0)
+            {
+                var elapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
+                _logger.LogDebugIfEnabled(
+                    "WaitForFirstDataAsync: channel {ChannelId} received first data after {ElapsedMs}ms ({BytesWritten} bytes)",
+                    MediaSource.Id,
+                    elapsedMs,
+                    _buffer.TotalBytesWritten
+                );
+                return true;
+            }
+
+            pollCount++;
+            await Task.Delay(FirstBytePollIntervalMs, cancellationToken).ConfigureAwait(false);
+        }
+
+        var totalElapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        _logger.LogDebugIfEnabled(
+            "WaitForFirstDataAsync: channel {ChannelId} TIMEOUT after {ElapsedMs}ms, {PollCount} polls, {BytesWritten} bytes written",
+            MediaSource.Id,
+            totalElapsedMs,
+            pollCount,
+            _buffer.TotalBytesWritten
+        );
+
+        return _buffer.TotalBytesWritten > 0;
     }
 
     /// <summary>
@@ -335,7 +448,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         Uri currentUrl = new Uri(initialUrl);
         HttpClient client = _httpClientFactory.CreateClient("XtreamClient");
 
-        for (int redirectCount = 0; redirectCount < 10; redirectCount++)
+        for (int redirectCount = 0; redirectCount < MaxRedirects; redirectCount++)
         {
             using HttpResponseMessage response = await client
                 .GetAsync(currentUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
@@ -353,7 +466,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 Uri? redirectLocation = response.Headers.Location;
                 if (redirectLocation == null)
                 {
-                    _logger.LogWarning(
+                    _logger.PluginLogWarning(
                         "Redirect response for channel {ChannelId} missing Location header",
                         MediaSource.Id
                     );
@@ -380,7 +493,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             {
                 if (redirectCount > 0)
                 {
-                    _logger.LogInformation(
+                    _logger.PluginLogInformation(
                         "Resolved stream URL for channel {ChannelId} after {Redirects} redirect(s): {FinalUrl}",
                         MediaSource.Id,
                         redirectCount,
@@ -391,7 +504,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 return currentUrl;
             }
 
-            _logger.LogError(
+            _logger.PluginLogError(
                 "Failed to resolve stream URL for channel {ChannelId}. URL: {Url}, Status: {StatusCode}, Reason: {Reason}",
                 MediaSource.Id,
                 currentUrl,
@@ -403,13 +516,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             );
         }
 
-        _logger.LogError(
+        _logger.PluginLogError(
             "Too many redirects ({Max}) for channel {ChannelId}. Final URL: {Url}",
-            10,
+            MaxRedirects,
             MediaSource.Id,
             currentUrl
         );
-        throw new HttpRequestException($"Too many redirects (10)");
+        throw new HttpRequestException($"Too many redirects ({MaxRedirects})");
     }
 
     /// <summary>
@@ -448,7 +561,14 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         int connectionAttempt = 0;
         int consecutiveFailures = 0;
 
-        while (!cancellationToken.IsCancellationRequested && connectionAttempt < 10)
+        _logger.LogDebugIfEnabled(
+            "BroadcastFromSourceAsync: starting for channel {ChannelId}, max attempts={MaxAttempts}, URL={Url}",
+            MediaSource.Id,
+            MaxConnectionAttempts,
+            _resolvedUrl
+        );
+
+        while (!cancellationToken.IsCancellationRequested && connectionAttempt < MaxConnectionAttempts)
         {
             connectionAttempt++;
             HttpResponseMessage? response = null;
@@ -456,18 +576,34 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
             try
             {
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "Opening HTTP connection #{Attempt} for channel {ChannelId} to {Url}",
                     connectionAttempt,
                     MediaSource.Id,
                     _resolvedUrl
                 );
 
+                _logger.LogDebugIfEnabled(
+                    "HTTP request starting: channel {ChannelId}, attempt #{Attempt}, consecutiveFailures={Failures}",
+                    MediaSource.Id,
+                    connectionAttempt,
+                    consecutiveFailures
+                );
+
+                var httpStartTime = DateTime.UtcNow;
                 using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, _resolvedUrl);
                 response = await _httpClientFactory
                     .CreateClient("XtreamClient")
                     .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                     .ConfigureAwait(false);
+
+                var httpDuration = (DateTime.UtcNow - httpStartTime).TotalMilliseconds;
+                _logger.LogDebugIfEnabled(
+                    "HTTP response received: channel {ChannelId}, status={StatusCode}, duration={DurationMs}ms",
+                    MediaSource.Id,
+                    (int)response.StatusCode,
+                    httpDuration
+                );
 
                 using (response)
                 {
@@ -478,7 +614,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             response.Headers.Select(h => h.Key + "=" + string.Join(";", h.Value))
                         );
                         string contentType = response.Content.Headers.ContentType?.ToString() ?? "none";
-                        _logger.LogError(
+                        _logger.PluginLogError(
                             "Failed to open broadcast source for channel {ChannelId}. Status: {StatusCode} ({StatusCodeInt}), ContentType: {ContentType}, Response Headers: [{Headers}]",
                             MediaSource.Id,
                             response.StatusCode,
@@ -491,7 +627,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         {
                             consecutiveFailures++;
                             int conflictBackoff = Math.Max(3000, CalculateBackoffDelay(consecutiveFailures, 2000));
-                            _logger.LogWarning(
+                            _logger.PluginLogWarning(
                                 "Provider conflict ({StatusCode}) for channel {ChannelId}. Previous connection may still be active on provider side. Failure #{FailureCount}. Retrying in {DelayMs}ms (extended backoff)...",
                                 response.StatusCode,
                                 MediaSource.Id,
@@ -508,15 +644,20 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             HttpStatusCode.Forbidden => true,
                             HttpStatusCode.NotFound => true,
                             HttpStatusCode.NotAcceptable => true,
+                            HttpStatusCode.ProxyAuthenticationRequired => true, // 407 - provider auth issue
                             HttpStatusCode.Gone => true,
+                            (HttpStatusCode)509 => true, // Bandwidth Limit Exceeded - provider connection limit
                             _ => false,
                         };
 
                         if (isPermanentError)
                         {
-                            if (response.StatusCode != HttpStatusCode.NotAcceptable || consecutiveFailures >= 3)
+                            if (
+                                response.StatusCode != HttpStatusCode.NotAcceptable
+                                || consecutiveFailures >= Max406Retries
+                            )
                             {
-                                _logger.LogError(
+                                _logger.PluginLogError(
                                     "Permanent client error ({StatusCode}) for channel {ChannelId}. This indicates a configuration issue or invalid stream. Common causes: incorrect credentials, invalid stream ID, unsupported stream format, missing Accept headers, or connection limit exceeded. Hint: Check that the stream URL is valid and the provider supports MPEG-TS streaming.",
                                     response.StatusCode,
                                     MediaSource.Id
@@ -526,12 +667,12 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                             consecutiveFailures++;
                             int acceptBackoff = Math.Max(4000, CalculateBackoffDelay(consecutiveFailures, 2500));
-                            _logger.LogWarning(
+                            _logger.PluginLogWarning(
                                 "Not Acceptable ({StatusCode}) for channel {ChannelId}. May be connection limit or provider rejecting reconnect. Failure #{FailureCount}/{MaxRetries}. Retrying in {DelayMs}ms...",
                                 response.StatusCode,
                                 MediaSource.Id,
                                 consecutiveFailures,
-                                3,
+                                Max406Retries,
                                 acceptBackoff
                             );
                             await Task.Delay(acceptBackoff, cancellationToken).ConfigureAwait(false);
@@ -539,9 +680,49 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         else
                         {
                             consecutiveFailures++;
+
+                            // Give up after too many consecutive transient failures to allow failover
+                            if (consecutiveFailures >= MaxConsecutiveTransientFailures)
+                            {
+                                _logger.PluginLogWarning(
+                                    "Too many consecutive transient errors ({FailureCount}) for channel {ChannelId}. Last error: {StatusCode}. Attempting hot-swap...",
+                                    consecutiveFailures,
+                                    MediaSource.Id,
+                                    response.StatusCode
+                                );
+
+                                // Try hot-swap before giving up completely
+                                if (
+                                    await TryHotSwapAsync(SwitchReason.HealthDegraded, cancellationToken)
+                                        .ConfigureAwait(false)
+                                )
+                                {
+                                    _resolvedUrl = await ResolveStreamUrlAsync(_currentSourceUrl, cancellationToken)
+                                        .ConfigureAwait(false);
+                                    consecutiveFailures = 0;
+                                    _logger.PluginLogInformation(
+                                        "Hot-swap resolved transient failures for channel {ChannelId}, continuing with new provider",
+                                        MediaSource.Id
+                                    );
+                                    continue;
+                                }
+
+                                _logger.PluginLogError(
+                                    "Hot-swap failed for channel {ChannelId}. Giving up after {FailureCount} transient errors.",
+                                    MediaSource.Id,
+                                    consecutiveFailures
+                                );
+                                throw new HttpRequestException(
+                                    string.Create(
+                                        CultureInfo.InvariantCulture,
+                                        $"Too many transient errors ({consecutiveFailures}): {response.StatusCode}"
+                                    )
+                                );
+                            }
+
                             int backoffDelay = CalculateBackoffDelay(consecutiveFailures);
-                            _logger.LogWarning(
-                                "Transient error ({StatusCode}) for channel {ChannelId}. Failure #{FailureCount}. Retrying in {DelayMs}ms (exponential backoff)...",
+                            _logger.PluginLogWarning(
+                                "Transient error ({StatusCode}) for channel {ChannelId}. Failure #{FailureCount}/5. Retrying in {DelayMs}ms (exponential backoff)...",
                                 response.StatusCode,
                                 MediaSource.Id,
                                 consecutiveFailures,
@@ -554,7 +735,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     }
 
                     sourceStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                    _logger.LogInformation(
+                    _buffer.SignalSourceConnected();
+                    _logger.PluginLogInformation(
                         "HTTP connection #{Attempt} established for channel {ChannelId} - ContentType: {ContentType}",
                         connectionAttempt,
                         MediaSource.Id,
@@ -563,7 +745,15 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                     if (totalBytesAllConnections > 0)
                     {
+                        // Mark discontinuity point so readers skip past stale pre-disconnect data
+                        // This prevents video loops caused by timestamp discontinuities after reconnection
+                        _buffer.MarkDiscontinuity();
                         _buffer.TsIndexer.ResetTimingState();
+                        _logger.LogDebugIfEnabled(
+                            "Marked discontinuity at offset {Offset} for channel {ChannelId} after reconnection",
+                            _buffer.TotalBytesWritten,
+                            MediaSource.Id
+                        );
                     }
 
                     long connectionBytes = 0L;
@@ -571,17 +761,63 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     DateTime lastLogTime = connectionStartTime;
                     DateTime lastHealthCheckTime = connectionStartTime;
 
+                    // Get configurable data stall timeout (industry standard: 10-20s)
+                    int dataStallTimeoutMs = StreamingTimeoutPolicy.GetDataStallTimeoutMs();
+
                     while (!cancellationToken.IsCancellationRequested)
                     {
-                        int bytesRead = await sourceStream
-                            .ReadAsync(bufferMemory, cancellationToken)
-                            .ConfigureAwait(false);
+                        int bytesRead;
+                        try
+                        {
+                            // Apply data stall timeout to detect hung connections
+                            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            readCts.CancelAfter(dataStallTimeoutMs);
+
+                            bytesRead = await sourceStream.ReadAsync(bufferMemory, readCts.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // Data stall detected - connection is alive but not sending data
+                            // Signal disconnection so readers know source is stalled
+                            _buffer.SignalSourceDisconnected();
+
+                            _logger.PluginLogWarning(
+                                "Data stall detected for channel {ChannelId} after {TimeoutMs}ms without data. Attempting hot-swap...",
+                                MediaSource.Id,
+                                dataStallTimeoutMs
+                            );
+
+                            // Try hot-swap to a different provider before reconnecting
+                            if (
+                                await TryHotSwapAsync(SwitchReason.ConnectionFailed, cancellationToken)
+                                    .ConfigureAwait(false)
+                            )
+                            {
+                                // Hot-swap succeeded - resolve the new URL and continue
+                                _resolvedUrl = await ResolveStreamUrlAsync(_currentSourceUrl, cancellationToken)
+                                    .ConfigureAwait(false);
+                                consecutiveFailures = 0;
+                                _logger.PluginLogInformation(
+                                    "Hot-swap resolved new URL for channel {ChannelId}, continuing with new provider",
+                                    MediaSource.Id
+                                );
+                            }
+                            else
+                            {
+                                consecutiveFailures++;
+                            }
+
+                            break; // Exit read loop, trigger reconnect
+                        }
 
                         if (bytesRead == 0)
                         {
+                            // Signal disconnection so readers know to wait for reconnection
+                            _buffer.SignalSourceDisconnected();
+
                             if (connectionBytes == 0)
                             {
-                                _logger.LogError(
+                                _logger.PluginLogError(
                                     "Connection #{Attempt} for channel {ChannelId} closed immediately without sending data",
                                     connectionAttempt,
                                     MediaSource.Id
@@ -590,23 +826,38 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             }
 
                             double connectionDuration = (DateTime.UtcNow - connectionStartTime).TotalSeconds;
-                            if (connectionBytes < 1048576 || connectionDuration < 10.0)
+                            if (connectionBytes < MinimumBytesForHealthyStream || connectionDuration < 10.0)
                             {
                                 consecutiveFailures++;
-                                _logger.LogWarning(
-                                    "Connection #{Attempt} for channel {ChannelId} reached PREMATURE EOF after only {MB} MB in {Duration:F1}s. Failure #{FailureCount}. This may indicate provider connection limits or token issues. Consumers active: {Consumers}. Reconnecting with extended backoff...",
+                                _logger.PluginLogWarning(
+                                    "Connection #{Attempt} for channel {ChannelId} reached PREMATURE EOF after only {MB} MB in {Duration:F1}s. Failure #{FailureCount}. Attempting hot-swap...",
                                     connectionAttempt,
                                     MediaSource.Id,
                                     connectionBytes / 1048576,
                                     connectionDuration,
-                                    consecutiveFailures,
-                                    ConsumerCount
+                                    consecutiveFailures
                                 );
+
+                                // Try hot-swap on premature EOF (likely capacity/rate limit issue)
+                                if (
+                                    consecutiveFailures >= 2
+                                    && await TryHotSwapAsync(SwitchReason.CapacityReached, cancellationToken)
+                                        .ConfigureAwait(false)
+                                )
+                                {
+                                    _resolvedUrl = await ResolveStreamUrlAsync(_currentSourceUrl, cancellationToken)
+                                        .ConfigureAwait(false);
+                                    consecutiveFailures = 0;
+                                    _logger.PluginLogInformation(
+                                        "Hot-swap resolved premature EOF for channel {ChannelId}, continuing with new provider",
+                                        MediaSource.Id
+                                    );
+                                }
                             }
                             else
                             {
                                 consecutiveFailures = 0;
-                                _logger.LogInformation(
+                                _logger.PluginLogInformation(
                                     "Connection #{Attempt} for channel {ChannelId} reached EOF after {MB} MB in {Duration:F1}s. Reconnecting...",
                                     connectionAttempt,
                                     MediaSource.Id,
@@ -625,7 +876,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         totalBytesAllConnections += bytesRead;
 
                         DateTime now = DateTime.UtcNow;
-                        if ((now - lastLogTime).TotalSeconds >= 60.0)
+                        if ((now - lastLogTime).TotalSeconds >= ProgressLogIntervalSeconds)
                         {
                             double sessionElapsed = (now - sessionStartTime).TotalSeconds;
                             double mbps = (double)totalBytesAllConnections * 8.0 / 1000000.0 / sessionElapsed;
@@ -633,7 +884,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                                 (double)(_buffer.TotalBytesWritten % _buffer.BufferSize)
                                 * 100.0
                                 / (double)_buffer.BufferSize;
-                            _logger.LogInformation(
+                            _logger.PluginLogInformation(
                                 "Broadcast progress for channel {ChannelId}: Connection #{Attempt}, {TotalMB} MB total, {Mbps:F2} Mbps avg, {Consumers} consumers, buffer {FillPct:F1}% filled",
                                 MediaSource.Id,
                                 connectionAttempt,
@@ -645,7 +896,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             lastLogTime = now;
                         }
 
-                        if ((now - lastHealthCheckTime).TotalSeconds >= 30.0)
+                        if ((now - lastHealthCheckTime).TotalSeconds >= HealthCheckIntervalSeconds)
                         {
                             double bufferFillPct2 =
                                 (double)(_buffer.TotalBytesWritten % _buffer.BufferSize)
@@ -658,14 +909,14 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                                         / 1000000.0
                                         / (now - sessionStartTime).TotalSeconds
                                     : 0.0;
-                            bool isUnderrun = bufferFillPct2 < 10.0;
+                            bool isUnderrun = bufferFillPct2 < BufferUnderrunThresholdPercent;
 
                             if (isUnderrun)
                             {
                                 _bufferUnderrunCount++;
                                 if (_bufferUnderrunCount % 3 == 1)
                                 {
-                                    _logger.LogWarning(
+                                    _logger.PluginLogWarning(
                                         "Buffer underrun #{Count} for channel {ChannelId}. Only {FillPct:F1}% filled ({FilledMB:F1}MB / {TotalMB}MB). Current bitrate: {Mbps:F2} Mbps. Consider increasing buffer size or checking network stability.",
                                         _bufferUnderrunCount,
                                         MediaSource.Id,
@@ -675,35 +926,25 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                                         currentBitrate
                                     );
 
-                                    if (_discordService != null && _bufferUnderrunCount >= 5)
+                                    if (_bufferUnderrunCount >= BufferUnderrunNotificationThreshold)
                                     {
-                                        _ = Task.Run(
-                                            async () =>
-                                            {
-                                                try
-                                                {
-                                                    await _discordService
-                                                        .NotifyBufferHealthIssueAsync(
-                                                            MediaSource.Id,
-                                                            MediaSource.Name ?? "Unknown",
-                                                            _bufferUnderrunCount,
-                                                            bufferFillPct2,
-                                                            currentBitrate
-                                                        )
-                                                        .ConfigureAwait(false);
-                                                }
-                                                catch
-                                                {
-                                                    // Ignore notification failures
-                                                }
-                                            },
-                                            CancellationToken.None
+                                        int underrunCount = _bufferUnderrunCount;
+                                        double fillPct = bufferFillPct2;
+                                        double bitrate = currentBitrate;
+                                        _discordService.SendFireAndForget(svc =>
+                                            svc.NotifyBufferHealthIssueAsync(
+                                                MediaSource.Id,
+                                                MediaSource.Name ?? "Unknown",
+                                                underrunCount,
+                                                fillPct,
+                                                bitrate
+                                            )
                                         );
                                     }
                                 }
                             }
 
-                            bool isNearFull = bufferFillPct2 > 90.0;
+                            bool isNearFull = bufferFillPct2 > BufferNearFullThresholdPercent;
                             if (isNearFull)
                             {
                                 _bufferHealthWarnings++;
@@ -764,7 +1005,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     );
                 }
 
-                if (totalBytesAllConnections > 1048576)
+                if (totalBytesAllConnections > MinimumBytesForHealthyStream)
                 {
                     connectionAttempt = 0;
                     consecutiveFailures = 0;
@@ -772,8 +1013,14 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                 if (!cancellationToken.IsCancellationRequested)
                 {
-                    bool isHealthyStream = consecutiveFailures == 0 && totalBytesAllConnections > 1048576;
-                    int minimumReconnectDelay = isHealthyStream ? 500 : (totalBytesAllConnections > 1048576 ? 1500 : 0);
+                    // Signal that we're attempting to reconnect - readers will wait longer
+                    _buffer.SignalReconnecting();
+
+                    bool isHealthyStream =
+                        consecutiveFailures == 0 && totalBytesAllConnections > MinimumBytesForHealthyStream;
+                    int minimumReconnectDelay = isHealthyStream
+                        ? 500
+                        : (totalBytesAllConnections > MinimumBytesForHealthyStream ? 1500 : 0);
                     int backoffDelay2 = Math.Max(minimumReconnectDelay, CalculateBackoffDelay(consecutiveFailures));
                     _logger.LogDebugIfEnabled(
                         "Waiting {DelayMs}ms before reconnecting channel {ChannelId} (healthy: {IsHealthy}, failures: {FailureCount}, bytes: {BytesMB}MB)...",
@@ -788,13 +1035,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             }
             catch (OperationCanceledException)
             {
-                _logger.LogInformation("Broadcast for channel {ChannelId} was cancelled", MediaSource.Id);
+                _logger.PluginLogInformation("Broadcast for channel {ChannelId} was cancelled", MediaSource.Id);
                 break;
             }
             catch (Exception exception)
             {
                 consecutiveFailures++;
-                _logger.LogError(
+                _logger.PluginLogError(
                     exception,
                     "Connection #{Attempt} for channel {ChannelId} failed. Failure #{FailureCount}",
                     connectionAttempt,
@@ -809,7 +1056,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                 response?.Dispose();
 
-                if (!cancellationToken.IsCancellationRequested && connectionAttempt < 10)
+                if (!cancellationToken.IsCancellationRequested && connectionAttempt < MaxConnectionAttempts)
                 {
                     int backoffDelay3 = CalculateBackoffDelay(consecutiveFailures);
                     _logger.LogDebugIfEnabled(
@@ -823,7 +1070,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         double totalSessionDuration = (DateTime.UtcNow - sessionStartTime).TotalSeconds;
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "Broadcast session ended for channel {ChannelId}: {TotalMB} MB in {Duration:F1}s across {Attempts} connection(s)",
             MediaSource.Id,
             totalBytesAllConnections / 1048576,
@@ -831,44 +1078,28 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             connectionAttempt
         );
 
-        if (connectionAttempt >= 10)
+        if (connectionAttempt >= MaxConnectionAttempts)
         {
-            _logger.LogError(
+            _logger.PluginLogError(
                 "Maximum reconnection attempts ({Max}) reached for channel {ChannelId}. Giving up.",
-                10,
+                MaxConnectionAttempts,
                 MediaSource.Id
             );
 
-            if (_discordService != null)
-            {
-                _ = Task.Run(
-                    async () =>
-                    {
-                        try
-                        {
-                            await _discordService
-                                .NotifyStreamErrorAsync(
-                                    MediaSource.Id,
-                                    MediaSource.Name ?? "Unknown",
-                                    $"Connection failed after 10 attempts"
-                                )
-                                .ConfigureAwait(false);
-                        }
-                        catch
-                        {
-                            // Ignore notification failures
-                        }
-                    },
-                    CancellationToken.None
-                );
-            }
+            _discordService.SendFireAndForget(svc =>
+                svc.NotifyStreamErrorAsync(
+                    MediaSource.Id,
+                    MediaSource.Name ?? "Unknown",
+                    $"Connection failed after {MaxConnectionAttempts} attempts"
+                )
+            );
 
-            _killReason = "Max reconnection attempts (10) reached";
+            _killReason = $"Max reconnection attempts ({MaxConnectionAttempts}) reached";
             Dispose();
         }
         else if (ConsumerCount == 0 && cancellationToken.IsCancellationRequested)
         {
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Auto-cleaning up stream {ChannelId} - broadcast cancelled with no active consumers",
                 MediaSource.Id
             );
@@ -924,7 +1155,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     {
         if (_isDisposed)
         {
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 "GetStream called on disposed stream {ChannelId}. Stream may have failed or been terminated.",
                 MediaSource.Id
             );
@@ -933,7 +1164,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         if (_broadcastTask == null)
         {
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 "Broadcast not initialized for channel {ChannelId}, initializing now...",
                 MediaSource.Id
             );
@@ -943,7 +1174,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         Stream? stream = _readerPool.Acquire();
         if (stream == null)
         {
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 "Failed to acquire stream for channel {ChannelId} - reader pool was disposed (stream failed or terminated)",
                 MediaSource.Id
             );
@@ -966,9 +1197,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         _isDisposed = true;
 
-        if (_activeStreams.TryRemove(MediaSource.Id, out _) && disposing)
+        // Only remove from registry during proper disposal (not finalizer)
+        // This prevents zombie streams that are still broadcasting but not trackable
+        if (disposing && _activeStreams.TryRemove(MediaSource.Id, out _))
         {
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "Unregistered Restream {StreamId} (remaining active: {Count})",
                 MediaSource.Id,
                 _activeStreams.Count
@@ -983,29 +1216,19 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         long bytesTransferred = _buffer.TotalBytesWritten;
         bool streamActuallyStarted = bytesTransferred > 0 || _broadcastTask != null;
 
-        if (_discordService != null && streamActuallyStarted)
+        if (streamActuallyStarted)
         {
-            TimeSpan duration = DateTime.UtcNow - _startTime;
-            string reason = _killReason ?? "Stream ended";
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await _discordService
-                        .NotifyStreamKilledAsync(
-                            MediaSource.Id,
-                            MediaSource.Name ?? "Unknown",
-                            reason,
-                            duration,
-                            bytesTransferred
-                        )
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Ignore notification failures
-                }
-            });
+            var duration = DateTime.UtcNow - _startTime;
+            var reason = _killReason ?? "Stream ended";
+            _discordService.SendFireAndForget(svc =>
+                svc.NotifyStreamKilledAsync(
+                    MediaSource.Id,
+                    MediaSource.Name ?? "Unknown",
+                    reason,
+                    duration,
+                    bytesTransferred
+                )
+            );
         }
         else if (_discordService != null && !streamActuallyStarted)
         {
@@ -1039,7 +1262,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _openLock.Dispose();
         _readerPool.Dispose();
         _networkBuffer = null;
-        _logger.LogInformation("Restream for channel {ChannelId} disposed", MediaSource.Id);
+        _logger.PluginLogInformation("Restream for channel {ChannelId} disposed", MediaSource.Id);
     }
 
     /// <summary>
@@ -1048,35 +1271,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     private void OnStreamQualityViolation(object? sender, StreamQualityViolationEventArgs e)
     {
-        if (_discordService == null)
-        {
-            return;
-        }
-
-        _ = Task.Run(
-            async () =>
-            {
-                try
-                {
-                    await _discordService
-                        .NotifyStreamQualityViolationAsync(
-                            MediaSource.Id,
-                            MediaSource.Name ?? "Unknown Channel",
-                            e.ViolationType,
-                            e.Details
-                        )
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebugIfEnabled(
-                        ex,
-                        "Failed to send Discord notification for stream quality violation on channel {ChannelId}",
-                        MediaSource.Id
-                    );
-                }
-            },
-            CancellationToken.None
+        _discordService.SendFireAndForget(svc =>
+            svc.NotifyStreamQualityViolationAsync(
+                MediaSource.Id,
+                MediaSource.Name ?? "Unknown Channel",
+                e.ViolationType,
+                e.Details
+            )
         );
     }
 
@@ -1086,50 +1287,85 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     private void OnSyncDriftDetected(object? sender, SyncDriftEventArgs e)
     {
-        if (_discordService == null)
-        {
-            return;
-        }
-
-        TsIndexer indexer = _buffer.TsIndexer;
-        double peakDrift = Math.Abs(e.DriftMs);
-        long violationCount = 1L;
-        ProgramInfo? program = indexer.GetFirstProgramWithVideo();
+        var indexer = _buffer.TsIndexer;
+        var peakDrift = Math.Abs(e.DriftMs);
+        var violationCount = 1L;
+        var program = indexer.GetFirstProgramWithVideo();
 
         if (program != null)
         {
-            TimestampTracker tracker = program.GetOrCreateTimestampTracker();
+            var tracker = program.GetOrCreateTimestampTracker();
             peakDrift = tracker.PeakDriftMs;
             violationCount = tracker.DriftViolationCount;
         }
 
-        _ = Task.Run(
-            async () =>
-            {
-                try
-                {
-                    await _discordService
-                        .NotifyAVDriftAsync(
-                            MediaSource.Id,
-                            MediaSource.Name ?? "Unknown Channel",
-                            e.DriftMs,
-                            e.Status.ToString(),
-                            peakDrift,
-                            violationCount
-                        )
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebugIfEnabled(
-                        ex,
-                        "Failed to send Discord notification for A/V drift on channel {ChannelId}",
-                        MediaSource.Id
-                    );
-                }
-            },
-            CancellationToken.None
+        _discordService.SendFireAndForget(svc =>
+            svc.NotifyAVDriftAsync(
+                MediaSource.Id,
+                MediaSource.Name ?? "Unknown Channel",
+                e.DriftMs,
+                e.Status.ToString(),
+                peakDrift,
+                violationCount
+            )
         );
+    }
+
+    /// <summary>
+    /// Attempts a hot-swap to a new provider when the current one is failing.
+    /// Delegates to IStreamHotSwapService following DIP (Dependency Inversion Principle).
+    /// </summary>
+    /// <param name="reason">The reason for the hot-swap attempt.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if the hot-swap succeeded and _currentSourceUrl was updated.</returns>
+    private async Task<bool> TryHotSwapAsync(SwitchReason reason, CancellationToken cancellationToken)
+    {
+        // Fast-path: check if hot-swap service is available (DIP - depend on abstraction)
+        if (_hotSwapService == null)
+        {
+            return false;
+        }
+
+        // Create context for the hot-swap service
+        var context = new HotSwapContext
+        {
+            StreamId = MediaSource.Id,
+            CurrentUrl = _currentSourceUrl,
+            BytesTransferred = _buffer.TotalBytesWritten,
+        };
+
+        // Delegate to the hot-swap service (SRP - Restream doesn't manage hot-swap logic)
+        var result = await _hotSwapService.TrySwitchAsync(context, reason, cancellationToken).ConfigureAwait(false);
+
+        if (result.Success && result.NewUrl is { Length: > 0 })
+        {
+            // Update URL atomically
+            _currentSourceUrl = result.NewUrl;
+
+            // Mark discontinuity for timestamp handling (critical for seamless playback)
+            _buffer.MarkDiscontinuity();
+            _buffer.TsIndexer.ResetTimingState();
+
+            _logger.PluginLogInformation(
+                "Hot-swap successful for {ChannelId} in {ElapsedMs}ms",
+                MediaSource.Id,
+                result.ElapsedMs
+            );
+
+            // Fire-and-forget notification (non-blocking)
+            _discordService.SendFireAndForget(svc =>
+                svc.NotifyStreamQualityViolationAsync(
+                    MediaSource.Id,
+                    MediaSource.Name ?? "Unknown",
+                    "Provider Switch",
+                    $"Hot-swap: {reason}"
+                )
+            );
+
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -1317,6 +1553,14 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     : Math.Abs(avDriftMs) > 100 || crcErrors > 10 || packetErrors > 100 ? "Critical"
                     : "Warning";
 
+                // Get discontinuity/reconnection info
+                var reconnectionCount = stream._buffer.DiscontinuityCount;
+                var lastDiscontinuityOffset = stream._buffer.LastDiscontinuityOffset;
+                var lastDiscontinuityTime = stream._buffer.LastDiscontinuityTime;
+                double? secondsSinceLastReconnection = lastDiscontinuityTime.HasValue
+                    ? (DateTime.UtcNow - lastDiscontinuityTime.Value).TotalSeconds
+                    : null;
+
                 result.Add(
                     new StreamInfoSnapshot
                     {
@@ -1343,6 +1587,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         HasQualityIssues = issues.Count > 0,
                         QualityLevel = qualityLevel,
                         QualityIssues = issues.Count > 0 ? string.Join(", ", issues) : null,
+                        // Reconnection metrics
+                        ReconnectionCount = reconnectionCount,
+                        LastDiscontinuityOffset = lastDiscontinuityOffset,
+                        SecondsSinceLastReconnection = secondsSinceLastReconnection,
                     }
                 );
             }
