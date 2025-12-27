@@ -79,7 +79,7 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
             if (!_isAvailable && DateTime.UtcNow - _lastFailureTime > _unavailableCooldown)
             {
                 _isAvailable = true;
-                _logger.LogInformation("{Provider} cooldown expired - provider available again", Name);
+                _logger.PluginLogInformation("{Provider} cooldown expired - provider available again", Name);
             }
 
             return _isAvailable;
@@ -89,15 +89,15 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
     /// <inheritdoc />
     public async Task PrewarmAsync(CancellationToken cancellationToken)
     {
-        _logger.LogInformation("{Provider} pre-warming cache...", Name);
+        _logger.PluginLogInformation("{Provider} pre-warming cache...", Name);
         try
         {
             await GetOrLoadXmltvDataAsync(cancellationToken).ConfigureAwait(false);
-            _logger.LogInformation("{Provider} cache pre-warmed successfully", Name);
+            _logger.PluginLogInformation("{Provider} cache pre-warmed successfully", Name);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "{Provider} pre-warm failed: {Message}", Name, ex.Message);
+            _logger.PluginLogWarning(ex, "{Provider} pre-warm failed: {Message}", Name, ex.Message);
         }
     }
 
@@ -176,14 +176,14 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
             var provider = Plugin.Instance.Configuration.GetEnabledProviders().FirstOrDefault();
             if (provider == null)
             {
-                _logger.LogWarning("No enabled provider found for XMLTV data");
+                _logger.PluginLogWarning("No enabled provider found for XMLTV data");
                 return null;
             }
 
             using var client = new XtreamClient(_httpClientFactory, _logger as ILogger<XtreamClient>);
             string xmltvUrl = client.GetXmltvUrl(provider.ToConnectionInfo());
 
-            _logger.LogInformation("Loading XMLTV EPG data from provider...");
+            _logger.PluginLogInformation("Loading XMLTV EPG data from provider...");
 
             var httpClient = _httpClientFactory.CreateClient(HttpClientConfiguration.XtreamClientName);
 
@@ -197,7 +197,7 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
             {
                 var data = await ParseXmltvAsync(stream, cancellationToken).ConfigureAwait(false);
 
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "Loaded XMLTV EPG data: {ChannelCount} channels, {ProgramCount} total programs",
                     data.Count,
                     data.Values.Sum(p => p.Count)
@@ -209,14 +209,14 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning(ex, "Failed to load XMLTV data: {Message}", ex.Message);
+            _logger.PluginLogWarning(ex, "Failed to load XMLTV data: {Message}", ex.Message);
             MarkUnavailable();
             return null;
         }
         catch (Exception ex)
             when (ex is System.Xml.XmlException || ex.Message.Contains("XML", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogWarning(ex, "Failed to parse XMLTV data: {Message}", ex.Message);
+            _logger.PluginLogWarning(ex, "Failed to parse XMLTV data: {Message}", ex.Message);
             MarkUnavailable();
             return null;
         }
@@ -230,7 +230,7 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
     {
         _isAvailable = false;
         _lastFailureTime = DateTime.UtcNow;
-        _logger.LogWarning(
+        _logger.PluginLogWarning(
             "{Provider} marked unavailable for {Minutes} minutes",
             Name,
             _unavailableCooldown.TotalMinutes

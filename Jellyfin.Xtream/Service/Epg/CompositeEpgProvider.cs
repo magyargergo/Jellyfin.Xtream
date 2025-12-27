@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.Epg;
@@ -43,7 +44,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
         _providers = providers.OrderBy(p => p.Priority).ToList();
         _logger = logger;
 
-        _logger.LogInformation(
+        _logger.PluginLogInformation(
             "CompositeEpgProvider initialized with {Count} providers: {Providers}",
             _providers.Count,
             string.Join(", ", _providers.Select(p => $"{p.Name} (priority {p.Priority})"))
@@ -62,14 +63,14 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
     /// <inheritdoc />
     public async Task PrewarmAsync(CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Pre-warming EPG providers...");
+        _logger.PluginLogInformation("Pre-warming EPG providers...");
 
         // Pre-warm all providers that support it (in parallel)
         var prewarmTasks = _providers.OfType<IEpgProviderWithPrewarm>().Select(p => p.PrewarmAsync(cancellationToken));
 
         await Task.WhenAll(prewarmTasks).ConfigureAwait(false);
 
-        _logger.LogInformation("EPG provider pre-warming complete");
+        _logger.PluginLogInformation("EPG provider pre-warming complete");
     }
 
     /// <inheritdoc />
@@ -80,7 +81,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
             // Skip unavailable providers (circuit breaker pattern)
             if (!provider.IsAvailable)
             {
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "Skipping unavailable EPG provider '{Provider}' for stream {StreamId}",
                     provider.Name,
                     streamId
@@ -90,7 +91,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
 
             try
             {
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "Trying EPG provider '{Provider}' for stream {StreamId}",
                     provider.Name,
                     streamId
@@ -100,7 +101,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
 
                 if (programs.Count > 0)
                 {
-                    _logger.LogInformation(
+                    _logger.PluginLogInformation(
                         "EPG provider '{Provider}' returned {Count} programs for stream {StreamId}",
                         provider.Name,
                         programs.Count,
@@ -109,7 +110,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
                     return programs;
                 }
 
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "EPG provider '{Provider}' returned no programs for stream {StreamId}, trying next",
                     provider.Name,
                     streamId
@@ -121,7 +122,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(
+                _logger.PluginLogWarning(
                     ex,
                     "EPG provider '{Provider}' failed for stream {StreamId}: {Error}",
                     provider.Name,
@@ -132,7 +133,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
             }
         }
 
-        _logger.LogInformation("No EPG provider returned programs for stream {StreamId}", streamId);
+        _logger.PluginLogInformation("No EPG provider returned programs for stream {StreamId}", streamId);
 
         return [];
     }

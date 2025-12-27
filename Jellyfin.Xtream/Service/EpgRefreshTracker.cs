@@ -16,6 +16,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service;
@@ -105,7 +106,7 @@ public sealed class EpgRefreshTracker : IDisposable
         _successfulRequests = 0;
         _failedRequests = 0;
 
-        _logger.LogInformation("EPG refresh batch started at {Time}", startTime);
+        _logger.PluginLogInformation("EPG refresh batch started at {Time}", startTime);
 
         // Fire and forget - send start notification
         _ = Task.Run(async () =>
@@ -118,7 +119,7 @@ public sealed class EpgRefreshTracker : IDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to send EPG refresh start notification");
+                _logger.PluginLogWarning(ex, "Failed to send EPG refresh start notification");
             }
         });
     }
@@ -175,7 +176,7 @@ public sealed class EpgRefreshTracker : IDisposable
                 NoDataCount = _failedRequests,
             };
 
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "EPG refresh batch completed: {Success}/{Total} in {Duration:F1}s",
                 _successfulRequests,
                 _totalRequests,
@@ -191,7 +192,7 @@ public sealed class EpgRefreshTracker : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to send EPG refresh completion notification");
+            _logger.PluginLogWarning(ex, "Failed to send EPG refresh completion notification");
         }
     }
 

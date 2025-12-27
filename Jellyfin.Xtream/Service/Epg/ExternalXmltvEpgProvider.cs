@@ -93,7 +93,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
             if (!_isAvailable && DateTime.UtcNow - _lastFailureTime > UnavailableCooldown)
             {
                 _isAvailable = true;
-                _logger.LogInformation("{Provider} cooldown expired - provider available again", Name);
+                _logger.PluginLogInformation("{Provider} cooldown expired - provider available again", Name);
             }
 
             return _isAvailable;
@@ -116,12 +116,12 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
             return;
         }
 
-        _logger.LogInformation("{Provider} pre-warming cache for {Count} sources...", Name, urls.Count);
+        _logger.PluginLogInformation("{Provider} pre-warming cache for {Count} sources...", Name, urls.Count);
 
         var tasks = urls.Select(url => LoadXmltvDataAsync(url, cancellationToken));
         await Task.WhenAll(tasks).ConfigureAwait(false);
 
-        _logger.LogInformation("{Provider} cache pre-warmed", Name);
+        _logger.PluginLogInformation("{Provider} cache pre-warmed", Name);
     }
 
     /// <inheritdoc />
@@ -342,7 +342,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                 return (cachedPrograms, cachedChannelMap);
             }
 
-            _logger.LogInformation("Loading external XMLTV EPG data from {Url}...", url);
+            _logger.PluginLogInformation("Loading external XMLTV EPG data from {Url}...", url);
 
             var httpClient = _httpClientFactory.CreateClient(HttpClientConfiguration.XtreamClientName);
 
@@ -357,7 +357,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                 var (programs, channelMap, logoMap) = await ParseXmltvAsync(stream, cancellationToken)
                     .ConfigureAwait(false);
 
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "Loaded external XMLTV EPG data from {Url}: {ChannelCount} channels, {DisplayNameCount} display-names, {LogoCount} logos, {ProgramCount} total programs",
                     url,
                     programs.Count,
@@ -374,13 +374,13 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning(ex, "Failed to load external XMLTV data from {Url}: {Message}", url, ex.Message);
+            _logger.PluginLogWarning(ex, "Failed to load external XMLTV data from {Url}: {Message}", url, ex.Message);
             MarkUnavailable();
             return (null, null);
         }
         catch (XmlException ex)
         {
-            _logger.LogWarning(ex, "Failed to parse external XMLTV data from {Url}: {Message}", url, ex.Message);
+            _logger.PluginLogWarning(ex, "Failed to parse external XMLTV data from {Url}: {Message}", url, ex.Message);
             MarkUnavailable();
             return (null, null);
         }
@@ -394,7 +394,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
     {
         _isAvailable = false;
         _lastFailureTime = DateTime.UtcNow;
-        _logger.LogWarning(
+        _logger.PluginLogWarning(
             "{Provider} marked unavailable for {Minutes} minutes",
             Name,
             UnavailableCooldown.TotalMinutes

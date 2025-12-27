@@ -71,7 +71,7 @@ public class XtreamEpgProvider : IEpgProvider
             {
                 _isAvailable = true;
                 _consecutiveFailures = 0;
-                _logger.LogInformation("{Provider} circuit breaker reset - provider available again", Name);
+                _logger.PluginLogInformation("{Provider} circuit breaker reset - provider available again", Name);
             }
 
             return _isAvailable;
@@ -84,7 +84,7 @@ public class XtreamEpgProvider : IEpgProvider
         var provider = Plugin.Instance.Configuration.GetEnabledProviders().FirstOrDefault();
         if (provider == null)
         {
-            _logger.LogWarning("No enabled provider found for EPG data");
+            _logger.PluginLogWarning("No enabled provider found for EPG data");
             return Array.Empty<EpgProgram>();
         }
 
@@ -97,11 +97,11 @@ public class XtreamEpgProvider : IEpgProvider
         // Try get_short_epg first (more reliable with many providers)
         try
         {
-            _logger.LogInformation("Trying get_short_epg for stream {StreamId}", streamId);
+            _logger.PluginLogInformation("Trying get_short_epg for stream {StreamId}", streamId);
             epgs = await client
                 .GetShortEpgAsync(provider.ToConnectionInfo(), streamId, 100, cancellationToken)
                 .ConfigureAwait(false);
-            _logger.LogInformation(
+            _logger.PluginLogInformation(
                 "get_short_epg returned {Count} listings for stream {StreamId}",
                 epgs?.Listings?.Count ?? 0,
                 streamId
@@ -109,12 +109,16 @@ public class XtreamEpgProvider : IEpgProvider
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning("get_short_epg failed for stream {StreamId}: {Error}", streamId, ex.Message);
+            _logger.PluginLogWarning("get_short_epg failed for stream {StreamId}: {Error}", streamId, ex.Message);
             hadHttpError = true;
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning("get_short_epg JSON parse failed for stream {StreamId}: {Error}", streamId, ex.Message);
+            _logger.PluginLogWarning(
+                "get_short_epg JSON parse failed for stream {StreamId}: {Error}",
+                streamId,
+                ex.Message
+            );
         }
 
         // Fall back to get_simple_data_table
@@ -122,11 +126,11 @@ public class XtreamEpgProvider : IEpgProvider
         {
             try
             {
-                _logger.LogInformation("Trying get_simple_data_table for stream {StreamId}", streamId);
+                _logger.PluginLogInformation("Trying get_simple_data_table for stream {StreamId}", streamId);
                 epgs = await client
                     .GetEpgInfoAsync(provider.ToConnectionInfo(), streamId, cancellationToken)
                     .ConfigureAwait(false);
-                _logger.LogInformation(
+                _logger.PluginLogInformation(
                     "get_simple_data_table returned {Count} listings for stream {StreamId}",
                     epgs?.Listings?.Count ?? 0,
                     streamId
@@ -135,12 +139,16 @@ public class XtreamEpgProvider : IEpgProvider
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogWarning("get_simple_data_table failed for stream {StreamId}: {Error}", streamId, ex.Message);
+                _logger.PluginLogWarning(
+                    "get_simple_data_table failed for stream {StreamId}: {Error}",
+                    streamId,
+                    ex.Message
+                );
                 hadHttpError = true;
             }
             catch (JsonException ex)
             {
-                _logger.LogWarning(
+                _logger.PluginLogWarning(
                     "get_simple_data_table JSON parse failed for stream {StreamId}: {Error}",
                     streamId,
                     ex.Message
@@ -158,7 +166,7 @@ public class XtreamEpgProvider : IEpgProvider
         {
             // No EPG data for this channel is normal - don't count as failure
             // Only actual HTTP/JSON errors should trigger the circuit breaker
-            _logger.LogInformation("No EPG data available from Xtream API for stream {StreamId}", streamId);
+            _logger.PluginLogInformation("No EPG data available from Xtream API for stream {StreamId}", streamId);
             return Array.Empty<EpgProgram>();
         }
 
@@ -206,7 +214,7 @@ public class XtreamEpgProvider : IEpgProvider
         if (_consecutiveFailures >= MaxConsecutiveFailures)
         {
             _isAvailable = false;
-            _logger.LogWarning(
+            _logger.PluginLogWarning(
                 "{Provider} circuit breaker triggered after {Failures} consecutive failures. "
                     + "Provider disabled for {Minutes} minutes.",
                 Name,
