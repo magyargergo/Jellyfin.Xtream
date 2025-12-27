@@ -102,16 +102,20 @@ const removeStyles = () => {
 // ============================================
 
 /**
- * Shows or hides an element using the .hide utility class
+ * Shows or hides an element.
+ * For .toggle-content elements, toggles the .visible class.
+ * For other elements, toggles the .hide class.
  * @param {HTMLElement} element - The element to show/hide
  * @param {boolean} visible - Whether to show (true) or hide (false)
  */
 const setVisible = (element, visible) => {
   if (!element) return;
-  if (visible) {
-    element.classList.remove('hide');
+  // .toggle-content uses .visible class (display: none by default, display: block when .visible)
+  if (element.classList.contains('toggle-content')) {
+    element.classList.toggle('visible', visible);
   } else {
-    element.classList.add('hide');
+    // Other elements use .hide class
+    element.classList.toggle('hide', !visible);
   }
 };
 

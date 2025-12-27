@@ -112,6 +112,12 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool EnableProxy { get; set; }
 
     /// <summary>
+    /// Gets or sets the proxy protocol type.
+    /// Supports HTTP, SOCKS4, SOCKS4a, and SOCKS5 protocols.
+    /// </summary>
+    public ProxyType ProxyType { get; set; } = ProxyType.Http;
+
+    /// <summary>
     /// Gets or sets the proxy server address.
     /// </summary>
     public string ProxyAddress { get; set; } = string.Empty;
@@ -247,6 +253,16 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool NotifyOnAVDrift { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets a value indicating whether to notify on audio sync corrections.
+    /// </summary>
+    /// <remarks>
+    /// When enabled, sends a Discord notification when audio PTS correction is applied to fix
+    /// audio/video desynchronization. This includes gradual corrections, immediate corrections,
+    /// predictive corrections, and PTS resets for severe drift.
+    /// </remarks>
+    public bool NotifyOnAudioSyncCorrection { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets a value indicating whether to notify on EPG refresh completion.
     /// </summary>
     /// <remarks>
@@ -281,6 +297,15 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool EnableDebugLogging { get; set; }
 
     /// <summary>
+    /// Gets or sets the maximum number of log entries to keep in the log viewer buffer.
+    /// </summary>
+    /// <remarks>
+    /// Higher values allow viewing more historical logs but use more memory.
+    /// Default: 5000 entries. Range: 100-50000.
+    /// </remarks>
+    public int LogViewerMaxEntries { get; set; } = 5000;
+
+    /// <summary>
     /// Gets or sets a value indicating whether to enforce connection limits.
     /// </summary>
     /// <remarks>
@@ -307,6 +332,16 @@ public class PluginConfiguration : BasePluginConfiguration
     /// When disabled, the new stream request will fail with an error.
     /// </remarks>
     public bool AutoKillOldestStream { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to filter out channels from providers at capacity.
+    /// </summary>
+    /// <remarks>
+    /// When enabled, channels are only shown if at least one provider has available connection capacity.
+    /// Channels from providers that are at their connection limit will be hidden until capacity frees up.
+    /// This provides a cleaner user experience by hiding channels that cannot currently be streamed.
+    /// </remarks>
+    public bool FilterChannelsByCapacity { get; set; }
 
     /// <summary>
     /// Gets or sets the list of configured Xtream providers.
@@ -349,6 +384,123 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the maximum number of failover attempts before giving up.
     /// </summary>
     public int MaxFailoverAttempts { get; set; } = 3;
+
+    // ============================================================================
+    // Streaming Timeout Configuration (Industry Standard Defaults)
+    // Based on RFC 8216 (HLS), Apple HLS Best Practices, Google Media CDN
+    // ============================================================================
+
+    /// <summary>
+    /// Gets or sets the connection timeout in seconds (1-30).
+    /// </summary>
+    /// <remarks>
+    /// Time to establish TCP connection before failing over to next provider.
+    /// Industry standard: 1-5 seconds for CDN failover scenarios.
+    /// Default: 5 seconds.
+    /// </remarks>
+    public int StreamConnectTimeoutSeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets the first byte timeout in seconds (1-30).
+    /// </summary>
+    /// <remarks>
+    /// Time to receive first byte of data after connection.
+    /// Detects "connected but no data" scenarios common with overloaded providers.
+    /// Default: 5 seconds.
+    /// </remarks>
+    public int StreamFirstByteTimeoutSeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets the data stall timeout in seconds (5-60).
+    /// </summary>
+    /// <remarks>
+    /// Time without receiving data before triggering reconnection.
+    /// Industry standard: 10-20 seconds (buffering threshold before rebuffering UI).
+    /// Default: 10 seconds.
+    /// </remarks>
+    public int StreamDataStallTimeoutSeconds { get; set; } = 10;
+
+    /// <summary>
+    /// Gets or sets the total failover budget in seconds (5-30).
+    /// </summary>
+    /// <remarks>
+    /// Maximum time to spend trying all providers before returning error to user.
+    /// For live TV streaming, 10-15s is acceptable for initial channel load.
+    /// Default: 15 seconds.
+    /// </remarks>
+    public int FailoverBudgetSeconds { get; set; } = 15;
+
+    /// <summary>
+    /// Gets or sets the provider blacklist duration in seconds (10-300).
+    /// </summary>
+    /// <remarks>
+    /// Time a provider is temporarily disabled after consecutive failures.
+    /// Reduced from traditional 2-5 minutes for faster recovery.
+    /// Default: 30 seconds.
+    /// </remarks>
+    public int ProviderBlacklistSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Gets or sets the interval in seconds between provider availability checks.
+    /// </summary>
+    /// <remarks>
+    /// The background checker queries each provider's connection status at this interval.
+    /// Lower values provide fresher data but increase API load.
+    /// Valid range: 15-300 seconds. Default: 60 seconds.
+    /// </remarks>
+    public int ProviderCheckIntervalSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to skip unavailable providers during failover.
+    /// </summary>
+    /// <remarks>
+    /// When enabled, providers that are known to be at capacity or offline will be skipped
+    /// during the failover process, reducing failed connection attempts.
+    /// </remarks>
+    public bool SkipUnavailableProviders { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to notify on provider blacklist events.
+    /// </summary>
+    /// <remarks>
+    /// When enabled, sends a Discord notification when a provider is temporarily blacklisted
+    /// due to consecutive failures. Useful for monitoring provider health.
+    /// </remarks>
+    public bool NotifyOnProviderBlacklist { get; set; } = true;
+
+    // ============================================================================
+    // Provider Hedging Configuration
+    // ============================================================================
+
+    /// <summary>
+    /// Gets or sets a value indicating whether provider hedging is enabled.
+    /// </summary>
+    /// <remarks>
+    /// When enabled, starts backup provider connections in parallel if the primary
+    /// provider is slow to respond. This reduces initial channel load time but may
+    /// slightly increase provider API load.
+    /// </remarks>
+    public bool EnableHedging { get; set; }
+
+    /// <summary>
+    /// Gets or sets the delay in milliseconds before starting hedged requests.
+    /// </summary>
+    /// <remarks>
+    /// Time to wait for primary provider before starting backup providers.
+    /// Lower values improve failover speed but increase parallel connections.
+    /// Industry standard: 100-500ms. Default: 200ms.
+    /// </remarks>
+    public int HedgingDelayMs { get; set; } = 200;
+
+    /// <summary>
+    /// Gets or sets the maximum number of hedged attempts.
+    /// </summary>
+    /// <remarks>
+    /// Maximum backup providers to try in parallel with the primary.
+    /// Higher values improve success rate but increase resource usage.
+    /// Default: 2 (primary + 2 backups maximum).
+    /// </remarks>
+    public int MaxHedgedAttempts { get; set; } = 2;
 
     // ============================================================================
     // External EPG Configuration

@@ -24,26 +24,39 @@
                   <span>Enable Proxy</span>
                 </label>
                 <div class="fieldDescription">
-                  Enable HTTP proxy for all Xtream API requests.
+                  Enable proxy for all Xtream API requests. Supports HTTP, SOCKS4, SOCKS4a, and SOCKS5 protocols.
                 </div>
               </div>
 
               <div id="ProxySettings" class="toggle-content">
+                <div class="selectContainer">
+                  <label class="selectLabel" for="ProxyType">Proxy Type</label>
+                  <select is="emby-select" id="ProxyType" name="ProxyType">
+                    <option value="0">HTTP</option>
+                    <option value="1">SOCKS4</option>
+                    <option value="2">SOCKS4a</option>
+                    <option value="3">SOCKS5</option>
+                  </select>
+                  <div class="fieldDescription">
+                    Select the proxy protocol. SOCKS5 is recommended for best compatibility and authentication support.
+                  </div>
+                </div>
                 <div class="inputContainer">
                   <label class="inputLabel inputLabelUnfocused" for="ProxyAddress">Proxy Address</label>
                   <input id="ProxyAddress" name="ProxyAddress" type="text" is="emby-input" placeholder="proxy.example.com" />
                   <div class="fieldDescription">
-                    The proxy server hostname or IP address. <strong>Do not include http:// or port.</strong>
+                    The proxy server hostname or IP address. <strong>Do not include protocol or port.</strong>
                   </div>
                 </div>
                 <div class="inputContainer">
                   <label class="inputLabel inputLabelUnfocused" for="ProxyPort">Proxy Port</label>
                   <input id="ProxyPort" name="ProxyPort" type="number" min="1" max="65535" is="emby-input" placeholder="8080" />
-                  <div class="fieldDescription">The proxy server port (typically 8080, 3128, or 8888).</div>
+                  <div class="fieldDescription">The proxy server port. Default: 8080 (HTTP) or 1080 (SOCKS).</div>
                 </div>
                 <div class="inputContainer">
                   <label class="inputLabel inputLabelUnfocused" for="ProxyUsername">Proxy Username (Optional)</label>
                   <input id="ProxyUsername" name="ProxyUsername" type="text" is="emby-input" />
+                  <div class="fieldDescription">Username for proxy authentication. Required for authenticated SOCKS5 proxies.</div>
                 </div>
                 <div class="inputContainer">
                   <label class="inputLabel inputLabelUnfocused" for="ProxyPassword">Proxy Password (Optional)</label>
@@ -154,6 +167,89 @@
                     When limit is reached, automatically stop the oldest stream for new ones.
                   </div>
                 </div>
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                  <label>
+                    <input is="emby-checkbox" type="checkbox" id="FilterChannelsByCapacity" />
+                    <span>Filter Channels by Capacity</span>
+                  </label>
+                  <div class="fieldDescription">
+                    Hide channels from providers that are at their connection limit until capacity frees up.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Streaming Timeouts Section -->
+        <div class="settings-section">
+          <div class="settings-section-header" data-section="timeouts">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="material-icons" style="color: #ff5722;">timer</span>
+              <h3 class="settings-section-title">Streaming Timeouts</h3>
+            </div>
+            <span class="material-icons">expand_more</span>
+          </div>
+          <div class="settings-section-content" data-section="timeouts">
+            <div class="info-card" style="background: rgba(255, 87, 34, 0.1); border-left: 3px solid #ff5722;">
+              <p style="margin: 0;">
+                Industry-standard timeouts based on RFC 8216 (HLS), Apple HLS Best Practices, and Google Media CDN guidelines.
+                Lower values = faster failover but may cause false failures on slow networks.
+              </p>
+            </div>
+
+            <!-- Connection Phase -->
+            <div class="subsection" style="margin-top: 16px;">
+              <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Connection Phase</h4>
+
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="StreamConnectTimeoutSeconds">Connection Timeout (seconds)</label>
+                <input id="StreamConnectTimeoutSeconds" name="StreamConnectTimeoutSeconds" type="number" min="1" max="30" is="emby-input" placeholder="5" />
+                <div class="fieldDescription">
+                  Time to establish TCP connection. Industry standard: 1-5s. <strong>Default: 5</strong>
+                </div>
+              </div>
+
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="StreamFirstByteTimeoutSeconds">First Byte Timeout (seconds)</label>
+                <input id="StreamFirstByteTimeoutSeconds" name="StreamFirstByteTimeoutSeconds" type="number" min="1" max="30" is="emby-input" placeholder="5" />
+                <div class="fieldDescription">
+                  Time to receive first data after connection. Detects "connected but no data" scenarios. <strong>Default: 5</strong>
+                </div>
+              </div>
+            </div>
+
+            <!-- Streaming Phase -->
+            <div class="subsection" style="margin-top: 16px;">
+              <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Streaming Phase</h4>
+
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="StreamDataStallTimeoutSeconds">Data Stall Timeout (seconds)</label>
+                <input id="StreamDataStallTimeoutSeconds" name="StreamDataStallTimeoutSeconds" type="number" min="5" max="60" is="emby-input" placeholder="10" />
+                <div class="fieldDescription">
+                  Time without data before reconnecting. Industry standard: 10-20s. <strong>Default: 10</strong>
+                </div>
+              </div>
+            </div>
+
+            <!-- Failover Phase -->
+            <div class="subsection" style="margin-top: 16px;">
+              <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Failover Phase</h4>
+
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="FailoverBudgetSeconds">Failover Budget (seconds)</label>
+                <input id="FailoverBudgetSeconds" name="FailoverBudgetSeconds" type="number" min="3" max="30" is="emby-input" placeholder="15" />
+                <div class="fieldDescription">
+                  Total time to try all providers before showing error. Industry standard: 5-15s. <strong>Default: 15</strong>
+                </div>
+              </div>
+
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="ProviderBlacklistSeconds">Provider Blacklist Duration (seconds)</label>
+                <input id="ProviderBlacklistSeconds" name="ProviderBlacklistSeconds" type="number" min="10" max="300" is="emby-input" placeholder="30" />
+                <div class="fieldDescription">
+                  Time a failing provider is skipped. Lower = faster recovery. <strong>Default: 30</strong>
+                </div>
               </div>
             </div>
           </div>
@@ -257,29 +353,6 @@
           </div>
         </div>
 
-        <!-- Logging Section -->
-        <div class="settings-section">
-          <div class="settings-section-header" data-section="logging">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span class="material-icons" style="color: #ff9800;">bug_report</span>
-              <h3 class="settings-section-title">Logging</h3>
-            </div>
-            <span class="material-icons">expand_more</span>
-          </div>
-          <div class="settings-section-content" data-section="logging">
-            <div class="checkboxContainer checkboxContainer-withDescription">
-              <label>
-                <input is="emby-checkbox" type="checkbox" id="EnableDebugLogging" />
-                <span>Enable Debug Logging</span>
-              </label>
-              <div class="fieldDescription">
-                Enable detailed debug logging for troubleshooting.
-                <strong>Note:</strong> Debug logs may contain sensitive information.
-              </div>
-            </div>
-          </div>
-        </div>
-
         <!-- Discord Notifications Section -->
         <div class="settings-section">
           <div class="settings-section-header" data-section="discord">
@@ -363,6 +436,12 @@
                   <label>
                     <input is="emby-checkbox" type="checkbox" id="NotifyOnConnectionLimitChange" />
                     <span>Connection Limit Changes</span>
+                  </label>
+                </div>
+                <div class="checkboxContainer">
+                  <label>
+                    <input is="emby-checkbox" type="checkbox" id="NotifyOnProviderBlacklist" />
+                    <span>Provider Blacklist</span>
                   </label>
                 </div>
               </div>

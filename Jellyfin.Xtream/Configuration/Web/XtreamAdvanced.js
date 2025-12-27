@@ -64,6 +64,7 @@ export default function (view) {
     const fieldMappings = [
       // Networking fields
       ['#EnableProxy', 'EnableProxy', false, true],
+      ['#ProxyType', 'ProxyType', 0, false, (v) => parseInt(v) || 0],
       ['#ProxyAddress', 'ProxyAddress', ''],
       ['#ProxyPort', 'ProxyPort', 8080, false, (v) => parseInt(v) || 8080],
       ['#ProxyUsername', 'ProxyUsername', ''],
@@ -80,6 +81,7 @@ export default function (view) {
       ['#EnforceConnectionLimit', 'EnforceConnectionLimit', false, true],
       ['#MaxConcurrentStreams', 'MaxConcurrentStreams', 0, false, (v) => parseInt(v) || 0],
       ['#AutoKillOldestStream', 'AutoKillOldestStream', true, true],
+      ['#FilterChannelsByCapacity', 'FilterChannelsByCapacity', false, true],
 
       // External EPG fields
       ['#EnableExternalEpg', 'EnableExternalEpg', false, true],
@@ -87,8 +89,12 @@ export default function (view) {
       ['#ExternalEpgLogoBaseUrl', 'ExternalEpgLogoBaseUrl', ''],
       ['#UseExternalLogoFallback', 'UseExternalLogoFallback', true, true],
 
-      // Logging fields
-      ['#EnableDebugLogging', 'EnableDebugLogging', false, true],
+      // Streaming timeout fields (must match PluginConfiguration.cs defaults)
+      ['#StreamConnectTimeoutSeconds', 'StreamConnectTimeoutSeconds', 5, false, (v) => parseInt(v) || 5],
+      ['#StreamFirstByteTimeoutSeconds', 'StreamFirstByteTimeoutSeconds', 5, false, (v) => parseInt(v) || 5],
+      ['#StreamDataStallTimeoutSeconds', 'StreamDataStallTimeoutSeconds', 10, false, (v) => parseInt(v) || 10],
+      ['#FailoverBudgetSeconds', 'FailoverBudgetSeconds', 15, false, (v) => parseInt(v) || 15],
+      ['#ProviderBlacklistSeconds', 'ProviderBlacklistSeconds', 30, false, (v) => parseInt(v) || 30],
 
       // Discord fields
       ['#EnableDiscordNotifications', 'EnableDiscordNotifications', false, true],
@@ -99,7 +105,8 @@ export default function (view) {
       ['#NotifyOnStreamKilled', 'NotifyOnStreamKilled', true, true],
       ['#NotifyOnStreamQualityViolation', 'NotifyOnStreamQualityViolation', true, true],
       ['#NotifyOnEpgRefresh', 'NotifyOnEpgRefresh', true, true],
-      ['#NotifyOnConnectionLimitChange', 'NotifyOnConnectionLimitChange', true, true]
+      ['#NotifyOnConnectionLimitChange', 'NotifyOnConnectionLimitChange', true, true],
+      ['#NotifyOnProviderBlacklist', 'NotifyOnProviderBlacklist', true, true]
     ];
 
     // Load configuration
@@ -145,7 +152,10 @@ export default function (view) {
           // Clean up proxy address (remove protocol if present)
           let proxyAddress = config.ProxyAddress;
           if (proxyAddress) {
-            proxyAddress = proxyAddress.replace(/^https?:\/\//, '').replace(/\/$/, '');
+            proxyAddress = proxyAddress
+              .replace(/^https?:\/\//, '')
+              .replace(/^socks[45]?a?:\/\//, '')
+              .replace(/\/$/, '');
             config.ProxyAddress = proxyAddress;
           }
 

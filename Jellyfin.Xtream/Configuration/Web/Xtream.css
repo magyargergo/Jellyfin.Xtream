@@ -1359,3 +1359,915 @@ div.categories-container {
 .pluginConfigurationPage .hide {
   display: none !important;
 }
+
+/* ============================================
+   Monitoring Dashboard Styles
+   ============================================ */
+
+/* Monitor Summary Cards */
+.pluginConfigurationPage .monitor-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--xt-space-lg);
+  margin-bottom: var(--xt-space-xxl);
+}
+
+.pluginConfigurationPage .monitor-card {
+  background: var(--xt-card-bg);
+  border-radius: var(--xt-radius-xl);
+  padding: var(--xt-space-xl);
+  text-align: center;
+  border: 1px solid var(--xt-border);
+  transition: border-color var(--xt-transition-slow), background var(--xt-transition-slow);
+}
+
+.pluginConfigurationPage .monitor-card.warning {
+  border-color: rgba(255, 152, 0, 0.5);
+  background: var(--xt-warning-light);
+}
+
+.pluginConfigurationPage .monitor-card.critical {
+  border-color: var(--xt-error-border);
+  background: var(--xt-error-light);
+}
+
+.pluginConfigurationPage .monitor-card.good {
+  border-color: var(--xt-success-border);
+  background: var(--xt-success-light);
+}
+
+.pluginConfigurationPage .monitor-value {
+  font-size: 2.2em;
+  font-weight: 700;
+  color: var(--xt-primary);
+  line-height: 1.2;
+}
+
+.pluginConfigurationPage .monitor-card.warning .monitor-value { color: var(--xt-warning); }
+.pluginConfigurationPage .monitor-card.critical .monitor-value { color: var(--xt-error); }
+.pluginConfigurationPage .monitor-card.good .monitor-value { color: var(--xt-success); }
+
+.pluginConfigurationPage .monitor-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.85em;
+  margin-top: var(--xt-space-xs);
+}
+
+.pluginConfigurationPage .monitor-sublabel {
+  color: var(--xt-text-muted);
+  font-size: 0.75em;
+  margin-top: 2px;
+}
+
+.pluginConfigurationPage .monitor-gauge {
+  height: 6px;
+  background: var(--xt-border-light);
+  border-radius: 3px;
+  margin-top: var(--xt-space-md);
+  overflow: hidden;
+}
+
+.pluginConfigurationPage .gauge-fill {
+  height: 100%;
+  background: var(--xt-primary);
+  border-radius: 3px;
+  transition: width 0.5s ease, background var(--xt-transition-slow);
+  width: 0%;
+}
+
+/* Monitor Section Headers */
+.pluginConfigurationPage .section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--xt-space-md);
+}
+
+.pluginConfigurationPage .section-header h3 {
+  margin: 0;
+  font-size: 1.1em;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* Provider Health Grid */
+.pluginConfigurationPage .provider-grid {
+  display: flex;
+  gap: var(--xt-space-lg);
+  overflow-x: auto;
+  padding: var(--xt-space-sm) 0;
+  margin-bottom: var(--xt-space-lg);
+}
+
+.pluginConfigurationPage .no-providers {
+  flex: 1;
+  text-align: center;
+  padding: var(--xt-space-xxl);
+  color: var(--xt-text-muted);
+}
+
+.pluginConfigurationPage .provider-health-card {
+  flex-shrink: 0;
+  min-width: 180px;
+  background: var(--xt-card-bg);
+  border-radius: var(--xt-radius-xl);
+  padding: var(--xt-space-lg);
+  border-left: 4px solid var(--xt-success);
+  transition: border-color var(--xt-transition-slow);
+}
+
+.pluginConfigurationPage .provider-health-card.warning { border-left-color: var(--xt-warning); }
+.pluginConfigurationPage .provider-health-card.critical { border-left-color: var(--xt-error); }
+.pluginConfigurationPage .provider-health-card.offline { border-left-color: var(--xt-text-muted); opacity: 0.7; }
+
+.pluginConfigurationPage .provider-name {
+  font-weight: bold;
+  margin-bottom: var(--xt-space-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pluginConfigurationPage .provider-connections {
+  font-size: 1.5em;
+  font-weight: bold;
+  color: var(--xt-primary);
+}
+
+.pluginConfigurationPage .provider-status {
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.6);
+  margin-top: var(--xt-space-xs);
+}
+
+.pluginConfigurationPage .provider-expiry {
+  font-size: 0.75em;
+  color: var(--xt-text-muted);
+}
+
+/* Provider Health Row - Resilience Info */
+.pluginConfigurationPage .provider-health-row {
+  display: flex;
+  gap: var(--xt-space-sm);
+  align-items: center;
+  margin: var(--xt-space-sm) 0;
+  flex-wrap: wrap;
+}
+
+.pluginConfigurationPage .health-score {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.85em;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: var(--xt-radius-sm);
+  background: rgba(76, 175, 80, 0.2);
+  color: #4caf50;
+}
+
+.pluginConfigurationPage .health-score.warning {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ff9800;
+}
+
+.pluginConfigurationPage .health-score.critical {
+  background: rgba(244, 67, 54, 0.2);
+  color: #f44336;
+}
+
+.pluginConfigurationPage .circuit-badge {
+  font-size: 0.75em;
+  padding: 2px 6px;
+  border-radius: var(--xt-radius-sm);
+  font-weight: 600;
+}
+
+.pluginConfigurationPage .circuit-badge.warning {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ff9800;
+}
+
+.pluginConfigurationPage .circuit-badge.critical {
+  background: rgba(244, 67, 54, 0.2);
+  color: #f44336;
+}
+
+.pluginConfigurationPage .failure-count {
+  font-size: 0.75em;
+  color: var(--xt-warning);
+  font-weight: 600;
+}
+
+/* Time Range Buttons */
+.pluginConfigurationPage .time-range-buttons {
+  display: flex;
+  gap: var(--xt-space-xs);
+}
+
+.pluginConfigurationPage .time-range-btn {
+  padding: var(--xt-space-xs) var(--xt-space-md) !important;
+  min-width: auto !important;
+  font-size: 0.85em !important;
+  background: var(--xt-border-light) !important;
+  border-radius: var(--xt-radius-sm) !important;
+}
+
+.pluginConfigurationPage .time-range-btn.active {
+  background: var(--xt-primary) !important;
+  color: white !important;
+}
+
+/* Chart Container */
+.pluginConfigurationPage .chart-container {
+  height: 280px;
+  background: var(--xt-overlay-bg);
+  border-radius: var(--xt-radius-xl);
+  padding: var(--xt-space-lg);
+  margin-bottom: var(--xt-space-sm);
+}
+
+.pluginConfigurationPage .chart-legend {
+  display: flex;
+  justify-content: center;
+  gap: var(--xt-space-xxl);
+  margin-bottom: var(--xt-space-lg);
+  flex-wrap: wrap;
+}
+
+.pluginConfigurationPage .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85em;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.pluginConfigurationPage .legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+/* Stream Detail Cards */
+.pluginConfigurationPage .streams-detail-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--xt-space-md);
+}
+
+.pluginConfigurationPage .stream-detail-count {
+  font-size: 0.9em;
+  color: var(--xt-text-muted);
+}
+
+.pluginConfigurationPage .no-streams {
+  text-align: center;
+  padding: 40px;
+  color: var(--xt-text-muted);
+}
+
+.pluginConfigurationPage .stream-detail-card {
+  background: var(--xt-card-bg);
+  border-radius: var(--xt-radius-lg);
+  padding: var(--xt-space-lg);
+  border-left: 4px solid var(--xt-success);
+}
+
+.pluginConfigurationPage .stream-detail-card.warning { border-left-color: var(--xt-warning); }
+.pluginConfigurationPage .stream-detail-card.critical { border-left-color: var(--xt-error); }
+
+.pluginConfigurationPage .stream-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--xt-space-md);
+}
+
+.pluginConfigurationPage .stream-detail-name {
+  font-weight: bold;
+  font-size: 1.05em;
+}
+
+.pluginConfigurationPage .stream-detail-badge {
+  padding: 3px var(--xt-space-sm);
+  border-radius: var(--xt-radius-sm);
+  font-size: 0.75em;
+  font-weight: bold;
+  background: var(--xt-success);
+  color: white;
+}
+
+.pluginConfigurationPage .stream-detail-badge.warning { background: var(--xt-warning); }
+.pluginConfigurationPage .stream-detail-badge.critical { background: var(--xt-error); }
+
+.pluginConfigurationPage .stream-detail-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--xt-space-md);
+}
+
+.pluginConfigurationPage .stream-stat {
+  background: var(--xt-overlay-bg);
+  padding: var(--xt-space-sm) var(--xt-space-md);
+  border-radius: var(--xt-radius-sm);
+}
+
+.pluginConfigurationPage .stream-stat-label {
+  font-size: 0.7em;
+  color: var(--xt-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pluginConfigurationPage .stream-stat-value {
+  font-size: 1.1em;
+  font-weight: bold;
+}
+
+.pluginConfigurationPage .stream-stat-value.warning { color: var(--xt-warning); }
+.pluginConfigurationPage .stream-stat-value.critical { color: var(--xt-error); }
+.pluginConfigurationPage .stream-stat-value.good { color: var(--xt-success); }
+
+/* Buffer Progress Bar */
+.pluginConfigurationPage .buffer-progress {
+  height: 4px;
+  background: var(--xt-border-light);
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.pluginConfigurationPage .buffer-progress-fill {
+  height: 100%;
+  background: var(--xt-success);
+  transition: width var(--xt-transition-slow);
+}
+
+.pluginConfigurationPage .buffer-progress-fill.warning { background: var(--xt-warning); }
+.pluginConfigurationPage .buffer-progress-fill.critical { background: var(--xt-error); }
+
+/* Auto-refresh toggle */
+.pluginConfigurationPage .auto-refresh-toggle input {
+  margin: 0;
+}
+
+/* Help Toggle */
+.pluginConfigurationPage .help-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--xt-text-muted);
+  margin-left: var(--xt-space-sm);
+  padding: 2px;
+  border-radius: 50%;
+  transition: color var(--xt-transition-fast), background var(--xt-transition-fast);
+}
+
+.pluginConfigurationPage .help-toggle:hover,
+.pluginConfigurationPage .help-toggle.active {
+  color: var(--xt-primary);
+  background: var(--xt-primary-light);
+}
+
+.pluginConfigurationPage .help-toggle .material-icons {
+  font-size: 18px;
+}
+
+/* Help Section */
+.pluginConfigurationPage .help-section {
+  margin-bottom: var(--xt-space-xl);
+  animation: xtream-slide-down 0.3s ease-out;
+}
+
+.pluginConfigurationPage .help-card {
+  background: var(--xt-info-light);
+  border: 1px solid rgba(33, 150, 243, 0.3);
+  border-radius: var(--xt-radius-xl);
+  padding: var(--xt-space-xl);
+}
+
+.pluginConfigurationPage .help-card h4 {
+  margin: 0 0 var(--xt-space-lg) 0;
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-sm);
+  color: var(--xt-info);
+  font-size: 1em;
+}
+
+.pluginConfigurationPage .help-card h4 .material-icons {
+  font-size: 20px;
+}
+
+.pluginConfigurationPage .help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--xt-space-lg);
+}
+
+.pluginConfigurationPage .help-item {
+  display: flex;
+  gap: var(--xt-space-md);
+  align-items: flex-start;
+}
+
+.pluginConfigurationPage .help-color {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--xt-radius-sm);
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.pluginConfigurationPage .help-item strong {
+  display: block;
+  color: var(--xt-text);
+  margin-bottom: 4px;
+}
+
+.pluginConfigurationPage .help-item p {
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--xt-text-secondary);
+  line-height: 1.4;
+}
+
+.pluginConfigurationPage .help-item em {
+  color: var(--xt-primary);
+  font-style: normal;
+  font-weight: 500;
+}
+
+/* Stream Status Explanation */
+.pluginConfigurationPage .stream-status-explanation {
+  background: rgba(244, 67, 54, 0.1);
+  border-left: 3px solid var(--xt-error);
+  padding: var(--xt-space-sm) var(--xt-space-md);
+  margin-bottom: var(--xt-space-md);
+  border-radius: 0 var(--xt-radius-sm) var(--xt-radius-sm) 0;
+  font-size: 0.85em;
+  color: #ffab91;
+}
+
+.pluginConfigurationPage .stream-detail-card.warning .stream-status-explanation {
+  background: rgba(255, 152, 0, 0.1);
+  border-left-color: var(--xt-warning);
+  color: #ffe082;
+}
+
+/* Stream Error Breakdown */
+.pluginConfigurationPage .stream-error-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--xt-space-sm);
+  margin-top: var(--xt-space-md);
+  padding-top: var(--xt-space-md);
+  border-top: 1px solid var(--xt-border-light);
+}
+
+.pluginConfigurationPage .error-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--xt-error-light);
+  border-radius: var(--xt-radius-sm);
+  font-size: 0.8em;
+  color: #ef9a9a;
+  cursor: help;
+}
+
+.pluginConfigurationPage .error-type .material-icons {
+  font-size: 14px;
+}
+
+.pluginConfigurationPage .no-errors {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--xt-success-light);
+  border-radius: var(--xt-radius-sm);
+  font-size: 0.8em;
+  color: #a5d6a7;
+}
+
+.pluginConfigurationPage .no-errors .material-icons {
+  font-size: 14px;
+}
+
+/* Legend improvements */
+.pluginConfigurationPage .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85em;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: help;
+  padding: 4px 8px;
+  border-radius: var(--xt-radius-sm);
+  transition: background var(--xt-transition-fast);
+}
+
+.pluginConfigurationPage .legend-item:hover {
+  background: var(--xt-card-bg-hover);
+}
+
+/* Chart sections for split layout */
+.pluginConfigurationPage .chart-section {
+  margin-bottom: var(--xt-space-xl);
+}
+
+.pluginConfigurationPage .chart-title {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-sm);
+  font-size: 0.95em;
+  font-weight: 500;
+  color: var(--xt-text-secondary);
+  margin-bottom: var(--xt-space-md);
+  padding-left: var(--xt-space-sm);
+}
+
+.pluginConfigurationPage .chart-title .material-icons {
+  font-size: 18px;
+  opacity: 0.7;
+}
+
+.pluginConfigurationPage .chart-container-half {
+  height: 200px;
+}
+
+/* Reconnection indicator in stream cards */
+.pluginConfigurationPage .stream-reconnection-info {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-sm);
+  padding: var(--xt-space-sm) var(--xt-space-md);
+  background: rgba(156, 39, 176, 0.1);
+  border-left: 3px solid #9c27b0;
+  border-radius: 0 var(--xt-radius-sm) var(--xt-radius-sm) 0;
+  font-size: 0.85em;
+  color: #ce93d8;
+  margin-bottom: var(--xt-space-md);
+}
+
+.pluginConfigurationPage .stream-reconnection-info .material-icons {
+  font-size: 16px;
+}
+
+.pluginConfigurationPage .reconnection-count {
+  font-weight: 600;
+  color: #ba68c8;
+}
+
+/* ============================================
+   Health Metrics Section Styles
+   ============================================ */
+
+/* Health Summary Card */
+.pluginConfigurationPage .health-summary-card {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-xl);
+  padding: var(--xt-space-md) var(--xt-space-lg);
+  background: var(--xt-card-bg);
+  border-radius: var(--xt-radius-lg);
+  border: 1px solid var(--xt-border);
+}
+
+.pluginConfigurationPage .health-summary-score {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-sm);
+  font-size: 1.5em;
+  font-weight: 700;
+  padding: var(--xt-space-sm) var(--xt-space-md);
+  border-radius: var(--xt-radius-md);
+  background: var(--xt-success-light);
+  color: var(--xt-success);
+}
+
+.pluginConfigurationPage .health-summary-score.warning {
+  background: var(--xt-warning-light);
+  color: var(--xt-warning);
+}
+
+.pluginConfigurationPage .health-summary-score.critical {
+  background: var(--xt-error-light);
+  color: var(--xt-error);
+}
+
+.pluginConfigurationPage .health-summary-score .material-icons {
+  font-size: 24px;
+}
+
+.pluginConfigurationPage .health-summary-score .score-value {
+  min-width: 40px;
+  text-align: center;
+}
+
+.pluginConfigurationPage .health-summary-stats {
+  display: flex;
+  gap: var(--xt-space-lg);
+}
+
+.pluginConfigurationPage .health-summary-stats .stat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-sm);
+  font-size: 0.9em;
+}
+
+.pluginConfigurationPage .health-summary-stats .stat-label {
+  color: var(--xt-text-muted);
+}
+
+.pluginConfigurationPage .health-summary-stats .stat-value {
+  font-weight: 600;
+}
+
+.pluginConfigurationPage .health-summary-stats .stat-value.good {
+  color: var(--xt-success);
+}
+
+.pluginConfigurationPage .health-summary-stats .stat-value.warning {
+  color: var(--xt-warning);
+}
+
+.pluginConfigurationPage .health-summary-stats .stat-value.critical {
+  color: var(--xt-error);
+}
+
+/* Health Metrics Grid */
+.pluginConfigurationPage .health-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--xt-space-lg);
+  margin-bottom: var(--xt-space-xl);
+}
+
+.pluginConfigurationPage .no-health-metrics {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: var(--xt-space-xxl);
+  color: var(--xt-text-muted);
+}
+
+/* Health Metric Card */
+.pluginConfigurationPage .health-metric-card {
+  background: var(--xt-card-bg);
+  border-radius: var(--xt-radius-xl);
+  padding: var(--xt-space-lg);
+  border: 1px solid var(--xt-border);
+  border-left: 4px solid var(--xt-success);
+  transition: border-color var(--xt-transition-slow), background var(--xt-transition-slow);
+}
+
+.pluginConfigurationPage .health-metric-card:hover {
+  background: var(--xt-card-bg-hover);
+}
+
+.pluginConfigurationPage .health-metric-card.warning {
+  border-left-color: var(--xt-warning);
+}
+
+.pluginConfigurationPage .health-metric-card.critical {
+  border-left-color: var(--xt-error);
+}
+
+/* Health Metric Header */
+.pluginConfigurationPage .hm-header {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-sm);
+  margin-bottom: var(--xt-space-md);
+}
+
+.pluginConfigurationPage .hm-name {
+  flex: 1;
+  font-weight: 600;
+  font-size: 1em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pluginConfigurationPage .hm-status {
+  font-size: 0.75em;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--xt-radius-sm);
+  text-transform: uppercase;
+}
+
+.pluginConfigurationPage .hm-status.healthy {
+  background: var(--xt-success-light);
+  color: var(--xt-success);
+}
+
+.pluginConfigurationPage .hm-status.degraded {
+  background: var(--xt-warning-light);
+  color: var(--xt-warning);
+}
+
+.pluginConfigurationPage .hm-status.poor,
+.pluginConfigurationPage .hm-status.critical {
+  background: var(--xt-error-light);
+  color: var(--xt-error);
+}
+
+.pluginConfigurationPage .circuit-badge-sm {
+  font-size: 0.7em;
+  padding: 2px 6px;
+  border-radius: var(--xt-radius-sm);
+  font-weight: 600;
+}
+
+.pluginConfigurationPage .circuit-badge-sm.warning {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ff9800;
+}
+
+.pluginConfigurationPage .circuit-badge-sm.critical {
+  background: rgba(244, 67, 54, 0.2);
+  color: #f44336;
+}
+
+/* Health Metric Scores */
+.pluginConfigurationPage .hm-scores {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--xt-space-sm) var(--xt-space-md);
+  background: var(--xt-overlay-bg);
+  border-radius: var(--xt-radius-md);
+  margin-bottom: var(--xt-space-md);
+}
+
+.pluginConfigurationPage .hm-score-item {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-xs);
+}
+
+.pluginConfigurationPage .hm-score-item .material-icons {
+  font-size: 18px;
+  color: var(--xt-error);
+}
+
+.pluginConfigurationPage .hm-score-value {
+  font-size: 1.4em;
+  font-weight: 700;
+  color: var(--xt-primary);
+}
+
+.pluginConfigurationPage .hm-score-breakdown {
+  display: flex;
+  gap: var(--xt-space-md);
+  font-size: 0.8em;
+  color: var(--xt-text-muted);
+}
+
+.pluginConfigurationPage .hm-score-breakdown span {
+  cursor: help;
+}
+
+/* Health Metric Stats */
+.pluginConfigurationPage .hm-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--xt-space-sm);
+}
+
+.pluginConfigurationPage .hm-metric {
+  display: flex;
+  flex-direction: column;
+  padding: var(--xt-space-sm);
+  background: var(--xt-overlay-bg);
+  border-radius: var(--xt-radius-sm);
+}
+
+.pluginConfigurationPage .hm-metric-label {
+  font-size: 0.7em;
+  color: var(--xt-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.pluginConfigurationPage .hm-metric-value {
+  font-size: 0.95em;
+  font-weight: 600;
+  color: var(--xt-text);
+}
+
+.pluginConfigurationPage .hm-metric-value.good {
+  color: var(--xt-success);
+}
+
+.pluginConfigurationPage .hm-metric-value.warning {
+  color: var(--xt-warning);
+}
+
+.pluginConfigurationPage .hm-metric-value.critical {
+  color: var(--xt-error);
+}
+
+/* Health Metric Samples */
+.pluginConfigurationPage .hm-samples {
+  margin-top: var(--xt-space-sm);
+  font-size: 0.75em;
+  color: var(--xt-text-dim);
+  text-align: right;
+}
+
+/* Health Trend Indicator */
+.pluginConfigurationPage .hm-trend-indicator {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: var(--xt-space-xs) var(--xt-space-sm);
+  background: var(--xt-overlay-bg);
+  border-radius: var(--xt-radius-sm);
+  font-size: 0.85em;
+  cursor: help;
+}
+
+.pluginConfigurationPage .hm-trend-indicator .material-icons {
+  font-size: 1.2em;
+}
+
+.pluginConfigurationPage .hm-trend-indicator.good .material-icons {
+  color: var(--xt-success);
+}
+
+.pluginConfigurationPage .hm-trend-indicator.warning .material-icons {
+  color: var(--xt-warning);
+}
+
+.pluginConfigurationPage .hm-trend-indicator.critical .material-icons {
+  color: var(--xt-error);
+}
+
+.pluginConfigurationPage .hm-predicted {
+  font-weight: 600;
+  color: var(--xt-text-muted);
+}
+
+/* Failure Warning */
+.pluginConfigurationPage .hm-failure-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-sm);
+  padding: var(--xt-space-sm) var(--xt-space-md);
+  margin: var(--xt-space-sm) 0;
+  background: rgba(244, 67, 54, 0.15);
+  border: 1px solid var(--xt-error);
+  border-radius: var(--xt-radius-md);
+  font-size: 0.8em;
+  color: var(--xt-error);
+  animation: pulseWarning 2s ease-in-out infinite;
+}
+
+.pluginConfigurationPage .hm-failure-warning .material-icons {
+  font-size: 1.2em;
+}
+
+@keyframes pulseWarning {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Health Summary Trends */
+.pluginConfigurationPage .health-summary-trends {
+  display: flex;
+  flex-direction: column;
+  gap: var(--xt-space-xs);
+  padding-left: var(--xt-space-md);
+  border-left: 1px solid var(--xt-border);
+}
+
+.pluginConfigurationPage .health-summary-trends .stat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--xt-space-xs);
+}
+
+.pluginConfigurationPage .health-summary-trends .trending-up {
+  color: var(--xt-success);
+  font-size: 1.2em;
+}
+
+.pluginConfigurationPage .health-summary-trends .trending-down {
+  color: var(--xt-warning);
+  font-size: 1.2em;
+}
+
+.pluginConfigurationPage .health-summary-trends .imminent-failure {
+  color: var(--xt-error);
+}
+
+.pluginConfigurationPage .health-summary-trends .imminent-failure .material-icons {
+  animation: pulseWarning 1.5s ease-in-out infinite;
+}

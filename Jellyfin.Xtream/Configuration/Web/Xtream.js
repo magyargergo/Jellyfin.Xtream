@@ -229,6 +229,14 @@ const tabs = [
     href: tab('XtreamStreams'),
     name: 'Active Streams',
   },
+  {
+    href: tab('XtreamMonitor'),
+    name: 'Monitor',
+  },
+  {
+    href: tab('XtreamLogs'),
+    name: 'Logs',
+  },
 ];
 
 const setTabs = (pageName) => {
