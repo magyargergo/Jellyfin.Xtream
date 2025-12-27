@@ -115,6 +115,18 @@ public static class Program
         Console.WriteLine("   - DateTime parsing overhead");
         Console.WriteLine("   - Large file handling (10-200 channels)");
         Console.WriteLine();
+        Console.WriteLine("10. ProviderSelectionBenchmarks");
+        Console.WriteLine("    - GetOrderedProviders with 5/10/20 providers");
+        Console.WriteLine("    - GetSelectionScore single and batch");
+        Console.WriteLine("    - IsAvailable and HasCapacity checks");
+        Console.WriteLine("    - ShouldSwitchProvider decision logic");
+        Console.WriteLine();
+        Console.WriteLine("11. HealthTrackingBenchmarks");
+        Console.WriteLine("    - EMA trend calculation and prediction");
+        Console.WriteLine("    - RecordSample throughput");
+        Console.WriteLine("    - GetSnapshot and GetAllSnapshots");
+        Console.WriteLine("    - Combined health analysis");
+        Console.WriteLine();
         Console.WriteLine("Usage Examples:");
         Console.WriteLine("---------------");
         Console.WriteLine("  dotnet run -c Release                              # Run all benchmarks");
@@ -124,6 +136,8 @@ public static class Program
         Console.WriteLine("  dotnet run -c Release -- --filter *Simd*           # Run SIMD benchmarks");
         Console.WriteLine("  dotnet run -c Release -- --filter *Crc32*          # Run CRC-32 benchmarks");
         Console.WriteLine("  dotnet run -c Release -- --filter *TR101290*       # Run TR 101 290 benchmarks");
+        Console.WriteLine("  dotnet run -c Release -- --filter *Provider*       # Run provider selection benchmarks");
+        Console.WriteLine("  dotnet run -c Release -- --filter *Health*         # Run health tracking benchmarks");
         Console.WriteLine("  dotnet run -c Release -- --quick                   # Quick smoke test");
         Console.WriteLine("  dotnet run -c Release -- --quick Circular          # Quick test specific category");
     }
