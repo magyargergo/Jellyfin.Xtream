@@ -16,6 +16,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Service.ProviderManagement;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -218,6 +219,48 @@ public interface IDiscordNotificationService
         int maxConnections,
         bool isAtLimit,
         int externalConnections = 0,
+        CancellationToken cancellationToken = default
+    );
+
+    /// <summary>
+    /// Sends an audio sync correction notification to Discord.
+    /// Reports when PTS correction is applied to fix audio/video desynchronization.
+    /// </summary>
+    /// <param name="streamId">The stream identifier.</param>
+    /// <param name="channelName">The channel name.</param>
+    /// <param name="originalDriftMs">The drift in milliseconds before correction.</param>
+    /// <param name="correctionMs">The correction amount applied in milliseconds.</param>
+    /// <param name="correctionType">The type of correction (Gradual, Immediate, Predictive, Reset).</param>
+    /// <param name="streamOffset">The byte offset in the stream where correction was applied.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    Task NotifyAudioSyncCorrectionAsync(
+        string streamId,
+        string channelName,
+        double originalDriftMs,
+        double correctionMs,
+        string correctionType,
+        long streamOffset,
+        CancellationToken cancellationToken = default
+    );
+
+    /// <summary>
+    /// Sends a provider blacklist notification to Discord.
+    /// Reports when a provider is temporarily blacklisted due to consecutive failures.
+    /// </summary>
+    /// <param name="providerId">The provider identifier.</param>
+    /// <param name="providerName">The provider display name.</param>
+    /// <param name="reason">The failure reason that triggered the blacklist.</param>
+    /// <param name="duration">How long the provider will be blacklisted.</param>
+    /// <param name="consecutiveFailures">Number of consecutive failures that triggered the blacklist.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    Task NotifyProviderBlacklistedAsync(
+        string providerId,
+        string providerName,
+        ProviderFailureReason reason,
+        TimeSpan duration,
+        int consecutiveFailures,
         CancellationToken cancellationToken = default
     );
 }

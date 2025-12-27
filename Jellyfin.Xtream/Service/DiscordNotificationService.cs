@@ -21,6 +21,7 @@ using System.Threading.Tasks;
 using Discord;
 using Discord.Webhook;
 using Jellyfin.Xtream.Service.Discord;
+using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
@@ -796,17 +797,13 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
 
         // Per-channel rate limiting to prevent spam from problematic streams
         // Only send one notification per channel every AVDriftCooldownMinutes minutes
+        // Note: We don't log suppressions here as this method is called very frequently
+        // and logging every suppression would flood the logs
         if (_lastAVDriftNotificationPerChannel.TryGetValue(streamId, out var lastNotificationTime))
         {
             var timeSinceLastNotification = now - lastNotificationTime;
             if (timeSinceLastNotification.TotalMinutes < AVDriftCooldownMinutes)
             {
-                _logger.LogDebugIfEnabled(
-                    "Suppressing A/V drift notification for channel {ChannelId} - last notification was {Minutes:F1} minutes ago (cooldown: {Cooldown} minutes)",
-                    streamId,
-                    timeSinceLastNotification.TotalMinutes,
-                    AVDriftCooldownMinutes
-                );
                 return;
             }
         }
@@ -938,6 +935,198 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         await SendDiscordMessageAsync(embedBuilder.Build(), cancellationToken).ConfigureAwait(false);
     }
 
+    /// <inheritdoc/>
+    public async Task NotifyProviderBlacklistedAsync(
+        string providerId,
+        string providerName,
+        ProviderFailureReason reason,
+        TimeSpan duration,
+        int consecutiveFailures,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnProviderBlacklist)
+        {
+            return;
+        }
+
+        if (!await ShouldSendNotificationAsync().ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+
+        // Determine severity based on reason
+        Color color;
+        string emoji;
+        string reasonText;
+
+        switch (reason)
+        {
+            case ProviderFailureReason.ConnectionLimit:
+                color = Color.Red;
+                emoji = "🔴";
+                reasonText = "Connection limit reached";
+                break;
+            case ProviderFailureReason.ClientError:
+                color = Color.Red;
+                emoji = "🔐";
+                reasonText = "Authentication/authorization error";
+                break;
+            case ProviderFailureReason.Timeout:
+                color = Color.Orange;
+                emoji = "⏱️";
+                reasonText = "Connection timeout";
+                break;
+            case ProviderFailureReason.ServerError:
+                color = Color.Orange;
+                emoji = "⚠️";
+                reasonText = "Server error (5xx)";
+                break;
+            case ProviderFailureReason.RateLimited:
+                color = Color.Gold;
+                emoji = "🚦";
+                reasonText = "Rate limited (429)";
+                break;
+            case ProviderFailureReason.NetworkError:
+                color = Color.Orange;
+                emoji = "🌐";
+                reasonText = "Network/DNS error";
+                break;
+            case ProviderFailureReason.PrematureEof:
+                color = Color.Orange;
+                emoji = "📉";
+                reasonText = "Stream ended prematurely";
+                break;
+            case ProviderFailureReason.TransientErrors:
+                color = Color.Orange;
+                emoji = "🔄";
+                reasonText = "Too many transient errors";
+                break;
+            default:
+                color = Color.DarkGrey;
+                emoji = "❓";
+                reasonText = "Unknown failure";
+                break;
+        }
+
+        var blacklistEndTime = now.Add(duration);
+
+        var embed = new EmbedBuilder()
+            .WithAuthor("Jellyfin.Xtream", JellyfinIconUrl)
+            .WithTitle("Provider Blacklisted")
+            .WithDescription($"{emoji} **BLACKLISTED** - Provider temporarily disabled\n**Provider:** `{providerName}`")
+            .WithColor(color)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
+            .AddField("⏱️ Duration", FormatDuration(duration), true)
+            .AddField("🔓 Available At", $"<t:{new DateTimeOffset(blacklistEndTime).ToUnixTimeSeconds()}:R>", true)
+            .AddField("📝 Reason", reasonText, true)
+            .AddField("⚠️ Failures", $"#{consecutiveFailures} consecutive", true)
+            .AddField(
+                "💡 Info",
+                reason == ProviderFailureReason.ConnectionLimit
+                        ? "Provider has no available connection slots. Try again later."
+                    : reason == ProviderFailureReason.ClientError
+                        ? "Check provider credentials and subscription status."
+                    : "Provider will be retried automatically after blacklist expires.",
+                false
+            )
+            .WithTimestamp(now)
+            .WithFooter("Provider Health Monitoring")
+            .Build();
+
+        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task NotifyAudioSyncCorrectionAsync(
+        string streamId,
+        string channelName,
+        double originalDriftMs,
+        double correctionMs,
+        string correctionType,
+        long streamOffset,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnAudioSyncCorrection)
+        {
+            return;
+        }
+
+        if (!await ShouldSendNotificationAsync().ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+
+        // Determine severity based on correction type and magnitude
+        double absDrift = Math.Abs(originalDriftMs);
+        Color color;
+        string emoji;
+        string severity;
+
+        if (correctionType == "Reset" || absDrift >= 100)
+        {
+            color = Color.Red;
+            emoji = "🔴";
+            severity = "RESET";
+        }
+        else if (correctionType == "Immediate" || absDrift >= 40)
+        {
+            color = Color.Orange;
+            emoji = "⚠️";
+            severity = "IMMEDIATE";
+        }
+        else if (correctionType == "Predictive")
+        {
+            color = Color.Blue;
+            emoji = "🔮";
+            severity = "PREDICTIVE";
+        }
+        else
+        {
+            color = Color.Green;
+            emoji = "🔧";
+            severity = "GRADUAL";
+        }
+
+        // Determine drift direction
+        string direction = originalDriftMs > 0 ? "Audio was ahead" : "Audio was behind";
+        string correctionDirection = correctionMs > 0 ? "delayed" : "advanced";
+        double residualDrift = originalDriftMs + correctionMs;
+
+        var embed = new EmbedBuilder()
+            .WithAuthor("Jellyfin.Xtream", JellyfinIconUrl)
+            .WithTitle("Audio Sync Correction Applied")
+            .WithDescription(
+                $"{emoji} **{severity}** - PTS correction applied\n**Channel:** `{channelName}` ({streamId})"
+            )
+            .WithColor(color)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
+            .AddField("📊 Type", correctionType, true)
+            .AddField("🎯 Original Drift", $"{originalDriftMs:F1}ms", true)
+            .AddField("🔧 Correction", $"{Math.Abs(correctionMs):F1}ms {correctionDirection}", true)
+            .AddField("📍 Residual", $"{residualDrift:F1}ms", true)
+            .AddField("📦 Stream Offset", FormatBytes(streamOffset), true)
+            .AddField(
+                "💡 Info",
+                correctionType == "Reset"
+                    ? "Drift exceeded correctable range. Audio PTS was reset to match video."
+                    : $"{direction} by {Math.Abs(originalDriftMs):F1}ms. Audio PTS was {correctionDirection} to compensate.",
+                false
+            )
+            .WithTimestamp(now)
+            .WithFooter("Audio Synchronization Correction")
+            .Build();
+
+        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Formats bytes into human-readable format (GB, MB, KB).
     /// </summary>
@@ -1019,7 +1208,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
 
             if (string.IsNullOrWhiteSpace(webhookUrl))
             {
-                _logger.LogWarning("Discord webhook URL not configured");
+                _logger.PluginLogWarning("Discord webhook URL not configured");
                 return false;
             }
 
@@ -1038,17 +1227,17 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         }
         catch (global::Discord.Net.HttpException ex) when (ex.HttpCode == System.Net.HttpStatusCode.NotFound)
         {
-            _logger.LogError("Discord webhook URL is invalid or has been deleted");
+            _logger.PluginLogError("Discord webhook URL is invalid or has been deleted");
             return false;
         }
         catch (global::Discord.Net.HttpException ex)
         {
-            _logger.LogError(ex, "Discord API error: {Message}", ex.Message);
+            _logger.PluginLogError(ex, "Discord API error: {Message}", ex.Message);
             return false;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error sending Discord notification");
+            _logger.PluginLogError(ex, "Error sending Discord notification");
             return false;
         }
     }
