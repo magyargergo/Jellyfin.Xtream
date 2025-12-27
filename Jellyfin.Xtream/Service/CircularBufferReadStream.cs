@@ -26,6 +26,7 @@ using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
@@ -63,6 +64,12 @@ public sealed class CircularBufferReadStream : Stream
     private const long MinimumStartupFillBytes = 4194304L;
     private const int StartupWarmupTimeoutMs = 10000;
 
+    // Stall detection uses StreamingTimeoutPolicy for configurable timeouts
+    // MaxStallWaitMs: 3x data stall timeout (default 30s) - allows time for reconnection
+    // ReconnectionWaitMs: extra grace period during active reconnection (10s)
+    private static int MaxStallWaitMs => StreamingTimeoutPolicy.GetDataStallTimeoutMs() * 3;
+    private static int ReconnectionWaitMs => StreamingTimeoutPolicy.DefaultBlacklistDurationMs / 3;
+
     private static readonly int _simdThreshold = DetermineSimdThreshold();
     private static readonly bool _avx512Supported = Avx512F.IsSupported;
     private static readonly bool _avx2Supported = Avx2.IsSupported;
@@ -93,6 +100,7 @@ public sealed class CircularBufferReadStream : Stream
     private CacheLinePaddedInt _overflowCount;
     private long _lastSeenWriteHead;
     private int _stallDetectionCount;
+    private int _lastSeenDiscontinuityCount;
     private bool _isAligned;
     private bool _isDisposed;
     private DateTime _lastOverflowLog = DateTime.MinValue;
@@ -249,6 +257,7 @@ public sealed class CircularBufferReadStream : Stream
 
         _readHead.Value = _initialReadHead;
         _activeStreams.TryAdd(_streamId, this);
+
         _logger?.LogDebugIfEnabled(
             "Registered buffer reader for stream {StreamId} (total active: {Count})",
             _streamId,
@@ -434,23 +443,89 @@ public sealed class CircularBufferReadStream : Stream
                     if (currentWrite == lastSeenWrite)
                     {
                         asyncStallCount++;
-                        if (asyncStallCount >= 500)
+
+                        // Check connection state to determine how long to wait
+                        bool isReconnecting = _sourceBuffer.IsReconnecting;
+                        DateTime lastWriteTime = _sourceBuffer.LastWriteTime;
+                        double msSinceLastWrite =
+                            lastWriteTime != default
+                                ? (DateTime.UtcNow - lastWriteTime).TotalMilliseconds
+                                : asyncStallCount * 10.0; // Fallback estimate
+
+                        // Determine max wait time based on connection state
+                        int maxWaitMs = isReconnecting ? MaxStallWaitMs + ReconnectionWaitMs : MaxStallWaitMs;
+
+                        if (msSinceLastWrite > maxWaitMs)
                         {
-                            var now = DateTime.UtcNow;
-                            if ((now - _lastStallLog).TotalSeconds >= 30)
+                            // Exceeded maximum wait time - source is likely permanently dead
+                            if (!_isDisposed)
                             {
-                                _lastStallLog = now;
-                                _logger?.LogWarning(
-                                    "Async writer stall detected on stream {StreamId}: Write head stuck at {WriteHead} for {Iterations} iterations (~{Seconds}s). Breaking wait loop to prevent hang.",
+                                _logger?.LogError(
+                                    "Stream {StreamId}: Source disconnected permanently. No data for {Seconds:F1}s (max wait: {MaxWait}s). Reconnecting={Reconnecting}",
                                     _streamId,
-                                    currentWrite,
-                                    asyncStallCount,
-                                    (double)(asyncStallCount * 10) / 1000.0
+                                    msSinceLastWrite / 1000.0,
+                                    maxWaitMs / 1000.0,
+                                    isReconnecting
                                 );
                             }
 
-                            Interlocked.Exchange(ref _readHead.Value, currentWrite);
+                            // Return 0 to signal EOF - the stream is dead
                             return 0;
+                        }
+
+                        if (asyncStallCount >= 500)
+                        {
+                            // Only log warning if stream is still active (not during disposal/cleanup)
+                            // This prevents noise during normal stream transitions (e.g., after ffprobe)
+                            if (!_isDisposed)
+                            {
+                                var now = DateTime.UtcNow;
+                                if ((now - _lastStallLog).TotalSeconds >= 30)
+                                {
+                                    _lastStallLog = now;
+                                    _logger?.LogWarning(
+                                        "Stream {StreamId} data stall: No new data for {Seconds:F1}s (write head: {WriteHead}). Reconnecting={Reconnecting}, SourceConnected={Connected}",
+                                        _streamId,
+                                        msSinceLastWrite / 1000.0,
+                                        currentWrite,
+                                        isReconnecting,
+                                        _sourceBuffer.IsSourceConnected
+                                    );
+                                }
+                            }
+
+                            // Reset stall count but DON'T return 0 immediately - wait for reconnection
+                            // Returning 0 causes ffmpeg to loop on stale data. Instead, wait longer.
+                            asyncStallCount = 0;
+
+                            // Wait longer if reconnection is in progress
+                            int waitMs = isReconnecting ? 1000 : 500;
+                            try
+                            {
+                                await Task.Delay(waitMs, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (TaskCanceledException)
+                            {
+                                return 0;
+                            }
+
+                            // Check if new data arrived during the wait
+                            long newWrite = _sourceBuffer.TotalBytesWritten;
+                            if (newWrite > currentWrite)
+                            {
+                                // Data arrived! Update tracking and continue reading
+                                lastSeenWrite = newWrite;
+                                continue;
+                            }
+
+                            // Still no data - check if stream is being disposed
+                            if (_isDisposed || cancellationToken.IsCancellationRequested)
+                            {
+                                return 0;
+                            }
+
+                            // Continue waiting for data (broadcast may be reconnecting)
+                            continue;
                         }
                     }
                     else
@@ -547,6 +622,107 @@ public sealed class CircularBufferReadStream : Stream
             Interlocked.Exchange(ref _readHead.Value, currentReadHead);
             gap = totalWritten - currentReadHead;
             _isAligned = true;
+        }
+
+        // Check for stream discontinuity (reconnection after EOF/error)
+        // We track by count, not position, because the reader might be AHEAD of the discontinuity
+        // point if it was consuming buffered data when the source disconnected. In that case,
+        // the buffered data after the discontinuity point contains OLD frames that will cause
+        // video loops when ffmpeg decodes them (timestamps jump backward).
+        int currentDiscontinuityCount = _sourceBuffer.DiscontinuityCount;
+        long discontinuityOffset = _sourceBuffer.LastDiscontinuityOffset;
+
+        if (currentDiscontinuityCount > _lastSeenDiscontinuityCount)
+        {
+            _lastSeenDiscontinuityCount = currentDiscontinuityCount;
+            long oldReadHead = currentReadHead;
+
+            // CRITICAL: We must wait for fresh data to arrive AFTER the discontinuity point.
+            // The discontinuity offset marks where new data STARTS being written after reconnection.
+            // We need at least 1MB of fresh data before we can safely resume reading.
+            const long MinFreshDataBytes = 1048576; // 1MB minimum fresh data
+            long freshDataAvailable = totalWritten - discontinuityOffset;
+
+            if (freshDataAvailable < MinFreshDataBytes)
+            {
+                // Not enough fresh data yet - return 0 to make reader wait
+                _logger?.LogInformation(
+                    "Stream {StreamId}: Discontinuity #{Count} detected, waiting for fresh data ({FreshKB:F0}KB/{RequiredKB}KB available)",
+                    _streamId,
+                    currentDiscontinuityCount,
+                    freshDataAvailable / 1024.0,
+                    MinFreshDataBytes / 1024
+                );
+                // Reset the count so we check again next read
+                _lastSeenDiscontinuityCount = currentDiscontinuityCount - 1;
+                return 0;
+            }
+
+            // Now we have enough fresh data - skip to fresh data after discontinuity
+            // Start from discontinuity offset + small margin to ensure we're in fresh data territory
+            long targetOffset = discontinuityOffset + 188 * 10; // Skip a few TS packets past discontinuity
+            long keyframeOffset = _sourceBuffer.TsIndexer.GetBestStartOffset(targetOffset, _programNumber);
+
+            if (keyframeOffset != -1 && keyframeOffset >= discontinuityOffset)
+            {
+                currentReadHead = keyframeOffset;
+            }
+            else
+            {
+                // No keyframe found, start from just after discontinuity
+                currentReadHead = targetOffset;
+            }
+
+            // Ensure we don't go past write head
+            if (currentReadHead > totalWritten)
+            {
+                currentReadHead = totalWritten;
+            }
+
+            Interlocked.Exchange(ref _readHead.Value, currentReadHead);
+            gap = totalWritten - currentReadHead;
+
+            double skippedMB = (double)(currentReadHead - oldReadHead) / 1048576.0;
+            _logger?.LogInformation(
+                "Stream {StreamId}: Discontinuity #{Count} handled - jumped from {OldOffset} to {NewOffset} ({SkippedMB:F1}MB {Direction}, {FreshMB:F1}MB fresh data available)",
+                _streamId,
+                currentDiscontinuityCount,
+                oldReadHead,
+                currentReadHead,
+                Math.Abs(skippedMB),
+                skippedMB >= 0 ? "forward" : "backward",
+                freshDataAvailable / 1048576.0
+            );
+        }
+        else if (discontinuityOffset > 0 && currentReadHead < discontinuityOffset)
+        {
+            // Reader is behind discontinuity point - skip forward to avoid reading stale data
+            long targetOffset = discontinuityOffset + 188 * 10;
+            long keyframeOffset = _sourceBuffer.TsIndexer.GetBestStartOffset(targetOffset, _programNumber);
+
+            if (keyframeOffset != -1 && keyframeOffset >= discontinuityOffset)
+            {
+                currentReadHead = keyframeOffset;
+            }
+            else
+            {
+                currentReadHead = targetOffset;
+            }
+
+            if (currentReadHead > totalWritten)
+            {
+                currentReadHead = totalWritten;
+            }
+
+            Interlocked.Exchange(ref _readHead.Value, currentReadHead);
+            gap = totalWritten - currentReadHead;
+
+            _logger?.LogInformation(
+                "Stream {StreamId}: Skipped past discontinuity from {OldOffset} to {NewOffset} to avoid stale data",
+                _streamId,
+                Volatile.Read(ref _readHead.Value),
+                currentReadHead
+            );
         }
 
         if (gap > _sourceBuffer.BufferSize)
@@ -694,6 +870,16 @@ public sealed class CircularBufferReadStream : Stream
 
         if (totalRead > 0)
         {
+            // NOTE: We intentionally do NOT modify PTS timestamps here.
+            // IPTV streams should be passed through unchanged - the player (Jellyfin client)
+            // has sophisticated A/V sync algorithms that work best with original timestamps.
+            // Server-side PTS modification can cause sync issues because:
+            // 1. We only see one direction of the stream (can't detect encoder clock drift)
+            // 2. Modifying audio PTS while leaving video unchanged creates inconsistency
+            // 3. Players expect PCR-based timing to be coherent across all elementary streams
+            //
+            // The TimestampTracker still monitors drift for diagnostics/Discord notifications.
+
             long expectedHead = startingReadHead;
             long newHead = startingReadHead + totalRead;
             long actualHead = Interlocked.CompareExchange(ref _readHead.Value, newHead, expectedHead);

@@ -46,6 +46,13 @@ public sealed class CircularBufferWriteStream : Stream
         public long Value;
     }
 
+    [StructLayout(LayoutKind.Explicit, Size = 128)]
+    private struct CacheLinePaddedInt
+    {
+        [FieldOffset(0)]
+        public int Value;
+    }
+
     private const int NonTemporalThreshold = 262144;
 
     private static readonly int _simdThreshold = DetermineSimdThreshold();
@@ -58,6 +65,15 @@ public sealed class CircularBufferWriteStream : Stream
     private readonly long _bufferMask;
 
     private CacheLinePadded _totalBytesWritten;
+    private CacheLinePadded _lastDiscontinuityOffset;
+    private CacheLinePaddedInt _discontinuityCount;
+    private DateTime _lastDiscontinuityTime;
+
+    // Connection state signaling for reader synchronization
+    private volatile bool _isSourceConnected;
+    private volatile bool _isReconnecting;
+    private CacheLinePaddedInt _reconnectionAttempts;
+    private DateTime _lastWriteTime;
 
     /// <summary>
     /// Gets the maximal size in bytes of read/write chunks.
@@ -82,6 +98,44 @@ public sealed class CircularBufferWriteStream : Stream
     /// Gets the number of bytes that have been written to this stream.
     /// </summary>
     public long TotalBytesWritten => Volatile.Read(ref _totalBytesWritten.Value);
+
+    /// <summary>
+    /// Gets the offset where the last stream discontinuity occurred.
+    /// Readers should skip past this point to avoid reading stale data from before a reconnection.
+    /// </summary>
+    public long LastDiscontinuityOffset => Volatile.Read(ref _lastDiscontinuityOffset.Value);
+
+    /// <summary>
+    /// Gets the number of discontinuities (reconnections) that have occurred.
+    /// </summary>
+    public int DiscontinuityCount => Volatile.Read(ref _discontinuityCount.Value);
+
+    /// <summary>
+    /// Gets the time of the last discontinuity (UTC), or null if no discontinuities have occurred.
+    /// </summary>
+    public DateTime? LastDiscontinuityTime => _lastDiscontinuityTime == default ? null : _lastDiscontinuityTime;
+
+    /// <summary>
+    /// Gets a value indicating whether the source is currently connected and writing data.
+    /// </summary>
+    public bool IsSourceConnected => _isSourceConnected;
+
+    /// <summary>
+    /// Gets a value indicating whether a reconnection attempt is in progress.
+    /// Readers should wait longer when this is true.
+    /// </summary>
+    public bool IsReconnecting => _isReconnecting;
+
+    /// <summary>
+    /// Gets the number of reconnection attempts since the stream started.
+    /// </summary>
+    public int ReconnectionAttempts => Volatile.Read(ref _reconnectionAttempts.Value);
+
+    /// <summary>
+    /// Gets the time of the last successful write (UTC).
+    /// Used by readers to detect stale connections.
+    /// </summary>
+    public DateTime LastWriteTime => _lastWriteTime;
 
     /// <inheritdoc />
     public override long Position
@@ -227,6 +281,7 @@ public sealed class CircularBufferWriteStream : Stream
 
         TsIndexer.ProcessChunk(source, startOffsetForIndexer);
         Interlocked.Exchange(ref _totalBytesWritten.Value, localWriteHead);
+        _lastWriteTime = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -422,6 +477,57 @@ public sealed class CircularBufferWriteStream : Stream
     {
         TsIndexer.Reset();
         Interlocked.Exchange(ref _totalBytesWritten.Value, 0L);
+        Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, 0L);
+        Interlocked.Exchange(ref _discontinuityCount.Value, 0);
+        Interlocked.Exchange(ref _reconnectionAttempts.Value, 0);
+        _lastDiscontinuityTime = default;
+        _lastWriteTime = default;
+        _isSourceConnected = false;
+        _isReconnecting = false;
+    }
+
+    /// <summary>
+    /// Marks the current write position as a discontinuity point.
+    /// Called when the source stream reconnects after an EOF or error.
+    /// Readers will skip past this point to avoid reading stale pre-disconnect data
+    /// that would cause video loops or timestamp discontinuities.
+    /// </summary>
+    public void MarkDiscontinuity()
+    {
+        var currentOffset = Volatile.Read(ref _totalBytesWritten.Value);
+        Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, currentOffset);
+        Interlocked.Increment(ref _discontinuityCount.Value);
+        _lastDiscontinuityTime = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Signals that the source is now connected and data is flowing.
+    /// Called by the writer when HTTP connection is established successfully.
+    /// </summary>
+    public void SignalSourceConnected()
+    {
+        _isSourceConnected = true;
+        _isReconnecting = false;
+        _lastWriteTime = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Signals that a reconnection attempt is starting.
+    /// Readers will wait longer when reconnection is in progress.
+    /// </summary>
+    public void SignalReconnecting()
+    {
+        _isReconnecting = true;
+        _isSourceConnected = false;
+        Interlocked.Increment(ref _reconnectionAttempts.Value);
+    }
+
+    /// <summary>
+    /// Signals that the source has disconnected (EOF, error, or intentional close).
+    /// </summary>
+    public void SignalSourceDisconnected()
+    {
+        _isSourceConnected = false;
     }
 
     /// <inheritdoc />

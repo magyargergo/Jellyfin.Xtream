@@ -25,6 +25,7 @@ using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
+using Jellyfin.Xtream.Service.ProviderManagement;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
@@ -267,8 +268,13 @@ public partial class StreamService
 
             return result;
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException ex)
         {
+            Utility.PluginLogger.DirectLog(
+                Microsoft.Extensions.Logging.LogLevel.Warning,
+                nameof(StreamService),
+                $"Failed to fetch streams from provider '{provider.Name}': {ex.Message}. Provider will be excluded from channel map."
+            );
             return [];
         }
         catch (OperationCanceledException)
@@ -736,22 +742,24 @@ public partial class StreamService
     }
 
     /// <summary>
-    /// Gets all live streams with channel deduplication and connection-aware provider ordering.
+    /// Gets all live streams with channel deduplication and health-aware provider ordering.
     /// Channels with the same name are merged. Providers are sorted by a combination of
-    /// stream quality and available connection capacity.
+    /// stream quality and provider health (success rate, capacity, circuit state).
     /// </summary>
-    /// <param name="availabilityScorer">Function to get availability score (0-100) for a provider ID.
-    /// Higher scores indicate more available capacity.</param>
+    /// <param name="resilienceService">Resilience service for health-aware sorting and filtering.</param>
+    /// <param name="filterByCapacity">When true, channels with no providers having capacity are filtered out.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A map of channels to their providers, supporting failover.</returns>
     public static async Task<ChannelProviderMap> GetDeduplicatedChannelMap(
-        Func<string, int> availabilityScorer,
+        IProviderAvailabilityService? resilienceService,
+        bool filterByCapacity,
         CancellationToken cancellationToken
     )
     {
         return ChannelProviderMap.Build(
             await GetAllLiveStreams(cancellationToken).ConfigureAwait(false),
-            availabilityScorer
+            resilienceService,
+            filterByCapacity
         );
     }
 
