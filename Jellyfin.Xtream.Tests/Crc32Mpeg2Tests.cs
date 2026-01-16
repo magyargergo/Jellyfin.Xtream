@@ -31,7 +31,7 @@ public sealed class Crc32Mpeg2Tests
     [Fact]
     public void ComputeEmptyDataReturnsInitialValue()
     {
-        var result = Crc32Mpeg2.Compute(ReadOnlySpan<byte>.Empty);
+        var result = Crc32Mpeg2.Compute([]);
         Assert.Equal(0xFFFFFFFFu, result);
     }
 
@@ -74,10 +74,10 @@ public sealed class Crc32Mpeg2Tests
         ];
 
         // Compute CRC
-        uint crc = Crc32Mpeg2.Compute(sectionWithoutCrc);
+        var crc = Crc32Mpeg2.Compute(sectionWithoutCrc);
 
         // Append CRC in big-endian (network byte order)
-        byte[] sectionWithCrc = new byte[sectionWithoutCrc.Length + 4];
+        var sectionWithCrc = new byte[sectionWithoutCrc.Length + 4];
         sectionWithoutCrc.CopyTo(sectionWithCrc, 0);
         sectionWithCrc[^4] = (byte)(crc >> 24);
         sectionWithCrc[^3] = (byte)(crc >> 16);
@@ -132,10 +132,7 @@ public sealed class Crc32Mpeg2Tests
     /// Tests that Validate returns false for empty data.
     /// </summary>
     [Fact]
-    public void ValidateEmptyDataReturnsFalse()
-    {
-        Assert.False(Crc32Mpeg2.Validate(ReadOnlySpan<byte>.Empty));
-    }
+    public void ValidateEmptyDataReturnsFalse() => Assert.False(Crc32Mpeg2.Validate([]));
 
     /// <summary>
     /// Tests CRC computation is consistent across multiple calls.
@@ -174,7 +171,7 @@ public sealed class Crc32Mpeg2Tests
     public void ComputeKnownTestVectorReturnsExpectedCrc()
     {
         // "123456789" is a standard test vector for CRC algorithms
-        byte[] data = "123456789"u8.ToArray();
+        var data = "123456789"u8.ToArray();
 
         var result = Crc32Mpeg2.Compute(data);
 
@@ -211,8 +208,8 @@ public sealed class Crc32Mpeg2Tests
         ];
 
         // Compute and append CRC
-        uint crc = Crc32Mpeg2.Compute(patPayload);
-        byte[] fullSection = new byte[patPayload.Length + 4];
+        var crc = Crc32Mpeg2.Compute(patPayload);
+        var fullSection = new byte[patPayload.Length + 4];
         patPayload.CopyTo(fullSection, 0);
         fullSection[^4] = (byte)(crc >> 24);
         fullSection[^3] = (byte)(crc >> 16);

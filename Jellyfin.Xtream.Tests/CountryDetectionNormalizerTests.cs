@@ -24,15 +24,10 @@ namespace Jellyfin.Xtream.Tests;
 /// Tests all normalization steps including country prefixes, quality indicators,
 /// special characters, diacritics, and whitespace handling.
 /// </summary>
-public sealed class CountryDetectionNormalizerTests
+public sealed class CountryDetectionNormalizerTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
+    private readonly ITestOutputHelper _output = output;
     private readonly CountryDetectionNormalizer _normalizer = CountryDetectionNormalizer.Default;
-
-    public CountryDetectionNormalizerTests(ITestOutputHelper output)
-    {
-        _output = output;
-    }
 
     #region Empty and Null Input Tests
 
@@ -542,8 +537,8 @@ public sealed class CountryDetectionNormalizerTests
         // 1. Country prefix -> 2. Quality -> 3. Streaming suffix -> 4. Country suffix
         // -> 5. Noise -> 6. Special chars -> 7. Diacritics -> 8. Whitespace -> 9. Lowercase
         // Note: CountrySuffixPattern requires country name at end ($ anchor)
-        var input = "123 PL: Wiadomości HD [NEW] #1 Poland";
-        var expected = "wiadomosci";
+        const string input = "123 PL: Wiadomości HD [NEW] #1 Poland";
+        const string expected = "wiadomosci";
 
         var result = _normalizer.Normalize(input);
         _output.WriteLine($"'{input}' -> '{result}'");
@@ -595,9 +590,9 @@ public sealed class CountryDetectionNormalizerTests
             "TVN  HD",
         };
 
-        var normalized = variants.Select(v => _normalizer.Normalize(v)).ToArray();
+        var normalized = variants.Select(_normalizer.Normalize).ToArray();
         _output.WriteLine("Normalized values:");
-        for (int i = 0; i < variants.Length; i++)
+        for (var i = 0; i < variants.Length; i++)
         {
             _output.WriteLine($"  '{variants[i]}' -> '{normalized[i]}'");
         }

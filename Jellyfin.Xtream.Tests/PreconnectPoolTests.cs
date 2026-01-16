@@ -1,345 +1,380 @@
 // Copyright (C) 2025  Gergo Magyar
-
+//
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-
+//
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
-
+//
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
-using Jellyfin.Xtream.Configuration;
-using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.ProviderManagement;
-using Jellyfin.Xtream.Service.Switching;
 using Xunit;
 
 namespace Jellyfin.Xtream.Tests;
 
 /// <summary>
-/// Unit tests for PreconnectPool.
-/// Tests connection pooling, claiming, and lifecycle management.
+/// Tests for <see cref="IPreconnectPool"/> related types.
 /// </summary>
-public sealed class PreconnectPoolTests : IDisposable
+public sealed class PreconnectPoolTests
 {
-    private readonly PreconnectPool _pool;
-    private readonly MockResilienceService _resilienceService;
-    private readonly HttpClient _httpClient;
+    #region PreconnectPoolConfiguration Tests
 
-    public PreconnectPoolTests()
+    [Fact]
+    public void PreconnectPoolConfiguration_Default_HasReasonableValues()
     {
-        _resilienceService = new MockResilienceService();
-        _httpClient = new HttpClient();
-        _pool = new PreconnectPool(_httpClient, _resilienceService, poolSize: 3);
-    }
+        var config = PreconnectPoolConfiguration.Default;
 
-    public void Dispose()
-    {
-        _pool.Dispose();
-        _httpClient.Dispose();
+        Assert.Equal(TimeSpan.FromSeconds(30), config.MaxConnectionAge);
+        Assert.Equal(2, config.MaxConnectionsPerHost);
+        Assert.Equal(TimeSpan.FromSeconds(5), config.WarmupTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(10), config.CleanupInterval);
+        Assert.Equal(8 * 1024, config.WarmupReadBytes);
     }
 
     [Fact]
-    public void NewPool_HasConfiguredPoolSize()
+    public void PreconnectPoolConfiguration_CustomValues_ArePreserved()
     {
-        Assert.Equal(3, _pool.PoolSize);
-    }
-
-    [Fact]
-    public void NewPool_HasZeroActiveConnections()
-    {
-        Assert.Equal(0, _pool.ActiveConnections);
-    }
-
-    [Fact]
-    public void NewPool_HasZeroStats()
-    {
-        Assert.Equal(0, _pool.TotalConnections);
-        Assert.Equal(0, _pool.ConnectionHits);
-        Assert.Equal(0, _pool.ConnectionMisses);
-    }
-
-    [Fact]
-    public void TryGetConnection_EmptyPool_ReturnsFalse()
-    {
-        bool found = _pool.TryGetConnection("provider-1", out var connection);
-
-        Assert.False(found);
-        Assert.Null(connection);
-        Assert.Equal(1, _pool.ConnectionMisses);
-    }
-
-    [Fact]
-    public void TryGetConnection_WithStreamId_EmptyPool_ReturnsFalse()
-    {
-        bool found = _pool.TryGetConnection("provider-1", 100, out var connection);
-
-        Assert.False(found);
-        Assert.Null(connection);
-    }
-
-    [Fact]
-    public void SetPoolSize_ClampsToValidRange()
-    {
-        _pool.SetPoolSize(0);
-        Assert.Equal(1, _pool.PoolSize);
-
-        _pool.SetPoolSize(10);
-        Assert.Equal(5, _pool.PoolSize); // MaxPoolSize is 5
-    }
-
-    [Fact]
-    public void PruneStaleConnections_EmptyPool_ReturnsZero()
-    {
-        int removed = _pool.PruneStaleConnections();
-
-        Assert.Equal(0, removed);
-    }
-
-    [Fact]
-    public void Clear_EmptyPool_DoesNotThrow()
-    {
-        _pool.Clear();
-
-        Assert.Equal(0, _pool.ActiveConnections);
-    }
-
-    [Fact]
-    public void HitRatePercent_NoAttempts_ReturnsZero()
-    {
-        Assert.Equal(0, _pool.HitRatePercent);
-    }
-
-    [Fact]
-    public void HitRatePercent_AfterMisses_ReturnsZero()
-    {
-        _pool.TryGetConnection("p1", out _);
-        _pool.TryGetConnection("p2", out _);
-
-        Assert.Equal(0, _pool.HitRatePercent);
-    }
-
-    [Fact]
-    public void PooledConnection_CreatedAt_IsUtcNow()
-    {
-        var before = DateTime.UtcNow;
-        var connection = new PooledConnection
+        var config = new PreconnectPoolConfiguration
         {
-            ProviderId = "p1",
-            Provider = CreateProvider("p1"),
-            StreamId = 100,
-            ResponseStream = new MemoryStream(),
-        };
-        var after = DateTime.UtcNow;
-
-        Assert.True(connection.CreatedAt >= before);
-        Assert.True(connection.CreatedAt <= after);
-    }
-
-    [Fact]
-    public void PooledConnection_AgeMs_IncreasesOverTime()
-    {
-        using var connection = new PooledConnection
-        {
-            ProviderId = "p1",
-            Provider = CreateProvider("p1"),
-            StreamId = 100,
-            ResponseStream = new MemoryStream(),
+            MaxConnectionAge = TimeSpan.FromSeconds(60),
+            MaxConnectionsPerHost = 5,
+            WarmupTimeout = TimeSpan.FromSeconds(10),
+            CleanupInterval = TimeSpan.FromSeconds(20),
+            WarmupReadBytes = 16 * 1024,
         };
 
-        long age1 = connection.AgeMs;
-        System.Threading.Thread.Sleep(10);
-        long age2 = connection.AgeMs;
+        Assert.Equal(TimeSpan.FromSeconds(60), config.MaxConnectionAge);
+        Assert.Equal(5, config.MaxConnectionsPerHost);
+        Assert.Equal(TimeSpan.FromSeconds(10), config.WarmupTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(20), config.CleanupInterval);
+        Assert.Equal(16 * 1024, config.WarmupReadBytes);
+    }
 
-        Assert.True(age2 > age1);
+    #endregion
+
+    #region ConnectionPoolHealth Tests
+
+    [Fact]
+    public void ConnectionPoolHealth_Empty_HasZeroValues()
+    {
+        var health = ConnectionPoolHealth.Empty;
+
+        Assert.Equal(0, health.AvailableConnections);
+        Assert.Equal(0, health.InUseConnections);
+        Assert.Equal(0, health.AverageAgeSeconds);
+        Assert.Equal(0, health.SuccessRate);
+        Assert.Equal(0, health.AverageWarmupLatencyMs);
+        Assert.False(health.IsHealthy);
     }
 
     [Fact]
-    public void PooledConnection_TryClaim_FirstCallSucceeds()
+    public void ConnectionPoolHealth_IsHealthy_RequiresBothConditions()
     {
-        using var connection = new PooledConnection
-        {
-            ProviderId = "p1",
-            Provider = CreateProvider("p1"),
-            StreamId = 100,
-            ResponseStream = new MemoryStream(),
-        };
+        // Not healthy - no available connections
+        var health1 = new ConnectionPoolHealth { AvailableConnections = 0, SuccessRate = 1.0 };
+        Assert.False(health1.IsHealthy);
 
-        bool claimed = connection.TryClaim();
+        // Not healthy - low success rate
+        var health2 = new ConnectionPoolHealth { AvailableConnections = 2, SuccessRate = 0.5 };
+        Assert.False(health2.IsHealthy);
 
-        Assert.True(claimed);
-        Assert.True(connection.IsClaimed);
+        // Healthy - both conditions met
+        var health3 = new ConnectionPoolHealth { AvailableConnections = 2, SuccessRate = 0.8 };
+        Assert.True(health3.IsHealthy);
     }
 
     [Fact]
-    public void PooledConnection_TryClaim_SecondCallFails()
+    public void ConnectionPoolHealth_IsHealthy_RequiresExactly80PercentSuccessRate()
     {
-        using var connection = new PooledConnection
-        {
-            ProviderId = "p1",
-            Provider = CreateProvider("p1"),
-            StreamId = 100,
-            ResponseStream = new MemoryStream(),
-        };
+        // Exactly 80% should be healthy
+        var health = new ConnectionPoolHealth { AvailableConnections = 1, SuccessRate = 0.8 };
+        Assert.True(health.IsHealthy);
 
-        connection.TryClaim();
-        bool secondClaim = connection.TryClaim();
-
-        Assert.False(secondClaim);
+        // Just below 80% should not be healthy
+        var healthLow = new ConnectionPoolHealth { AvailableConnections = 1, SuccessRate = 0.79 };
+        Assert.False(healthLow.IsHealthy);
     }
 
     [Fact]
-    public void PooledConnection_Dispose_MarksAsClaimed()
+    public void ConnectionPoolHealth_Equality_SameValues_AreEqual()
     {
-        // Create connection, track IsClaimed state before/after using block
-        bool wasClaimedBefore;
-        bool wasClaimedAfter;
+        var health1 = new ConnectionPoolHealth { AvailableConnections = 5, InUseConnections = 2 };
+        var health2 = new ConnectionPoolHealth { AvailableConnections = 5, InUseConnections = 2 };
 
-        // Create the connection to test
-        var connection = new PooledConnection
-        {
-            ProviderId = "p1",
-            Provider = CreateProvider("p1"),
-            StreamId = 100,
-            ResponseStream = new MemoryStream(),
-        };
-
-        wasClaimedBefore = connection.IsClaimed;
-
-        // Dispose the connection
-        ((IDisposable)connection).Dispose();
-
-        wasClaimedAfter = connection.IsClaimed;
-
-        // Verify state transition
-        Assert.False(wasClaimedBefore);
-        Assert.True(wasClaimedAfter);
+        Assert.Equal(health1, health2);
+        Assert.True(health1 == health2);
+        Assert.False(health1 != health2);
     }
 
     [Fact]
-    public void PooledConnection_Dispose_DisposesStream()
+    public void ConnectionPoolHealth_Equality_DifferentValues_AreNotEqual()
     {
-        // Create stream outside so we can verify it's disposed after connection disposes
+        var health1 = new ConnectionPoolHealth { AvailableConnections = 5 };
+        var health2 = new ConnectionPoolHealth { AvailableConnections = 3 };
+
+        Assert.NotEqual(health1, health2);
+        Assert.False(health1 == health2);
+        Assert.True(health1 != health2);
+    }
+
+    [Fact]
+    public void ConnectionPoolHealth_GetHashCode_ConsistentWithEquality()
+    {
+        var health1 = new ConnectionPoolHealth { AvailableConnections = 5, InUseConnections = 2 };
+        var health2 = new ConnectionPoolHealth { AvailableConnections = 5, InUseConnections = 2 };
+
+        Assert.Equal(health1.GetHashCode(), health2.GetHashCode());
+    }
+
+    #endregion
+
+    #region PreconnectPoolStatistics Tests
+
+    [Fact]
+    public void PreconnectPoolStatistics_Default_AllZero()
+    {
+        var stats = new PreconnectPoolStatistics();
+
+        Assert.Equal(0, stats.TotalWarmupAttempts);
+        Assert.Equal(0, stats.SuccessfulWarmups);
+        Assert.Equal(0, stats.FailedWarmups);
+        Assert.Equal(0, stats.CacheHits);
+        Assert.Equal(0, stats.CacheMisses);
+        Assert.Equal(0, stats.Evictions);
+        Assert.Equal(0, stats.AverageWarmupLatencyMs);
+    }
+
+    [Fact]
+    public void PreconnectPoolStatistics_WarmupSuccessRatePercent_CalculatesCorrectly()
+    {
+        var stats = new PreconnectPoolStatistics { TotalWarmupAttempts = 100, SuccessfulWarmups = 80 };
+
+        Assert.Equal(80.0, stats.WarmupSuccessRatePercent);
+    }
+
+    [Fact]
+    public void PreconnectPoolStatistics_WarmupSuccessRatePercent_ZeroAttempts_ReturnsZero()
+    {
+        var stats = new PreconnectPoolStatistics { TotalWarmupAttempts = 0, SuccessfulWarmups = 0 };
+
+        Assert.Equal(0.0, stats.WarmupSuccessRatePercent);
+    }
+
+    [Fact]
+    public void PreconnectPoolStatistics_CacheHitRatePercent_CalculatesCorrectly()
+    {
+        var stats = new PreconnectPoolStatistics { CacheHits = 75, CacheMisses = 25 };
+
+        Assert.Equal(75.0, stats.CacheHitRatePercent);
+    }
+
+    [Fact]
+    public void PreconnectPoolStatistics_CacheHitRatePercent_NoAccesses_ReturnsZero()
+    {
+        var stats = new PreconnectPoolStatistics { CacheHits = 0, CacheMisses = 0 };
+
+        Assert.Equal(0.0, stats.CacheHitRatePercent);
+    }
+
+    [Fact]
+    public void PreconnectPoolStatistics_CacheHitRatePercent_AllHits_Returns100()
+    {
+        var stats = new PreconnectPoolStatistics { CacheHits = 50, CacheMisses = 0 };
+
+        Assert.Equal(100.0, stats.CacheHitRatePercent);
+    }
+
+    [Fact]
+    public void PreconnectPoolStatistics_Equality_SameValues_AreEqual()
+    {
+        var stats1 = new PreconnectPoolStatistics { TotalWarmupAttempts = 100, CacheHits = 50 };
+        var stats2 = new PreconnectPoolStatistics { TotalWarmupAttempts = 100, CacheHits = 50 };
+
+        Assert.Equal(stats1, stats2);
+        Assert.True(stats1 == stats2);
+    }
+
+    [Fact]
+    public void PreconnectPoolStatistics_Equality_DifferentValues_AreNotEqual()
+    {
+        var stats1 = new PreconnectPoolStatistics { TotalWarmupAttempts = 100 };
+        var stats2 = new PreconnectPoolStatistics { TotalWarmupAttempts = 200 };
+
+        Assert.NotEqual(stats1, stats2);
+        Assert.True(stats1 != stats2);
+    }
+
+    #endregion
+
+    #region PreconnectSlot Tests
+
+    [Fact]
+    public void PreconnectSlot_Constructor_SetsProperties()
+    {
+        var hostUri = new Uri("http://example.com:8080");
+        var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
         var stream = new MemoryStream();
-        bool streamWasDisposed;
+        var warmedAt = DateTime.UtcNow.AddMinutes(-1);
 
-        // Create and dispose connection in a using block
+        var slot = new PreconnectSlot(hostUri, response, stream, warmedAt);
+
+        Assert.Equal(hostUri, slot.HostUri);
+        Assert.Equal(response, slot.Response);
+        Assert.Equal(stream, slot.Stream);
+        Assert.Equal(warmedAt, slot.WarmedAt);
+        Assert.False(slot.HasError);
+        Assert.False(slot.IsDisposed);
+    }
+
+    [Fact]
+    public void PreconnectSlot_Age_CalculatesCorrectly()
+    {
+        var warmedAt = DateTime.UtcNow.AddSeconds(-10);
+        using var slot = new PreconnectSlot(
+            new Uri("http://example.com"),
+            new HttpResponseMessage(),
+            new MemoryStream(),
+            warmedAt
+        );
+
+        // Allow some tolerance for test execution time
+        Assert.True(slot.Age.TotalSeconds >= 10);
+        Assert.True(slot.Age.TotalSeconds < 12);
+    }
+
+    [Fact]
+    public void PreconnectSlot_HasError_DefaultFalse()
+    {
+        using var slot = new PreconnectSlot(
+            new Uri("http://example.com"),
+            new HttpResponseMessage(),
+            new MemoryStream(),
+            DateTime.UtcNow
+        );
+
+        Assert.False(slot.HasError);
+
+        slot.HasError = true;
+        Assert.True(slot.HasError);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "IDisposableAnalyzers.Correctness",
+        "IDISP016:Don't use disposed instance",
+        Justification = "Testing dispose behavior"
+    )]
+    public void PreconnectSlot_Dispose_SetsIsDisposed()
+    {
+        // These tests intentionally test Dispose behavior
+        // Use a helper to verify state after dispose
+        var isDisposedBefore = false;
+        var isDisposedAfter = false;
+
         using (
-            var connection = new PooledConnection
-            {
-                ProviderId = "p1",
-                Provider = CreateProvider("p1"),
-                StreamId = 100,
-                ResponseStream = stream,
-            }
+            var slot = new PreconnectSlot(
+                new Uri("http://example.com"),
+                new HttpResponseMessage(),
+                new MemoryStream(),
+                DateTime.UtcNow
+            )
         )
         {
-            // Connection and stream are valid here
-            Assert.NotNull(connection.ResponseStream);
+            isDisposedBefore = slot.IsDisposed;
+            slot.HasError = true;
+            slot.Dispose();
+            isDisposedAfter = slot.IsDisposed;
         }
 
-        // After the using block, stream should be disposed
-        try
-        {
-            stream.WriteByte(0);
-            streamWasDisposed = false;
-        }
-        catch (ObjectDisposedException)
-        {
-            streamWasDisposed = true;
-        }
-
-        Assert.True(streamWasDisposed);
+        Assert.False(isDisposedBefore);
+        Assert.True(isDisposedAfter);
     }
 
     [Fact]
-    public void PooledConnection_DoubleDispose_DoesNotThrow()
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "IDisposableAnalyzers.Correctness",
+        "IDISP016:Don't use disposed instance",
+        Justification = "Testing dispose idempotency"
+    )]
+    public void PreconnectSlot_Dispose_Idempotent()
     {
-        // Create connection
-        var connection = new PooledConnection
+        // Verify multiple dispose calls are safe by capturing state
+        var disposeCount = 0;
+        var isDisposedFinal = false;
+
+        using (
+            var slot = new PreconnectSlot(
+                new Uri("http://example.com"),
+                new HttpResponseMessage(),
+                new MemoryStream(),
+                DateTime.UtcNow
+            )
+        )
         {
-            ProviderId = "p1",
-            Provider = CreateProvider("p1"),
-            StreamId = 100,
-            ResponseStream = new MemoryStream(),
-        };
+            slot.HasError = true;
 
-        // First dispose
-        ((IDisposable)connection).Dispose();
+            // Multiple dispose calls should be safe - the using block calls dispose too
+            slot.Dispose();
+            disposeCount++;
+            isDisposedFinal = slot.IsDisposed;
+        }
 
-        // Second dispose should not throw
-        var exception = Record.Exception(() => ((IDisposable)connection).Dispose());
-        Assert.Null(exception);
+        disposeCount++; // using block disposed again
+        Assert.True(isDisposedFinal);
+        Assert.Equal(2, disposeCount);
     }
 
-    private static ProviderStreamInfo CreateProvider(string id)
+    [Fact]
+    public void PreconnectSlot_Dispose_CallsCallback()
     {
-        var provider = new XtreamProvider
+        var callbackInvoked = false;
+
+        using (
+            var slot = new PreconnectSlot(
+                new Uri("http://example.com"),
+                new HttpResponseMessage(),
+                new MemoryStream(),
+                DateTime.UtcNow,
+                _ => callbackInvoked = true
+            )
+        )
         {
-            Id = id,
-            Name = $"Provider {id}",
-            BaseUrl = $"http://{id}.example.com",
-            Username = "user",
-            Password = "pass",
-        };
-        var stream = new Jellyfin.Xtream.Client.Models.StreamInfo { StreamId = 1, Name = "Test Channel" };
-        return new ProviderStreamInfo(provider, stream);
+            // Without error, callback should be invoked on dispose
+            _ = slot; // Suppress unused variable warning
+        }
+
+        Assert.True(callbackInvoked);
     }
 
-    private sealed class MockResilienceService : IProviderAvailabilityService
+    [Fact]
+    public void PreconnectSlot_Dispose_WithError_DoesNotCallCallback()
     {
-        public bool IsAvailable(string providerId) => true;
+        var callbackInvoked = false;
 
-        public Polly.CircuitBreaker.CircuitState GetCircuitState(string providerId) =>
-            Polly.CircuitBreaker.CircuitState.Closed;
+        using (
+            var slot = new PreconnectSlot(
+                new Uri("http://example.com"),
+                new HttpResponseMessage(),
+                new MemoryStream(),
+                DateTime.UtcNow,
+                _ => callbackInvoked = true
+            )
+        )
+        {
+            slot.HasError = true;
+        }
 
-        public int GetSelectionScore(string providerId) => 50;
-
-        public IReadOnlyList<ProviderStreamInfo> GetSortedProviders(
-            IEnumerable<ProviderStreamInfo> providers,
-            bool forceIncludeAll = false
-        ) => new List<ProviderStreamInfo>(providers);
-
-        public void RecordSuccess(string providerId) { }
-
-        public bool RecordFailure(string providerId, ProviderFailureReason reason, string? providerName = null) =>
-            false;
-
-        public Task RecordConnectionLimitAsync(string providerId) => Task.CompletedTask;
-
-        public Task ResetCircuitAsync(string providerId) => Task.CompletedTask;
-
-        public IReadOnlyDictionary<string, ProviderResilienceState> GetSnapshot() =>
-            new Dictionary<string, ProviderResilienceState>(StringComparer.Ordinal);
-
-        public void UpdateCapacity(string providerId, int availableSlots, int maxConnections) { }
-
-        public bool HasCapacity(string providerId) => true;
-
-        public bool IsCircuitAvailable(string providerId) => true;
-
-        public Task IsolateCircuitAsync(string providerId) => Task.CompletedTask;
-
-        public int GetAvailableSlots(string providerId) => -1;
-
-        public int GetMaxConnections(string providerId) => 0;
-
-        public ProviderResilienceState? GetStatus(string providerId) => null;
-
-        public Task RefreshAsync(
-            IEnumerable<XtreamProvider> providers,
-            CancellationToken cancellationToken = default
-        ) => Task.CompletedTask;
-
-        public bool NeedsRefresh() => false;
+        Assert.False(callbackInvoked);
     }
+
+    #endregion
 }

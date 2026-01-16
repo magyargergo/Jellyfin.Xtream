@@ -24,15 +24,10 @@ namespace Jellyfin.Xtream.Tests;
 /// <summary>
 /// Tests for channel name matching logic used in CopyChannelSelections.
 /// </summary>
-public sealed class ChannelMatchingTests
+public sealed class ChannelMatchingTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
+    private readonly ITestOutputHelper _output = output;
     private readonly ChannelNameNormalizer _normalizer = ChannelNameNormalizer.Default;
-
-    public ChannelMatchingTests(ITestOutputHelper output)
-    {
-        _output = output;
-    }
 
     /// <summary>
     /// Tests that should match (same channel, different formatting).
@@ -164,7 +159,7 @@ public sealed class ChannelMatchingTests
 
         _output.WriteLine("\nThreshold analysis:");
         _output.WriteLine("===================");
-        for (int threshold = 50; threshold <= 95; threshold += 5)
+        for (var threshold = 50; threshold <= 95; threshold += 5)
         {
             var correct = 0;
             var falsePositives = 0;

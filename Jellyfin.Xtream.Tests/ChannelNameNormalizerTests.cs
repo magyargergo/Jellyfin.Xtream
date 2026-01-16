@@ -25,15 +25,10 @@ namespace Jellyfin.Xtream.Tests;
 /// special characters, diacritics, and uppercase conversion.
 /// Note: ChannelNameNormalizer produces UPPERCASE output (unlike CountryDetectionNormalizer which produces lowercase).
 /// </summary>
-public sealed class ChannelNameNormalizerTests
+public sealed class ChannelNameNormalizerTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
+    private readonly ITestOutputHelper _output = output;
     private readonly ChannelNameNormalizer _normalizer = ChannelNameNormalizer.Default;
-
-    public ChannelNameNormalizerTests(ITestOutputHelper output)
-    {
-        _output = output;
-    }
 
     #region Empty and Null Input Tests
 
@@ -536,8 +531,8 @@ public sealed class ChannelNameNormalizerTests
     public void Normalize_WithAllTransformations_AppliesInCorrectOrder()
     {
         // This test verifies the order of transformations
-        var input = "123 PL: Wiadomości HD [NEW] #1 Poland";
-        var expected = "WIADOMOSCI";
+        const string input = "123 PL: Wiadomości HD [NEW] #1 Poland";
+        const string expected = "WIADOMOSCI";
 
         var result = _normalizer.Normalize(input);
         _output.WriteLine($"'{input}' -> '{result}'");
@@ -589,9 +584,9 @@ public sealed class ChannelNameNormalizerTests
             "TVN  HD",
         };
 
-        var normalized = variants.Select(v => _normalizer.Normalize(v)).ToArray();
+        var normalized = variants.Select(_normalizer.Normalize).ToArray();
         _output.WriteLine("Normalized values:");
-        for (int i = 0; i < variants.Length; i++)
+        for (var i = 0; i < variants.Length; i++)
         {
             _output.WriteLine($"  '{variants[i]}' -> '{normalized[i]}'");
         }
@@ -648,7 +643,7 @@ public sealed class ChannelNameNormalizerTests
     public void Normalize_ProducesUppercaseOutput()
     {
         // ChannelNameNormalizer should produce uppercase output
-        var input = "PL: TVN HD";
+        const string input = "PL: TVN HD";
         var result = _normalizer.Normalize(input);
 
         _output.WriteLine($"'{input}' -> '{result}'");
@@ -660,7 +655,7 @@ public sealed class ChannelNameNormalizerTests
     public void Normalize_RemovesNonAlphanumericCharacters()
     {
         // Unlike CountryDetectionNormalizer, this removes all non-alphanumeric chars including spaces
-        var input = "Canal+ Sport HD";
+        const string input = "Canal+ Sport HD";
         var result = _normalizer.Normalize(input);
 
         _output.WriteLine($"'{input}' -> '{result}'");

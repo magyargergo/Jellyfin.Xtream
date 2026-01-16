@@ -17,6 +17,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service;
+using Jellyfin.Xtream.Service.MpegTs.Models;
 using Jellyfin.Xtream.Service.ProviderManagement;
 using Xunit;
 
@@ -92,7 +93,7 @@ public sealed class DiscordNotificationServiceTests
     [Fact]
     public void EpgRefreshResult_FailedChannels_CanContainMultiple()
     {
-        var result = new EpgRefreshResult { FailedChannels = new[] { "BBC One", "ITV", "Channel 4" } };
+        var result = new EpgRefreshResult { FailedChannels = ["BBC One", "ITV", "Channel 4"] };
 
         Assert.Equal(3, result.FailedChannels.Count);
         Assert.Contains("BBC One", result.FailedChannels);
@@ -155,7 +156,7 @@ public sealed class DiscordNotificationServiceTests
         // Quality notifications
         Assert.NotNull(interfaceType.GetMethod("NotifyAVDriftAsync"));
         Assert.NotNull(interfaceType.GetMethod("NotifyStreamQualityViolationAsync"));
-        Assert.NotNull(interfaceType.GetMethod("SendTsIndexerDiagnosticsAsync"));
+        Assert.NotNull(interfaceType.GetMethod("SendTsIndexerMetricsAsync"));
 
         // Connection limit notifications
         Assert.NotNull(interfaceType.GetMethod("NotifyConnectionLimitChangeAsync"));
@@ -292,10 +293,10 @@ public sealed class DiscordNotificationServiceTests
         public Task<bool> TestWebhookAsync(string webhookUrl, CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
 
-        public Task SendTsIndexerDiagnosticsAsync(
+        public Task SendTsIndexerMetricsAsync(
             string streamId,
             string channelName,
-            string diagnostics,
+            TsIndexerMetrics metrics,
             CancellationToken cancellationToken = default
         ) => Task.CompletedTask;
 
@@ -373,7 +374,7 @@ public sealed class DiscordNotificationServiceTests
         );
 
         Assert.Equal(1, service.NotifyAudioSyncCorrectionCallCount);
-        Assert.NotNull(service.LastAudioSyncCorrection);
+        _ = Assert.NotNull(service.LastAudioSyncCorrection);
         Assert.Equal("stream-123", service.LastAudioSyncCorrection.Value.StreamId);
         Assert.Equal(45.5, service.LastAudioSyncCorrection.Value.DriftMs);
         Assert.Equal("Gradual", service.LastAudioSyncCorrection.Value.CorrectionType);

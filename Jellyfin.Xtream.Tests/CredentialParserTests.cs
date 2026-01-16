@@ -61,7 +61,7 @@ public sealed class CredentialParserTests
     [Fact]
     public void ParseText_PortalFormatWithPipe_ParsesCorrectly()
     {
-        var content =
+        const string content =
             @"
 PORTAL: http://example.com:8080
 username1|password1
@@ -84,14 +84,14 @@ username2|password2
     [Fact]
     public void ParseText_PortalFormatWithColon_ParsesCorrectly()
     {
-        var content =
+        const string content =
             @"
 server: http://iptv.example.org:25461
 user1:pass1
 ";
         var result = _parser.ParseText(content);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("iptv.example.org", result[0].Server);
         Assert.Equal(25461, result[0].Port);
         Assert.Equal("user1", result[0].Username);
@@ -104,14 +104,14 @@ user1:pass1
     [Fact]
     public void ParseText_EmojiFormat_ParsesCorrectly()
     {
-        var content =
+        const string content =
             @"
 🌐 http://stream.example.com:8000
 👤 myuser 🔐 mypass123
 ";
         var result = _parser.ParseText(content);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("stream.example.com", result[0].Server);
         Assert.Equal(8000, result[0].Port);
         Assert.Equal("myuser", result[0].Username);
@@ -124,11 +124,11 @@ user1:pass1
     [Fact]
     public void ParseText_DirectUrlFormat_ParsesCorrectly()
     {
-        var content = "http://iptv.example.com:8080/get.php?username=testuser&password=testpass123";
+        const string content = "http://iptv.example.com:8080/get.php?username=testuser&password=testpass123";
 
         var result = _parser.ParseText(content);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("iptv.example.com", result[0].Server);
         Assert.Equal(8080, result[0].Port);
         Assert.Equal("testuser", result[0].Username);
@@ -141,11 +141,11 @@ user1:pass1
     [Fact]
     public void ParseText_PlayerApiUrlFormat_ParsesCorrectly()
     {
-        var content = "http://iptv.example.com:80/player_api.php?username=user&password=pass";
+        const string content = "http://iptv.example.com:80/player_api.php?username=user&password=pass";
 
         var result = _parser.ParseText(content);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("iptv.example.com", result[0].Server);
         Assert.Equal(80, result[0].Port);
         Assert.Equal("user", result[0].Username);
@@ -158,7 +158,7 @@ user1:pass1
     [Fact]
     public void ParseText_CodePatterns_AreIgnored()
     {
-        var content =
+        const string content =
             @"
 function test() { return 'hello'; }
 var x = 'user|pass';
@@ -176,7 +176,7 @@ document.querySelector('element');
     [Fact]
     public void ParseText_DuplicateCredentials_AreDeduplicated()
     {
-        var content =
+        const string content =
             @"
 PORTAL: http://example.com:8080
 user1|pass1
@@ -185,7 +185,7 @@ user1|pass1
 ";
         var result = _parser.ParseText(content);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
     }
 
     /// <summary>
@@ -194,7 +194,7 @@ user1|pass1
     [Fact]
     public void ParseText_SameCredentialsDifferentServers_AreKeptSeparate()
     {
-        var content =
+        const string content =
             @"
 PORTAL: http://server1.com:8080
 user1|pass1
@@ -215,7 +215,7 @@ user1|pass1
     [Fact]
     public void ParseText_CredentialsWithoutServer_AreIgnored()
     {
-        var content =
+        const string content =
             @"
 user1|pass1
 user2|pass2
@@ -248,7 +248,7 @@ PORTAL: http://example.com:8080
     [Fact]
     public void ParseText_UsernameWithSpecialChars_IsRejected()
     {
-        var content =
+        const string content =
             @"
 PORTAL: http://example.com:8080
 user(name)|password123
@@ -274,7 +274,7 @@ user(name)|password123
     [Fact]
     public void ParseHtml_PreBlock_ExtractsCredentials()
     {
-        var html =
+        const string html =
             @"
 <html>
 <body>
@@ -287,7 +287,7 @@ user1|pass1
 ";
         var result = _parser.ParseHtml(html);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("example.com", result[0].Server);
         Assert.Equal("user1", result[0].Username);
     }
@@ -298,7 +298,7 @@ user1|pass1
     [Fact]
     public void ParseHtml_CodeBlock_ExtractsCredentials()
     {
-        var html =
+        const string html =
             @"
 <html>
 <body>
@@ -310,7 +310,7 @@ http://iptv.example.com:8080/get.php?username=testuser&password=testpass
 ";
         var result = _parser.ParseHtml(html);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("testuser", result[0].Username);
         Assert.Equal("testpass", result[0].Password);
     }
@@ -321,7 +321,7 @@ http://iptv.example.com:8080/get.php?username=testuser&password=testpass
     [Fact]
     public void ParseHtml_HtmlEntities_AreDecoded()
     {
-        var html =
+        const string html =
             @"<pre>PORTAL: http://example.com:8080
 user&amp;name|pass&lt;word</pre>";
 
@@ -338,7 +338,7 @@ user&amp;name|pass&lt;word</pre>";
     [Fact]
     public void ParseHtml_ScriptBlocks_AreIgnored()
     {
-        var html =
+        const string html =
             @"
 <html>
 <script>
@@ -355,7 +355,7 @@ realuser|realpass
 ";
         var result = _parser.ParseHtml(html);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("real.com", result[0].Server);
         Assert.Equal("realuser", result[0].Username);
     }
@@ -366,11 +366,11 @@ realuser|realpass
     [Fact]
     public void ParseText_UrlWithoutPort_UsesDefaultPort()
     {
-        var content = "http://example.com/get.php?username=user&password=pass";
+        const string content = "http://example.com/get.php?username=user&password=pass";
 
         var result = _parser.ParseText(content);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal(80, result[0].Port);
     }
 
@@ -380,14 +380,14 @@ realuser|realpass
     [Fact]
     public void ParseText_EmojiFormatWithUrlParams_HandlesCorrectly()
     {
-        var content =
+        const string content =
             @"
 🌐 http://stream.example.com:8000
 👤 myuser 🔐 mypass&type=m3u
 ";
         var result = _parser.ParseText(content);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("mypass", result[0].Password);
     }
 }

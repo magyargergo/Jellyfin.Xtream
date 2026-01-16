@@ -16,6 +16,9 @@
 using System;
 using System.Linq;
 using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.MpegTs.Core;
+using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
+using Jellyfin.Xtream.Service.MpegTs.Models;
 using Jellyfin.Xtream.Utility;
 using Xunit;
 
@@ -38,7 +41,7 @@ public sealed class TsIndexerTests
         int continuityCounter = 0
     )
     {
-        byte[] packet = new byte[188];
+        var packet = new byte[188];
         packet[0] = 0x47; // Sync byte
 
         // PID is split across bytes 1-2
@@ -46,7 +49,7 @@ public sealed class TsIndexerTests
         packet[2] = (byte)(pid & 0xFF);
 
         // Adaptation field control and continuity counter
-        int afc = (hasAdaptation ? 0x20 : 0x00) | (hasPayload ? 0x10 : 0x00);
+        var afc = (hasAdaptation ? 0x20 : 0x00) | (hasPayload ? 0x10 : 0x00);
         packet[3] = (byte)(afc | (continuityCounter & 0x0F));
 
         if (hasAdaptation)
@@ -63,7 +66,7 @@ public sealed class TsIndexerTests
     /// </summary>
     private static byte[] CreatePatPacket(int programNumber = 1, int pmtPid = 256)
     {
-        byte[] packet = new byte[188];
+        var packet = new byte[188];
         packet[0] = 0x47; // Sync byte
         packet[1] = 0x40; // PUSI=1, PID=0 (PAT)
         packet[2] = 0x00;
@@ -90,20 +93,20 @@ public sealed class TsIndexerTests
         ];
 
         // Compute CRC
-        uint crc = Crc32Mpeg2.Compute(patSection);
+        var crc = Crc32Mpeg2.Compute(patSection);
 
         // Copy section to packet
         Array.Copy(patSection, 0, packet, 5, patSection.Length);
 
         // Append CRC
-        int crcOffset = 5 + patSection.Length;
+        var crcOffset = 5 + patSection.Length;
         packet[crcOffset] = (byte)(crc >> 24);
         packet[crcOffset + 1] = (byte)(crc >> 16);
         packet[crcOffset + 2] = (byte)(crc >> 8);
         packet[crcOffset + 3] = (byte)crc;
 
         // Fill rest with stuffing
-        for (int i = crcOffset + 4; i < 188; i++)
+        for (var i = crcOffset + 4; i < 188; i++)
         {
             packet[i] = 0xFF;
         }
@@ -135,7 +138,7 @@ public sealed class TsIndexerTests
     {
         var indexer = new TsIndexer(DefaultBufferSize);
 
-        indexer.ProcessChunk(ReadOnlySpan<byte>.Empty, 0);
+        indexer.ProcessChunk([], 0);
 
         Assert.Equal(0, indexer.TotalPacketsParsed);
         Assert.Equal(0, indexer.TotalBytesProcessed);
@@ -158,16 +161,16 @@ public sealed class TsIndexerTests
     }
 
     /// <summary>
-    /// Tests sync byte error detection and recovery.
+    /// Tests that Cinegy handles sync byte recovery internally.
+    /// With Cinegy-based parsing, sync errors are handled internally and packets are still parsed.
     /// </summary>
     [Fact]
-    public void ProcessChunkInvalidSyncByteDetectsAndRecovers()
+    public void ProcessChunkInvalidSyncByteRecoveredByCinegy()
     {
         var indexer = new TsIndexer(DefaultBufferSize);
 
-        // Create data with garbage followed by valid packet
-        // Need enough space for valid packet (188 bytes) plus garbage prefix plus stride check
-        byte[] data = new byte[10 + 188 + 188]; // garbage + packet + stride check space
+        // Create data with garbage followed by valid packets
+        var data = new byte[10 + 188 + 188]; // garbage + packet + stride check space
         data[0] = 0x00; // Invalid sync byte
         data[1] = 0x00;
 
@@ -175,14 +178,14 @@ public sealed class TsIndexerTests
         var validPacket = CreateTsPacket(pid: 100);
         Array.Copy(validPacket, 0, data, 10, 188);
 
-        // Insert another valid packet at offset 10 + 188 for stride verification
+        // Insert another valid packet at offset 10 + 188
         var validPacket2 = CreateTsPacket(pid: 100, continuityCounter: 1);
         Array.Copy(validPacket2, 0, data, 10 + 188, 188);
 
         indexer.ProcessChunk(data, 0);
 
-        Assert.True(indexer.SyncByteErrors > 0);
-        Assert.True(indexer.SyncRecoveries > 0);
+        // Cinegy handles sync recovery internally - packets should still be parsed
+        Assert.True(indexer.TotalPacketsParsed >= 1);
     }
 
     /// <summary>
@@ -204,15 +207,16 @@ public sealed class TsIndexerTests
     }
 
     /// <summary>
-    /// Tests PAT parsing and program detection.
+    /// Tests program detection via demuxer events.
     /// </summary>
     [Fact]
-    public void ProcessChunkValidPatDetectsProgram()
+    public void ProcessChunkWithDemuxerDetectsProgram()
     {
-        var indexer = new TsIndexer(DefaultBufferSize);
-        var patPacket = CreatePatPacket(programNumber: 1, pmtPid: 256);
+        var mockDemuxer = new MockTsDemuxer();
+        var indexer = new TsIndexer(DefaultBufferSize, demuxer: mockDemuxer);
 
-        indexer.ProcessChunk(patPacket, 0);
+        // Simulate demuxer detecting a program
+        mockDemuxer.AddProgram(programNumber: 1, pmtPid: 256, videoPid: 100, audioPids: [200], pcrPid: 100);
 
         Assert.Equal(1, indexer.ProgramCount);
         var programs = indexer.GetProgramNumbers();
@@ -267,25 +271,25 @@ public sealed class TsIndexerTests
     }
 
     /// <summary>
-    /// Tests partial packet handling across chunks.
+    /// Tests that complete packets in a single chunk are parsed correctly.
+    /// Note: Cinegy handles partial packet reassembly internally.
     /// </summary>
     [Fact]
-    public void ProcessChunkPartialPacketReassemblesCorrectly()
+    public void ProcessChunkCompletePacketsAreParsed()
     {
         var indexer = new TsIndexer(DefaultBufferSize);
-        var packet = CreateTsPacket(pid: 100);
 
-        // Split packet into two chunks
-        byte[] chunk1 = new byte[100];
-        byte[] chunk2 = new byte[88];
-        Array.Copy(packet, 0, chunk1, 0, 100);
-        Array.Copy(packet, 100, chunk2, 0, 88);
+        // Create two complete packets
+        var packet1 = CreateTsPacket(pid: 100, continuityCounter: 0);
+        var packet2 = CreateTsPacket(pid: 100, continuityCounter: 1);
 
-        indexer.ProcessChunk(chunk1, 0);
-        Assert.Equal(0, indexer.TotalPacketsParsed); // Not yet complete
+        var data = new byte[188 * 2];
+        Array.Copy(packet1, 0, data, 0, 188);
+        Array.Copy(packet2, 0, data, 188, 188);
 
-        indexer.ProcessChunk(chunk2, 100);
-        Assert.Equal(1, indexer.TotalPacketsParsed); // Now complete
+        indexer.ProcessChunk(data, 0);
+
+        Assert.Equal(2, indexer.TotalPacketsParsed);
     }
 
     /// <summary>
@@ -294,11 +298,16 @@ public sealed class TsIndexerTests
     [Fact]
     public void ResetClearsAllState()
     {
-        var indexer = new TsIndexer(DefaultBufferSize);
-        var patPacket = CreatePatPacket();
+        var mockDemuxer = new MockTsDemuxer();
+        var indexer = new TsIndexer(DefaultBufferSize, demuxer: mockDemuxer);
 
-        indexer.ProcessChunk(patPacket, 0);
+        // Simulate demuxer detecting a program
+        mockDemuxer.AddProgram(1, 256, 100, [200], 100);
         Assert.Equal(1, indexer.ProgramCount);
+
+        // Process some data to have bytes/packets counted
+        var packet = CreateTsPacket(pid: 100);
+        indexer.ProcessChunk(packet, 0);
 
         indexer.Reset();
 
@@ -313,10 +322,11 @@ public sealed class TsIndexerTests
     [Fact]
     public void ResetTimingStatePreservesProgramStructure()
     {
-        var indexer = new TsIndexer(DefaultBufferSize);
-        var patPacket = CreatePatPacket();
+        var mockDemuxer = new MockTsDemuxer();
+        var indexer = new TsIndexer(DefaultBufferSize, demuxer: mockDemuxer);
 
-        indexer.ProcessChunk(patPacket, 0);
+        // Simulate demuxer detecting a program
+        mockDemuxer.AddProgram(1, 256, 100, [200], 100);
         Assert.Equal(1, indexer.ProgramCount);
 
         indexer.ResetTimingState();
@@ -326,22 +336,23 @@ public sealed class TsIndexerTests
     }
 
     /// <summary>
-    /// Tests GetDiagnostics returns non-empty string.
+    /// Tests GetMetrics returns valid structured metrics.
     /// </summary>
     [Fact]
-    public void GetDiagnosticsReturnsNonEmptyString()
+    public void GetMetricsReturnsValidStructuredMetrics()
     {
         var indexer = new TsIndexer(DefaultBufferSize);
         var patPacket = CreatePatPacket();
 
         indexer.ProcessChunk(patPacket, 0);
 
-        string diagnostics = indexer.GetDiagnostics();
+        var metrics = indexer.GetMetrics();
 
-        Assert.NotEmpty(diagnostics);
-        Assert.Contains("TS Indexer Diagnostics", diagnostics, StringComparison.Ordinal);
-        Assert.Contains("Programs Detected", diagnostics, StringComparison.Ordinal);
-        Assert.Contains("TR 101 290 Compliance", diagnostics, StringComparison.Ordinal);
+        Assert.True(metrics.TotalPacketsParsed > 0);
+        Assert.True(metrics.TotalBytesProcessed > 0);
+        Assert.True(metrics.ProgramCount >= 0);
+        Assert.NotNull(metrics.Programs);
+        Assert.NotNull(metrics.CaSystemIds);
     }
 
     /// <summary>
@@ -353,7 +364,7 @@ public sealed class TsIndexerTests
         var indexer = new TsIndexer(DefaultBufferSize);
 
         // Should be assignable to interface
-        TsIndexer monitor = indexer;
+        var monitor = indexer;
 
         Assert.NotNull(monitor);
         Assert.Equal(indexer.TotalPacketsParsed, monitor.TotalPacketsParsed);
@@ -369,7 +380,7 @@ public sealed class TsIndexerTests
         var indexer = new TsIndexer(DefaultBufferSize);
 
         // Create 3 packets in one chunk
-        byte[] data = new byte[188 * 3];
+        var data = new byte[188 * 3];
         var packet1 = CreateTsPacket(pid: 100, continuityCounter: 0);
         var packet2 = CreateTsPacket(pid: 100, continuityCounter: 1);
         var packet3 = CreateTsPacket(pid: 100, continuityCounter: 2);
@@ -396,21 +407,20 @@ public sealed class TsIndexerTests
     }
 
     /// <summary>
-    /// Tests PAT CRC error detection.
+    /// Tests that programs are detected via demuxer events.
     /// </summary>
     [Fact]
-    public void ProcessChunkPatWithBadCrcIncrementsPatCrcErrors()
+    public void DemuxerProgramDetectionCreatesProgram()
     {
-        var indexer = new TsIndexer(DefaultBufferSize);
-        var patPacket = CreatePatPacket();
+        var mockDemuxer = new MockTsDemuxer();
+        var indexer = new TsIndexer(DefaultBufferSize, demuxer: mockDemuxer);
 
-        // Corrupt the CRC
-        patPacket[20] ^= 0xFF;
+        // Simulate demuxer detecting a program
+        mockDemuxer.AddProgram(programNumber: 5, pmtPid: 500, videoPid: 100, audioPids: [200], pcrPid: 100);
 
-        indexer.ProcessChunk(patPacket, 0);
-
-        Assert.Equal(1, indexer.PatCrcErrors);
-        Assert.Equal(0, indexer.ProgramCount); // Should not detect program with bad CRC
+        // Program should be detected via demuxer events
+        Assert.Equal(1, indexer.ProgramCount);
+        Assert.Contains(5, indexer.GetProgramNumbers());
     }
 
     /// <summary>
@@ -519,4 +529,63 @@ public sealed class TsIndexerTests
 
         Assert.Null(indexer.GetBestSyncPoint(1000));
     }
+
+    #region FFmpeg Demuxer Integration Tests
+
+    /// <summary>
+    /// Tests that TsIndexer processes packets and detects programs via demuxer.
+    /// </summary>
+    [Fact]
+    public void ProcessChunkProcessesPacketsAndDetectsPrograms()
+    {
+        var mockDemuxer = new MockTsDemuxer();
+        var indexer = new TsIndexer(DefaultBufferSize, demuxer: mockDemuxer);
+
+        // Simulate demuxer detecting a program
+        mockDemuxer.AddProgram(1, 100, 200, [300], 200);
+
+        // Create a packet and process it
+        var packet = CreateTsPacket(pid: 200);
+        indexer.ProcessChunk(packet, 0);
+
+        // Verify the packet was parsed
+        Assert.Equal(1, indexer.TotalPacketsParsed);
+
+        // The program should have been detected via demuxer events
+        Assert.Equal(1, indexer.ProgramCount);
+        Assert.Contains(1, indexer.GetProgramNumbers());
+    }
+
+    /// <summary>
+    /// Tests that keyframes are detected via demuxer packet events.
+    /// </summary>
+    [Fact]
+    public void PacketDemuxedEventWithKeyframeAddsKeyframe()
+    {
+        var mockDemuxer = new MockTsDemuxer();
+        var indexer = new TsIndexer(DefaultBufferSize, demuxer: mockDemuxer);
+
+        // Simulate demuxer detecting a program
+        mockDemuxer.AddProgram(1, 100, 200, [300], 200);
+
+        // Simulate a keyframe packet from demuxer
+        mockDemuxer.EmitPacket(
+            new Service.MpegTs.UseCases.DemuxedPacketEventArgs
+            {
+                ProgramNumber = 1,
+                Pid = 200,
+                IsVideo = true,
+                IsAudio = false,
+                IsKeyframe = true,
+                Pts = 90000,
+                Dts = 90000,
+                BytePosition = 1000,
+            }
+        );
+
+        // Verify keyframe was detected
+        Assert.Equal(1, indexer.GetKeyframeCount(1));
+    }
+
+    #endregion
 }

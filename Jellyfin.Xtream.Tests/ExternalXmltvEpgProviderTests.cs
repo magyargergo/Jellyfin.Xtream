@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System.Text;
+using System.Text.RegularExpressions;
 using Jellyfin.Xtream.Service.ChannelMatching;
 using Xunit;
 using Xunit.Abstractions;
@@ -25,15 +26,10 @@ namespace Jellyfin.Xtream.Tests;
 /// Verifies that channel names from different formats normalize consistently
 /// for EPG matching and logo URL generation.
 /// </summary>
-public sealed class ExternalXmltvEpgProviderTests
+public sealed partial class ExternalXmltvEpgProviderTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
+    private readonly ITestOutputHelper _output = output;
     private readonly ChannelNameNormalizer _normalizer = ChannelNameNormalizer.Default;
-
-    public ExternalXmltvEpgProviderTests(ITestOutputHelper output)
-    {
-        _output = output;
-    }
 
     /// <summary>
     /// Tests that display names from deduplicated channels match XMLTV display-names.
@@ -161,14 +157,7 @@ public sealed class ExternalXmltvEpgProviderTests
         var parsed = Jellyfin.Xtream.Service.StreamService.ParseName(inputName);
 
         // DisplayNameCleanupRegex pattern (simplified for testing)
-        var displayName = System
-            .Text.RegularExpressions.Regex.Replace(
-                parsed.Title,
-                @"^(\d+\s+)?(\|?[A-Z]{2,3}\||\[[A-Z]{2,3}\]|\([A-Z]{2,3}\)|[A-Z]{2,3}\s*[:\-\|])\s*|\b(HD|FHD|SD|4K|UHD)\b",
-                " ",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase
-            )
-            .Trim();
+        var displayName = MyRegex().Replace(parsed.Title, " ").Trim();
 
         // Collapse multiple spaces
         displayName = System.Text.RegularExpressions.Regex.Replace(displayName, @"\s{2,}", " ");
@@ -211,18 +200,11 @@ public sealed class ExternalXmltvEpgProviderTests
     public void LogoFallback_Chain_UsesDisplayNameCorrectly()
     {
         // Scenario: Provider has no icon, need to use external EPG fallback
-        var providerName = "PL | TVN HD";
+        const string providerName = "PL | TVN HD";
         var parsed = Jellyfin.Xtream.Service.StreamService.ParseName(providerName);
 
         // Clean display name (as ChannelProviderMap.ProcessChannelName does)
-        var displayName = System
-            .Text.RegularExpressions.Regex.Replace(
-                parsed.Title,
-                @"^(\d+\s+)?(\|?[A-Z]{2,3}\||\[[A-Z]{2,3}\]|\([A-Z]{2,3}\)|[A-Z]{2,3}\s*[:\-\|])\s*|\b(HD|FHD|SD|4K|UHD)\b",
-                " ",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase
-            )
-            .Trim();
+        var displayName = MyRegex().Replace(parsed.Title, " ").Trim();
         displayName = System.Text.RegularExpressions.Regex.Replace(displayName, @"\s{2,}", " ");
 
         // This display name would be passed to GetLogoUrl
@@ -255,7 +237,7 @@ public sealed class ExternalXmltvEpgProviderTests
         };
 
         // XMLTV source has a single entry for TVN
-        var xmltvDisplayName = "TVN";
+        const string xmltvDisplayName = "TVN";
         var normalizedXmltv = _normalizer.Normalize(xmltvDisplayName);
 
         _output.WriteLine($"XMLTV entry: '{xmltvDisplayName}' -> '{normalizedXmltv}'");
@@ -278,7 +260,7 @@ public sealed class ExternalXmltvEpgProviderTests
     [Fact]
     public void EpgOvh_LogoUrl_Format()
     {
-        var baseUrl = "https://epg.ovh/logo";
+        const string baseUrl = "https://epg.ovh/logo";
         var channelNames = new[]
         {
             ("TVN", "https://epg.ovh/logo/TVN.png"),
@@ -339,8 +321,8 @@ public sealed class ExternalXmltvEpgProviderTests
 
         try
         {
-            string datePart = dateStr[..14];
-            string tzPart = dateStr[15..].Trim();
+            var datePart = dateStr[..14];
+            var tzPart = dateStr[15..].Trim();
 
             if (
                 DateTime.TryParseExact(
@@ -354,11 +336,11 @@ public sealed class ExternalXmltvEpgProviderTests
             {
                 if (tzPart.Length >= 4)
                 {
-                    int sign = tzPart[0] == '-' ? -1 : 1;
+                    var sign = tzPart[0] == '-' ? -1 : 1;
                     var offsetStr = tzPart.TrimStart('+', '-');
                     if (
-                        int.TryParse(offsetStr[..2], out int hours)
-                        && int.TryParse(offsetStr.AsSpan(2, 2), out int minutes)
+                        int.TryParse(offsetStr[..2], out var hours)
+                        && int.TryParse(offsetStr.AsSpan(2, 2), out var minutes)
                     )
                     {
                         var offset = new TimeSpan(sign * hours, sign * minutes, 0);
@@ -374,4 +356,11 @@ public sealed class ExternalXmltvEpgProviderTests
 
         return DateTime.MinValue;
     }
+
+    [GeneratedRegexAttribute(
+        @"^(\d+\s+)?(\|?[A-Z]{2,3}\||\[[A-Z]{2,3}\]|\([A-Z]{2,3}\)|[A-Z]{2,3}\s*[:\-\|])\s*|\b(HD|FHD|SD|4K|UHD)\b",
+        RegexOptions.IgnoreCase,
+        "en-GB"
+    )]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

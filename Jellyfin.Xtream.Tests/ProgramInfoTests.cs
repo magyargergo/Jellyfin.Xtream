@@ -15,6 +15,7 @@
 
 using System;
 using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.MpegTs.Models;
 using Xunit;
 
 namespace Jellyfin.Xtream.Tests;
@@ -33,12 +34,12 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // First reception
-        long baseTicks = DateTime.UtcNow.Ticks;
-        program.RecordPmtReception(baseTicks);
+        var baseTicks = DateTime.UtcNow.Ticks;
+        _ = program.RecordPmtReception(baseTicks);
 
         // Second reception at 400ms - within limit
-        long secondTicks = baseTicks + (400 * TimeSpan.TicksPerMillisecond);
-        bool violation = program.RecordPmtReception(secondTicks);
+        var secondTicks = baseTicks + (400 * TimeSpan.TicksPerMillisecond);
+        var violation = program.RecordPmtReception(secondTicks);
 
         Assert.False(violation);
         Assert.Equal(0, program.PmtIntervalViolations);
@@ -53,12 +54,12 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // First reception
-        long baseTicks = DateTime.UtcNow.Ticks;
-        program.RecordPmtReception(baseTicks);
+        var baseTicks = DateTime.UtcNow.Ticks;
+        _ = program.RecordPmtReception(baseTicks);
 
         // Second reception at 600ms - exceeds 500ms limit
-        long secondTicks = baseTicks + (600 * TimeSpan.TicksPerMillisecond);
-        bool violation = program.RecordPmtReception(secondTicks);
+        var secondTicks = baseTicks + (600 * TimeSpan.TicksPerMillisecond);
+        var violation = program.RecordPmtReception(secondTicks);
 
         Assert.True(violation);
         Assert.Equal(1, program.PmtIntervalViolations);
@@ -72,14 +73,14 @@ public sealed class ProgramInfoTests
     {
         var program = new ProgramInfo(1, 256);
 
-        long baseTicks = DateTime.UtcNow.Ticks;
-        program.RecordPmtReception(baseTicks);
+        var baseTicks = DateTime.UtcNow.Ticks;
+        _ = program.RecordPmtReception(baseTicks);
 
         // Simulate 3 violations
-        for (int i = 1; i <= 3; i++)
+        for (var i = 1; i <= 3; i++)
         {
-            long violationTicks = baseTicks + (i * 600 * TimeSpan.TicksPerMillisecond);
-            program.RecordPmtReception(violationTicks);
+            var violationTicks = baseTicks + (i * 600 * TimeSpan.TicksPerMillisecond);
+            _ = program.RecordPmtReception(violationTicks);
         }
 
         Assert.Equal(3, program.PmtIntervalViolations);
@@ -93,8 +94,8 @@ public sealed class ProgramInfoTests
     {
         var program = new ProgramInfo(1, 256);
 
-        long baseTicks = DateTime.UtcNow.Ticks;
-        bool violation = program.RecordPmtReception(baseTicks);
+        var baseTicks = DateTime.UtcNow.Ticks;
+        var violation = program.RecordPmtReception(baseTicks);
 
         Assert.False(violation);
         Assert.Equal(0, program.PmtIntervalViolations);
@@ -108,12 +109,12 @@ public sealed class ProgramInfoTests
     {
         var program = new ProgramInfo(1, 256);
 
-        long baseTicks = DateTime.UtcNow.Ticks;
-        program.RecordPmtReception(baseTicks);
+        var baseTicks = DateTime.UtcNow.Ticks;
+        _ = program.RecordPmtReception(baseTicks);
 
         // Exactly at 500ms boundary
-        long secondTicks = baseTicks + (500 * TimeSpan.TicksPerMillisecond);
-        bool violation = program.RecordPmtReception(secondTicks);
+        var secondTicks = baseTicks + (500 * TimeSpan.TicksPerMillisecond);
+        var violation = program.RecordPmtReception(secondTicks);
 
         Assert.False(violation);
         Assert.Equal(0, program.PmtIntervalViolations);
@@ -128,7 +129,7 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // First packet on PID 100 with any CC value is valid
-        bool valid = program.ValidateContinuityCounter(100, 5, hasPayload: true);
+        var valid = program.ValidateContinuityCounter(100, 5, hasPayload: true);
 
         Assert.True(valid);
     }
@@ -142,10 +143,10 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // Initialize with CC=0
-        program.ValidateContinuityCounter(100, 0, hasPayload: true);
+        _ = program.ValidateContinuityCounter(100, 0, hasPayload: true);
 
         // CC=1 should be valid
-        bool valid = program.ValidateContinuityCounter(100, 1, hasPayload: true);
+        var valid = program.ValidateContinuityCounter(100, 1, hasPayload: true);
 
         Assert.True(valid);
     }
@@ -159,10 +160,10 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // Set CC to 15
-        program.ValidateContinuityCounter(100, 15, hasPayload: true);
+        _ = program.ValidateContinuityCounter(100, 15, hasPayload: true);
 
         // CC=0 should be valid (wrap around)
-        bool valid = program.ValidateContinuityCounter(100, 0, hasPayload: true);
+        var valid = program.ValidateContinuityCounter(100, 0, hasPayload: true);
 
         Assert.True(valid);
     }
@@ -176,10 +177,10 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // Initialize with CC=0
-        program.ValidateContinuityCounter(100, 0, hasPayload: true);
+        _ = program.ValidateContinuityCounter(100, 0, hasPayload: true);
 
         // CC=5 should be invalid (expected 1)
-        bool valid = program.ValidateContinuityCounter(100, 5, hasPayload: true);
+        var valid = program.ValidateContinuityCounter(100, 5, hasPayload: true);
 
         Assert.False(valid);
         Assert.Equal(1, program.GetPacketLossCount(100));
@@ -194,10 +195,10 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // Initialize with CC=5
-        program.ValidateContinuityCounter(100, 5, hasPayload: true);
+        _ = program.ValidateContinuityCounter(100, 5, hasPayload: true);
 
         // Same CC without payload (adaptation-only) should be valid
-        bool valid = program.ValidateContinuityCounter(100, 5, hasPayload: false);
+        var valid = program.ValidateContinuityCounter(100, 5, hasPayload: false);
 
         Assert.True(valid);
     }
@@ -211,11 +212,11 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // Create discontinuities on two different PIDs
-        program.ValidateContinuityCounter(100, 0, hasPayload: true);
-        program.ValidateContinuityCounter(100, 5, hasPayload: true); // Loss on PID 100
+        _ = program.ValidateContinuityCounter(100, 0, hasPayload: true);
+        _ = program.ValidateContinuityCounter(100, 5, hasPayload: true); // Loss on PID 100
 
-        program.ValidateContinuityCounter(200, 0, hasPayload: true);
-        program.ValidateContinuityCounter(200, 10, hasPayload: true); // Loss on PID 200
+        _ = program.ValidateContinuityCounter(200, 0, hasPayload: true);
+        _ = program.ValidateContinuityCounter(200, 10, hasPayload: true); // Loss on PID 200
 
         Assert.Equal(2, program.GetTotalPacketLoss());
     }
@@ -229,8 +230,8 @@ public sealed class ProgramInfoTests
         var program = new ProgramInfo(1, 256);
 
         // Create some state
-        program.ValidateContinuityCounter(100, 0, hasPayload: true);
-        program.ValidateContinuityCounter(100, 5, hasPayload: true);
+        _ = program.ValidateContinuityCounter(100, 0, hasPayload: true);
+        _ = program.ValidateContinuityCounter(100, 5, hasPayload: true);
 
         Assert.Equal(1, program.GetTotalPacketLoss());
 
@@ -251,13 +252,13 @@ public sealed class ProgramInfoTests
 
         Assert.Equal(0, program.GetKeyframeCount());
 
-        program.IncrementKeyframeCount();
+        _ = program.IncrementKeyframeCount();
         Assert.Equal(1, program.GetKeyframeCount());
 
-        program.IncrementKeyframeCount();
+        _ = program.IncrementKeyframeCount();
         Assert.Equal(2, program.GetKeyframeCount());
 
-        program.DecrementKeyframeCount();
+        _ = program.DecrementKeyframeCount();
         Assert.Equal(1, program.GetKeyframeCount());
     }
 }

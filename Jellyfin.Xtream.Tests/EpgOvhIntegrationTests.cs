@@ -43,10 +43,7 @@ public sealed class EpgOvhIntegrationTests : IDisposable
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     }
 
-    public void Dispose()
-    {
-        _httpClient.Dispose();
-    }
+    public void Dispose() => _httpClient.Dispose();
 
     /// <summary>
     /// Tests that the Polish EPG XML is accessible and returns valid XML.
@@ -105,7 +102,7 @@ public sealed class EpgOvhIntegrationTests : IDisposable
         try
         {
             using var response = await _httpClient.GetAsync(PolishEpgUrl);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
 
             var stream = await response.Content.ReadAsStreamAsync();
 
@@ -187,7 +184,7 @@ public sealed class EpgOvhIntegrationTests : IDisposable
         try
         {
             using var response = await _httpClient.GetAsync(PolishEpgUrl);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
 
             var stream = await response.Content.ReadAsStreamAsync();
             var result = TurboXmltvParser.Parse(stream);
@@ -244,7 +241,7 @@ public sealed class EpgOvhIntegrationTests : IDisposable
         try
         {
             using var response = await _httpClient.GetAsync(PolishEpgUrl);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
 
             var content = await response.Content.ReadAsStringAsync();
 
@@ -307,7 +304,7 @@ public sealed class EpgOvhIntegrationTests : IDisposable
         try
         {
             using var response = await _httpClient.GetAsync(PolishEpgUrl);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
 
             var stream = await response.Content.ReadAsStreamAsync();
             var result = TurboXmltvParser.Parse(stream);
@@ -378,7 +375,7 @@ public sealed class EpgOvhIntegrationTests : IDisposable
                 // Verify it's an image
                 var contentType = response.Content.Headers.ContentType?.MediaType;
                 Assert.True(
-                    contentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true,
+                    contentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase),
                     $"Expected image content type, got: {contentType}"
                 );
             }
@@ -433,7 +430,7 @@ public sealed class EpgOvhIntegrationTests : IDisposable
             // 1. Fetch EPG data
             _output.WriteLine("1. Fetching EPG data from epg.ovh...");
             using var response = await _httpClient.GetAsync(PolishEpgUrl);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
             _output.WriteLine($"   Status: {response.StatusCode}");
 
             // 2. Parse with TurboXmltvParser
@@ -516,7 +513,7 @@ public sealed class EpgOvhIntegrationTests : IDisposable
         try
         {
             using var response = await _httpClient.GetAsync(PolishEpgUrl);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
 
             var stream = await response.Content.ReadAsStreamAsync();
             var result = TurboXmltvParser.Parse(stream);
@@ -572,9 +569,12 @@ public sealed class EpgOvhIntegrationTests : IDisposable
             }
 
             // All programs should have titles and valid dates
-            Assert.True(samplePrograms.All(p => !string.IsNullOrEmpty(p.Title)), "All programs should have titles");
             Assert.True(
-                samplePrograms.All(p => p.StartUtc > DateTime.MinValue),
+                samplePrograms.TrueForAll(p => !string.IsNullOrEmpty(p.Title)),
+                "All programs should have titles"
+            );
+            Assert.True(
+                samplePrograms.TrueForAll(p => p.StartUtc > DateTime.MinValue),
                 "All programs should have valid start times"
             );
         }
@@ -588,7 +588,9 @@ public sealed class EpgOvhIntegrationTests : IDisposable
     {
         try
         {
-            using var response = await _httpClient.GetAsync(EpgOvhBaseUrl, HttpCompletionOption.ResponseHeadersRead);
+            using var response = await _httpClient
+                .GetAsync(EpgOvhBaseUrl, HttpCompletionOption.ResponseHeadersRead)
+                .ConfigureAwait(false);
             return response.IsSuccessStatusCode;
         }
         catch

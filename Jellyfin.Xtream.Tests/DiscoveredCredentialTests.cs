@@ -233,7 +233,7 @@ public sealed class DiscoveredCredentialTests
             Password = "pass",
         };
 
-        Assert.False(credential.Equals(null));
+        Assert.False(credential.Equals(obj: null));
     }
 
     /// <summary>
@@ -327,7 +327,7 @@ public sealed class DiscoveredCredentialTests
 
         var set = new HashSet<DiscoveredCredential> { cred1, cred2 };
 
-        Assert.Single(set);
+        _ = Assert.Single(set);
     }
 
     /// <summary>

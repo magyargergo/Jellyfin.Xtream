@@ -21,7 +21,6 @@ using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.ChannelMatching;
 using Jellyfin.Xtream.Service.ProviderManagement;
-using Polly.CircuitBreaker;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -31,14 +30,9 @@ namespace Jellyfin.Xtream.Tests;
 /// Tests for ChannelProviderMap deduplication logic.
 /// Verifies that channels from multiple providers are correctly grouped by normalized name.
 /// </summary>
-public sealed class ChannelDeduplicationTests
+public sealed class ChannelDeduplicationTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
-
-    public ChannelDeduplicationTests(ITestOutputHelper output)
-    {
-        _output = output;
-    }
+    private readonly ITestOutputHelper _output = output;
 
     private static XtreamProvider CreateProvider(string id, string name) => new() { Id = id, Name = name };
 
@@ -258,8 +252,8 @@ public sealed class ChannelDeduplicationTests
         var channelWithoutService = mapWithoutService.Channels.First();
         Assert.Equal("TVN 4K", channelWithoutService.Providers[0].Stream.Name);
 
-        // With resilience service - Provider 1 has low health (10), Provider 2 has high (100)
-        var mockService = new MockResilienceService(
+        // With failover service - Provider 1 has low health (10), Provider 2 has high (100)
+        var mockService = new MockFailoverService(
             new Dictionary<string, int>(StringComparer.Ordinal) { ["p1"] = 10, ["p2"] = 100 }
         );
 
@@ -514,60 +508,80 @@ public sealed class ChannelDeduplicationTests
     }
 
     /// <summary>
-    /// Mock resilience service for testing.
+    /// Mock failover service for testing.
     /// </summary>
-    private sealed class MockResilienceService(
-        Dictionary<string, int> scores,
-        Dictionary<string, bool>? capacity = null
-    ) : IProviderAvailabilityService
+    private sealed class MockFailoverService(Dictionary<string, int> scores, Dictionary<string, bool>? capacity = null)
+        : IAutomaticFailoverService
     {
         private readonly Dictionary<string, int> _scores = scores;
         private readonly Dictionary<string, bool> _capacity =
             capacity ?? new Dictionary<string, bool>(StringComparer.Ordinal);
 
-        public bool IsAvailable(string providerId) => true;
+        public IHealthTrendTracker TrendTracker => new MockHealthTrendTracker();
 
-        public CircuitState GetCircuitState(string providerId) => CircuitState.Closed;
+        public IReadOnlyList<ProviderStreamInfo> GetOrderedProviders(IEnumerable<ProviderStreamInfo> providers) =>
+            [.. providers.OrderByDescending(p => GetSelectionScore(p.Provider.Id))];
+
+        public IReadOnlyList<ProviderHealthSummary> GetHealthSummaries(IEnumerable<XtreamProvider> providers) => [];
 
         public int GetSelectionScore(string providerId) => _scores.TryGetValue(providerId, out var score) ? score : 50;
 
-        public IReadOnlyList<ProviderStreamInfo> GetSortedProviders(
-            IEnumerable<ProviderStreamInfo> providers,
-            bool forceIncludeAll = false
-        ) => [.. providers.OrderByDescending(p => GetSelectionScore(p.Provider.Id))];
-
-        public void RecordSuccess(string providerId) { }
-
-        public bool RecordFailure(string providerId, ProviderFailureReason reason, string? providerName = null) =>
-            false;
-
-        public Task RecordConnectionLimitAsync(string providerId) => Task.CompletedTask;
-
-        public Task ResetCircuitAsync(string providerId) => Task.CompletedTask;
-
-        public IReadOnlyDictionary<string, ProviderResilienceState> GetSnapshot() =>
-            new Dictionary<string, ProviderResilienceState>(StringComparer.Ordinal);
-
-        public void UpdateCapacity(string providerId, int availableSlots, int maxConnections) { }
+        public bool IsAvailable(string providerId) => true;
 
         public bool HasCapacity(string providerId) =>
             !_capacity.TryGetValue(providerId, out var hasCapacity) || hasCapacity;
 
-        public bool IsCircuitAvailable(string providerId) => true;
+        public ProviderCircuitState GetCircuitState(string providerId) => ProviderCircuitState.Closed;
 
-        public Task IsolateCircuitAsync(string providerId) => Task.CompletedTask;
-
-        public int GetAvailableSlots(string providerId) => -1;
-
-        public int GetMaxConnections(string providerId) => 0;
-
-        public ProviderResilienceState? GetStatus(string providerId) => null;
+        public bool NeedsRefresh() => false;
 
         public Task RefreshAsync(
             IEnumerable<XtreamProvider> providers,
             CancellationToken cancellationToken = default
         ) => Task.CompletedTask;
 
-        public bool NeedsRefresh() => false;
+        public Task ResetCircuitAsync(string providerId) => Task.CompletedTask;
+
+        public IReadOnlyDictionary<string, ProviderResilienceState> GetProviderStates() =>
+            new Dictionary<string, ProviderResilienceState>(StringComparer.Ordinal);
+
+        public ProviderMetricsSnapshot GetMetricsSnapshot(string providerId) => ProviderMetricsSnapshot.Default;
+
+        public void RecordSuccess(string providerId) { }
+
+        public bool RecordFailure(string providerId, ProviderFailureReason reason, string? providerName = null) =>
+            false;
+
+        public IReadOnlyList<ProviderStreamInfo> GetSortedProviders(
+            IEnumerable<ProviderStreamInfo> providers,
+            bool forceIncludeAll = false
+        ) => [.. providers.OrderByDescending(p => GetSelectionScore(p.Provider.Id))];
+
+        public void RecordThroughput(string providerId, long bytes, long elapsedMs) { }
+
+        public void RecordError(string providerId, StreamErrorType errorType) { }
+
+        public int CalculateHealthScore(string providerId) => 100;
+    }
+
+    /// <summary>
+    /// Mock health trend tracker for testing.
+    /// </summary>
+    private sealed class MockHealthTrendTracker : IHealthTrendTracker
+    {
+        public void RecordSample(string providerId, int healthScore) { }
+
+        public int GetPredictedScore(string providerId, int secondsAhead = 60) => 100;
+
+        public HealthTrend GetTrend(string providerId) => HealthTrend.Stable;
+
+        public HealthTrendSnapshot GetSnapshot(string providerId) => default;
+
+        public IReadOnlyDictionary<string, HealthTrendSnapshot> GetAllSnapshots() =>
+            new Dictionary<string, HealthTrendSnapshot>(StringComparer.Ordinal);
+
+        public void Clear(string providerId) { }
+
+        public void ClearAll() { }
     }
 }

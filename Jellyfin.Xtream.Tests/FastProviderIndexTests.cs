@@ -40,7 +40,7 @@ public sealed class FastProviderIndexTests
     {
         var index = new FastProviderIndex();
 
-        int result = index.GetOrRegisterIndex("provider-1");
+        var result = index.GetOrRegisterIndex("provider-1");
 
         Assert.Equal(0, result);
         Assert.Equal(1, index.Count);
@@ -50,9 +50,9 @@ public sealed class FastProviderIndexTests
     public void GetOrRegisterIndex_SecondProvider_ReturnsOne()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
 
-        int result = index.GetOrRegisterIndex("provider-2");
+        var result = index.GetOrRegisterIndex("provider-2");
 
         Assert.Equal(1, result);
         Assert.Equal(2, index.Count);
@@ -62,9 +62,9 @@ public sealed class FastProviderIndexTests
     public void GetOrRegisterIndex_SameProvider_ReturnsSameIndex()
     {
         var index = new FastProviderIndex();
-        int first = index.GetOrRegisterIndex("provider-1");
+        var first = index.GetOrRegisterIndex("provider-1");
 
-        int second = index.GetOrRegisterIndex("provider-1");
+        var second = index.GetOrRegisterIndex("provider-1");
 
         Assert.Equal(first, second);
         Assert.Equal(1, index.Count);
@@ -74,9 +74,9 @@ public sealed class FastProviderIndexTests
     public void TryGetIndex_ExistingProvider_ReturnsTrue()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
 
-        bool result = index.TryGetIndex("provider-1", out int foundIndex);
+        var result = index.TryGetIndex("provider-1", out var foundIndex);
 
         Assert.True(result);
         Assert.Equal(0, foundIndex);
@@ -87,7 +87,7 @@ public sealed class FastProviderIndexTests
     {
         var index = new FastProviderIndex();
 
-        bool result = index.TryGetIndex("unknown", out _);
+        var result = index.TryGetIndex("unknown", out _);
 
         Assert.False(result);
     }
@@ -96,9 +96,9 @@ public sealed class FastProviderIndexTests
     public void GetProviderId_ValidIndex_ReturnsId()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
 
-        string? result = index.GetProviderId(0);
+        var result = index.GetProviderId(0);
 
         Assert.Equal("provider-1", result);
     }
@@ -108,7 +108,7 @@ public sealed class FastProviderIndexTests
     {
         var index = new FastProviderIndex();
 
-        string? result = index.GetProviderId(999);
+        var result = index.GetProviderId(999);
 
         Assert.Null(result);
     }
@@ -117,10 +117,10 @@ public sealed class FastProviderIndexTests
     public void SetScore_ValidIndex_UpdatesScore()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
 
         index.SetScore(0, 75);
-        int result = index.GetScore(0);
+        var result = index.GetScore(0);
 
         Assert.Equal(75, result);
     }
@@ -129,10 +129,10 @@ public sealed class FastProviderIndexTests
     public void SetScore_ByProviderId_UpdatesScore()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
 
-        bool updated = index.SetScore("provider-1", 80);
-        int result = index.GetScore("provider-1");
+        var updated = index.SetScore("provider-1", 80);
+        var result = index.GetScore("provider-1");
 
         Assert.True(updated);
         Assert.Equal(80, result);
@@ -143,7 +143,7 @@ public sealed class FastProviderIndexTests
     {
         var index = new FastProviderIndex();
 
-        bool result = index.SetScore("unknown", 50);
+        var result = index.SetScore("unknown", 50);
 
         Assert.False(result);
     }
@@ -152,9 +152,9 @@ public sealed class FastProviderIndexTests
     public void GetScore_NewProvider_ReturnsZero()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
 
-        int result = index.GetScore(0);
+        var result = index.GetScore(0);
 
         Assert.Equal(0, result);
     }
@@ -164,7 +164,7 @@ public sealed class FastProviderIndexTests
     {
         var index = new FastProviderIndex();
 
-        int result = index.GetScore(999);
+        var result = index.GetScore(999);
 
         Assert.Equal(0, result);
     }
@@ -174,7 +174,7 @@ public sealed class FastProviderIndexTests
     {
         var index = new FastProviderIndex();
 
-        int[] result = index.GetTopProviderIndices(5);
+        var result = index.GetTopProviderIndices(5);
 
         Assert.Empty(result);
     }
@@ -183,12 +183,12 @@ public sealed class FastProviderIndexTests
     public void GetTopProviderIndices_SingleProvider_ReturnsSingle()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
         index.SetScore(0, 50);
 
-        int[] result = index.GetTopProviderIndices(5);
+        var result = index.GetTopProviderIndices(5);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal(0, result[0]);
     }
 
@@ -196,14 +196,14 @@ public sealed class FastProviderIndexTests
     public void GetTopProviderIndices_SortsByScoreDescending()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("low");
-        index.GetOrRegisterIndex("high");
-        index.GetOrRegisterIndex("medium");
+        _ = index.GetOrRegisterIndex("low");
+        _ = index.GetOrRegisterIndex("high");
+        _ = index.GetOrRegisterIndex("medium");
         index.SetScore(0, 25);
         index.SetScore(1, 100);
         index.SetScore(2, 50);
 
-        int[] result = index.GetTopProviderIndices(3);
+        var result = index.GetTopProviderIndices(3);
 
         Assert.Equal(3, result.Length);
         Assert.Equal(1, result[0]); // high (100)
@@ -215,13 +215,13 @@ public sealed class FastProviderIndexTests
     public void GetTopProviderIndices_LimitsResults()
     {
         var index = new FastProviderIndex();
-        for (int i = 0; i < 10; i++)
+        for (var i = 0; i < 10; i++)
         {
-            index.GetOrRegisterIndex($"provider-{i}");
+            _ = index.GetOrRegisterIndex($"provider-{i}");
             index.SetScore(i, i * 10);
         }
 
-        int[] result = index.GetTopProviderIndices(3);
+        var result = index.GetTopProviderIndices(3);
 
         Assert.Equal(3, result.Length);
     }
@@ -230,9 +230,9 @@ public sealed class FastProviderIndexTests
     public void GetMillisSinceUpdate_NeverUpdated_ReturnsMaxValue()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
 
-        long result = index.GetMillisSinceUpdate(0);
+        var result = index.GetMillisSinceUpdate(0);
 
         Assert.Equal(long.MaxValue, result);
     }
@@ -241,10 +241,10 @@ public sealed class FastProviderIndexTests
     public void GetMillisSinceUpdate_AfterSetScore_ReturnsSmallValue()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
         index.SetScore(0, 50);
 
-        long result = index.GetMillisSinceUpdate(0);
+        var result = index.GetMillisSinceUpdate(0);
 
         Assert.True(result < 1000); // Should be less than 1 second
     }
@@ -253,10 +253,10 @@ public sealed class FastProviderIndexTests
     public void IsScoreStale_RecentUpdate_ReturnsFalse()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
         index.SetScore(0, 50);
 
-        bool result = index.IsScoreStale(0, 30000);
+        var result = index.IsScoreStale(0, 30000);
 
         Assert.False(result);
     }
@@ -265,9 +265,9 @@ public sealed class FastProviderIndexTests
     public void IsScoreStale_NeverUpdated_ReturnsTrue()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
 
-        bool result = index.IsScoreStale(0, 30000);
+        var result = index.IsScoreStale(0, 30000);
 
         Assert.True(result);
     }
@@ -276,8 +276,8 @@ public sealed class FastProviderIndexTests
     public void ClearScores_ResetsAllScores()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
-        index.GetOrRegisterIndex("provider-2");
+        _ = index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-2");
         index.SetScore(0, 75);
         index.SetScore(1, 50);
 
@@ -291,11 +291,11 @@ public sealed class FastProviderIndexTests
     public void GetAllProviderIds_ReturnsAllRegistered()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
-        index.GetOrRegisterIndex("provider-2");
-        index.GetOrRegisterIndex("provider-3");
+        _ = index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-2");
+        _ = index.GetOrRegisterIndex("provider-3");
 
-        ReadOnlySpan<string> result = index.GetAllProviderIds();
+        var result = index.GetAllProviderIds();
 
         Assert.Equal(3, result.Length);
     }
@@ -304,12 +304,12 @@ public sealed class FastProviderIndexTests
     public void GetAllScores_ReturnsAllScores()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
-        index.GetOrRegisterIndex("provider-2");
+        _ = index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-2");
         index.SetScore(0, 75);
         index.SetScore(1, 50);
 
-        ReadOnlySpan<int> result = index.GetAllScores();
+        var result = index.GetAllScores();
 
         Assert.Equal(2, result.Length);
         Assert.Equal(75, result[0]);
@@ -322,13 +322,13 @@ public sealed class FastProviderIndexTests
         var index = new FastProviderIndex();
         var tasks = new Task<int>[100];
 
-        for (int i = 0; i < 100; i++)
+        for (var i = 0; i < 100; i++)
         {
-            int capturedI = i;
+            var capturedI = i;
             tasks[i] = Task.Run(() => index.GetOrRegisterIndex($"provider-{capturedI % 10}"));
         }
 
-        await Task.WhenAll(tasks);
+        _ = await Task.WhenAll(tasks);
 
         // Should have exactly 10 unique providers
         Assert.Equal(10, index.Count);
@@ -338,20 +338,20 @@ public sealed class FastProviderIndexTests
     public async Task ConcurrentScoreUpdates_ThreadSafe()
     {
         var index = new FastProviderIndex();
-        index.GetOrRegisterIndex("provider-1");
+        _ = index.GetOrRegisterIndex("provider-1");
         var tasks = new Task[1000];
 
-        for (int i = 0; i < 1000; i++)
+        for (var i = 0; i < 1000; i++)
         {
-            int score = i;
+            var score = i;
             tasks[i] = Task.Run(() => index.SetScore(0, score));
         }
 
         await Task.WhenAll(tasks);
 
         // Score should be one of the values set (thread-safe, last write wins)
-        int finalScore = index.GetScore(0);
-        Assert.True(finalScore >= 0 && finalScore < 1000);
+        var finalScore = index.GetScore(0);
+        Assert.True(finalScore is >= 0 and < 1000);
     }
 
     [Fact]
@@ -360,15 +360,15 @@ public sealed class FastProviderIndexTests
         var index = new FastProviderIndex();
 
         // Register more providers than initial capacity (16)
-        for (int i = 0; i < 20; i++)
+        for (var i = 0; i < 20; i++)
         {
-            index.GetOrRegisterIndex($"provider-{i}");
+            _ = index.GetOrRegisterIndex($"provider-{i}");
         }
 
         Assert.Equal(20, index.Count);
 
         // Verify all providers are accessible
-        for (int i = 0; i < 20; i++)
+        for (var i = 0; i < 20; i++)
         {
             Assert.Equal($"provider-{i}", index.GetProviderId(i));
         }

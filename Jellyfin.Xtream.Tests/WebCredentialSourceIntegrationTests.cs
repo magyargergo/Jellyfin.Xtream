@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+using System.Text.RegularExpressions;
 using Jellyfin.Xtream.Service.Discovery;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -26,16 +27,10 @@ namespace Jellyfin.Xtream.Tests;
 /// These tests are skipped by default since they require network access.
 /// Set the environment variable RUN_INTEGRATION_TESTS=true to run them.
 /// </summary>
-public sealed class WebCredentialSourceIntegrationTests
+public sealed partial class WebCredentialSourceIntegrationTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
-    private readonly bool _runIntegrationTests;
-
-    public WebCredentialSourceIntegrationTests(ITestOutputHelper output)
-    {
-        _output = output;
-        _runIntegrationTests = Environment.GetEnvironmentVariable("RUN_INTEGRATION_TESTS") == "true";
-    }
+    private readonly ITestOutputHelper _output = output;
+    private readonly bool _runIntegrationTests = Environment.GetEnvironmentVariable("RUN_INTEGRATION_TESTS") == "true";
 
     /// <summary>
     /// Tests discovering credentials from the real tvappapk.com website.
@@ -77,7 +72,7 @@ public sealed class WebCredentialSourceIntegrationTests
         );
 
         // Assert & Output
-        _output.WriteLine($"\n=== Discovery Results ===");
+        _output.WriteLine("\n=== Discovery Results ===");
         _output.WriteLine($"Success: {result.Success}");
         _output.WriteLine($"Pages Processed: {result.PagesProcessed}");
         _output.WriteLine($"Pages Failed: {result.PagesFailed}");
@@ -91,7 +86,7 @@ public sealed class WebCredentialSourceIntegrationTests
 
         if (result.Credentials.Count > 0)
         {
-            _output.WriteLine($"\n=== Sample Credentials (first 10) ===");
+            _output.WriteLine("\n=== Sample Credentials (first 10) ===");
             foreach (var cred in result.Credentials.Take(10))
             {
                 _output.WriteLine($"  Server: {cred.Server}:{cred.Port}");
@@ -169,17 +164,18 @@ public sealed class WebCredentialSourceIntegrationTests
         using var source = new WebCredentialSource(httpClient, parser, logger);
 
         using var cts = new CancellationTokenSource();
-
+        await
         // Cancel immediately
-        cts.Cancel();
+        cts.CancelAsync();
 
         // Act & Assert - TaskCanceledException derives from OperationCanceledException
         var startDate = DateTime.UtcNow.Date.AddDays(-7);
         var endDate = DateTime.UtcNow.Date;
         var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-        {
-            await source.DiscoverAsync(startDate, endDate, maxWorkers: 5, progress: null, cancellationToken: cts.Token);
-        });
+            _ = await source
+                .DiscoverAsync(startDate, endDate, maxWorkers: 5, progress: null, cancellationToken: cts.Token)
+                .ConfigureAwait(false)
+        );
 
         _output.WriteLine($"Cancellation handled correctly: {ex.GetType().Name}");
     }
@@ -207,7 +203,7 @@ public sealed class WebCredentialSourceIntegrationTests
         var parser = new CredentialParser();
 
         // Fetch the category page first
-        var categoryUrl = "https://www.tvappapk.com/tag/xtream-codes/";
+        const string categoryUrl = "https://www.tvappapk.com/tag/xtream-codes/";
         _output.WriteLine($"Fetching category page: {categoryUrl}");
 
         try
@@ -220,10 +216,7 @@ public sealed class WebCredentialSourceIntegrationTests
             _output.WriteLine($"Credentials found in category page: {categoryCredentials.Count}");
 
             // Try to find daily list links
-            var linkPattern = new System.Text.RegularExpressions.Regex(
-                @"href=[""']([^""']*xtream-codes[^""']*daily[^""']*)[""']",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase
-            );
+            var linkPattern = MyRegex();
 
             var matches = linkPattern.Matches(categoryHtml);
             _output.WriteLine($"Daily list links found: {matches.Count}");
@@ -258,4 +251,11 @@ public sealed class WebCredentialSourceIntegrationTests
             // Don't fail the test - the site might be down
         }
     }
+
+    [GeneratedRegexAttribute(
+        @"href=[""']([^""']*xtream-codes[^""']*daily[^""']*)[""']",
+        RegexOptions.IgnoreCase,
+        "en-GB"
+    )]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

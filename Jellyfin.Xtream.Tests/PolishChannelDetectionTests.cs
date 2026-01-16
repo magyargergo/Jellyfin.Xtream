@@ -198,7 +198,7 @@ public sealed class PolishChannelDetectionTests
         var result = IsPolishChannel(channelName);
 
         // Assert
-        Assert.False(result, $"Expected empty/whitespace to NOT be detected as Polish");
+        Assert.False(result, "Expected empty/whitespace to NOT be detected as Polish");
     }
 
     /// <summary>

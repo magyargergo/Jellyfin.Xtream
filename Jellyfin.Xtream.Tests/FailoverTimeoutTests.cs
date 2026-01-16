@@ -32,64 +32,52 @@ public sealed class FailoverTimeoutTests
     /// Verifies default connection timeout is 5 seconds (industry standard: 1-5s).
     /// </summary>
     [Fact]
-    public void DefaultConnectTimeout_ShouldBe5Seconds()
-    {
+    public void DefaultConnectTimeout_ShouldBe5Seconds() =>
         Assert.Equal(5000, StreamingTimeoutPolicy.DefaultConnectTimeoutMs);
-    }
 
     /// <summary>
     /// Verifies default first byte timeout is 5 seconds.
     /// </summary>
     [Fact]
-    public void DefaultFirstByteTimeout_ShouldBe5Seconds()
-    {
+    public void DefaultFirstByteTimeout_ShouldBe5Seconds() =>
         Assert.Equal(5000, StreamingTimeoutPolicy.DefaultFirstByteTimeoutMs);
-    }
 
     /// <summary>
-    /// Verifies default data stall timeout is 10 seconds (industry standard: 10-20s).
+    /// Verifies default data stall timeout is 20 seconds.
+    /// For MPEG-TS persistent TCP streams, 20s accommodates bursty IPTV providers
+    /// that deliver data in irregular intervals (5-15s gaps common during congestion).
     /// </summary>
     [Fact]
-    public void DefaultDataStallTimeout_ShouldBe10Seconds()
-    {
-        Assert.Equal(10000, StreamingTimeoutPolicy.DefaultDataStallTimeoutMs);
-    }
+    public void DefaultDataStallTimeout_ShouldBe20Seconds() =>
+        Assert.Equal(20000, StreamingTimeoutPolicy.DefaultDataStallTimeoutMs);
 
     /// <summary>
     /// Verifies default failover budget is 15 seconds (suitable for IPTV live TV scenarios).
     /// </summary>
     [Fact]
-    public void DefaultFailoverBudget_ShouldBe15Seconds()
-    {
+    public void DefaultFailoverBudget_ShouldBe15Seconds() =>
         Assert.Equal(15000, StreamingTimeoutPolicy.DefaultFailoverBudgetMs);
-    }
 
     /// <summary>
     /// Verifies default blacklist duration is 30 seconds (reduced from 2 minutes).
     /// </summary>
     [Fact]
-    public void DefaultBlacklistDuration_ShouldBe30Seconds()
-    {
+    public void DefaultBlacklistDuration_ShouldBe30Seconds() =>
         Assert.Equal(30000, StreamingTimeoutPolicy.DefaultBlacklistDurationMs);
-    }
 
     /// <summary>
     /// Verifies extended blacklist duration is 60 seconds (reduced from 5 minutes).
     /// </summary>
     [Fact]
-    public void ExtendedBlacklistDuration_ShouldBe60Seconds()
-    {
+    public void ExtendedBlacklistDuration_ShouldBe60Seconds() =>
         Assert.Equal(60000, StreamingTimeoutPolicy.ExtendedBlacklistDurationMs);
-    }
 
     /// <summary>
     /// Verifies quick blacklist duration is 10 seconds for transient errors.
     /// </summary>
     [Fact]
-    public void QuickBlacklistDuration_ShouldBe10Seconds()
-    {
+    public void QuickBlacklistDuration_ShouldBe10Seconds() =>
         Assert.Equal(10000, StreamingTimeoutPolicy.QuickBlacklistDurationMs);
-    }
 
     /// <summary>
     /// Verifies failover backoff uses fast exponential progression.
@@ -104,7 +92,7 @@ public sealed class FailoverTimeoutTests
     [InlineData(10, 1000)] // High attempt: still capped at 1000ms
     public void CalculateFailoverBackoff_ShouldUseFastExponential(int attemptNumber, int expectedMs)
     {
-        int actual = StreamingTimeoutPolicy.CalculateFailoverBackoff(attemptNumber);
+        var actual = StreamingTimeoutPolicy.CalculateFailoverBackoff(attemptNumber);
         Assert.Equal(expectedMs, actual);
     }
 
@@ -114,10 +102,10 @@ public sealed class FailoverTimeoutTests
     [Fact]
     public void GetStreamOpenTimeoutMs_ShouldCombineConnectAndFirstByte()
     {
-        int expected =
+        const int expected =
             StreamingTimeoutPolicy.DefaultConnectTimeoutMs + StreamingTimeoutPolicy.DefaultFirstByteTimeoutMs;
         var config = new PluginConfiguration();
-        int actual = StreamingTimeoutPolicy.GetStreamOpenTimeoutMs(config);
+        var actual = StreamingTimeoutPolicy.GetStreamOpenTimeoutMs(config);
         Assert.Equal(expected, actual);
         Assert.Equal(10000, actual); // 5s + 5s = 10s
     }
@@ -129,7 +117,7 @@ public sealed class FailoverTimeoutTests
     public void GetConnectTimeoutMs_WithConfig_ShouldUseConfigValue()
     {
         var config = new PluginConfiguration { StreamConnectTimeoutSeconds = 7 };
-        int actual = StreamingTimeoutPolicy.GetConnectTimeoutMs(config);
+        var actual = StreamingTimeoutPolicy.GetConnectTimeoutMs(config);
         Assert.Equal(7000, actual);
     }
 
@@ -140,7 +128,7 @@ public sealed class FailoverTimeoutTests
     public void GetConnectTimeoutMs_WithZeroConfig_ShouldUseDefault()
     {
         var config = new PluginConfiguration { StreamConnectTimeoutSeconds = 0 };
-        int actual = StreamingTimeoutPolicy.GetConnectTimeoutMs(config);
+        var actual = StreamingTimeoutPolicy.GetConnectTimeoutMs(config);
         Assert.Equal(StreamingTimeoutPolicy.DefaultConnectTimeoutMs, actual);
     }
 
@@ -151,7 +139,7 @@ public sealed class FailoverTimeoutTests
     public void GetFirstByteTimeoutMs_WithConfig_ShouldUseConfigValue()
     {
         var config = new PluginConfiguration { StreamFirstByteTimeoutSeconds = 3 };
-        int actual = StreamingTimeoutPolicy.GetFirstByteTimeoutMs(config);
+        var actual = StreamingTimeoutPolicy.GetFirstByteTimeoutMs(config);
         Assert.Equal(3000, actual);
     }
 
@@ -162,7 +150,7 @@ public sealed class FailoverTimeoutTests
     public void GetDataStallTimeoutMs_WithConfig_ShouldUseConfigValue()
     {
         var config = new PluginConfiguration { StreamDataStallTimeoutSeconds = 15 };
-        int actual = StreamingTimeoutPolicy.GetDataStallTimeoutMs(config);
+        var actual = StreamingTimeoutPolicy.GetDataStallTimeoutMs(config);
         Assert.Equal(15000, actual);
     }
 
@@ -173,7 +161,7 @@ public sealed class FailoverTimeoutTests
     public void GetFailoverBudgetMs_WithConfig_ShouldUseConfigValue()
     {
         var config = new PluginConfiguration { FailoverBudgetSeconds = 8 };
-        int actual = StreamingTimeoutPolicy.GetFailoverBudgetMs(config);
+        var actual = StreamingTimeoutPolicy.GetFailoverBudgetMs(config);
         Assert.Equal(8000, actual);
     }
 
@@ -195,7 +183,7 @@ public sealed class FailoverTimeoutTests
     public void GetMaxFailoverAttempts_WithConfig_ShouldUseConfigValue()
     {
         var config = new PluginConfiguration { MaxFailoverAttempts = 6 };
-        int actual = StreamingTimeoutPolicy.GetMaxFailoverAttempts(config);
+        var actual = StreamingTimeoutPolicy.GetMaxFailoverAttempts(config);
         Assert.Equal(6, actual);
     }
 
@@ -206,7 +194,7 @@ public sealed class FailoverTimeoutTests
     public void GetMaxFailoverAttempts_WithZeroConfig_ShouldUseDefault()
     {
         var config = new PluginConfiguration { MaxFailoverAttempts = 0 };
-        int actual = StreamingTimeoutPolicy.GetMaxFailoverAttempts(config);
+        var actual = StreamingTimeoutPolicy.GetMaxFailoverAttempts(config);
         Assert.Equal(StreamingTimeoutPolicy.DefaultMaxFailoverAttempts, actual);
     }
 
@@ -217,7 +205,7 @@ public sealed class FailoverTimeoutTests
     public void GetConnectTimeoutMs_WithEmptyConfig_ShouldUseDefault()
     {
         var config = new PluginConfiguration();
-        int actual = StreamingTimeoutPolicy.GetConnectTimeoutMs(config);
+        var actual = StreamingTimeoutPolicy.GetConnectTimeoutMs(config);
         Assert.Equal(StreamingTimeoutPolicy.DefaultConnectTimeoutMs, actual);
     }
 
@@ -242,59 +230,45 @@ public sealed class FailoverTimeoutTests
     }
 
     /// <summary>
-    /// Verifies blacklist threshold is 3 consecutive failures.
+    /// Verifies blacklist threshold is 2 consecutive failures.
+    /// Reduced from 3 for faster failover per Polly best practices.
+    /// At 20s stall detection, 2 failures = 40s before switch vs 60s with 3.
     /// </summary>
     [Fact]
-    public void BlacklistThreshold_ShouldBe3()
-    {
-        Assert.Equal(3, StreamingTimeoutPolicy.BlacklistThreshold);
-    }
+    public void BlacklistThreshold_ShouldBe2() => Assert.Equal(2, StreamingTimeoutPolicy.BlacklistThreshold);
 
     /// <summary>
     /// Verifies default max failover attempts is 4.
     /// </summary>
     [Fact]
-    public void DefaultMaxFailoverAttempts_ShouldBe4()
-    {
+    public void DefaultMaxFailoverAttempts_ShouldBe4() =>
         Assert.Equal(4, StreamingTimeoutPolicy.DefaultMaxFailoverAttempts);
-    }
 
     /// <summary>
     /// Verifies reconnect delay constant.
     /// </summary>
     [Fact]
-    public void ReconnectDelayMs_ShouldBe500()
-    {
-        Assert.Equal(500, StreamingTimeoutPolicy.ReconnectDelayMs);
-    }
+    public void ReconnectDelayMs_ShouldBe500() => Assert.Equal(500, StreamingTimeoutPolicy.ReconnectDelayMs);
 
     /// <summary>
     /// Verifies failover delay base constant.
     /// </summary>
     [Fact]
-    public void FailoverDelayBaseMs_ShouldBe200()
-    {
-        Assert.Equal(200, StreamingTimeoutPolicy.FailoverDelayBaseMs);
-    }
+    public void FailoverDelayBaseMs_ShouldBe200() => Assert.Equal(200, StreamingTimeoutPolicy.FailoverDelayBaseMs);
 
     /// <summary>
     /// Verifies failover delay max constant.
     /// </summary>
     [Fact]
-    public void FailoverDelayMaxMs_ShouldBe1000()
-    {
-        Assert.Equal(1000, StreamingTimeoutPolicy.FailoverDelayMaxMs);
-    }
+    public void FailoverDelayMaxMs_ShouldBe1000() => Assert.Equal(1000, StreamingTimeoutPolicy.FailoverDelayMaxMs);
 
     /// <summary>
     /// Verifies minimum per-attempt timeout constant.
     /// IPTV providers often have slow initial response times (3-5s is common).
     /// </summary>
     [Fact]
-    public void MinPerAttemptTimeoutMs_ShouldBe5000()
-    {
+    public void MinPerAttemptTimeoutMs_ShouldBe5000() =>
         Assert.Equal(5000, StreamingTimeoutPolicy.MinPerAttemptTimeoutMs);
-    }
 
     /// <summary>
     /// Verifies per-attempt timeout divides budget fairly among attempts.
@@ -314,7 +288,7 @@ public sealed class FailoverTimeoutTests
     )
     {
         var config = new PluginConfiguration();
-        int actual = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(remainingBudgetMs, attemptsRemaining, config);
+        var actual = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(remainingBudgetMs, attemptsRemaining, config);
         Assert.Equal(expectedMs, actual);
     }
 
@@ -326,10 +300,10 @@ public sealed class FailoverTimeoutTests
     public void CalculatePerAttemptTimeout_ShouldNotExceedStreamOpenTimeout()
     {
         var config = new PluginConfiguration();
-        int streamOpenTimeout = StreamingTimeoutPolicy.GetStreamOpenTimeoutMs(config);
+        var streamOpenTimeout = StreamingTimeoutPolicy.GetStreamOpenTimeoutMs(config);
 
         // With 30s budget and 1 attempt, would get 30s but capped at 10s
-        int actual = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(30000, 1, config);
+        var actual = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(30000, 1, config);
 
         Assert.Equal(streamOpenTimeout, actual);
         Assert.Equal(10000, actual);
@@ -344,7 +318,7 @@ public sealed class FailoverTimeoutTests
     public void CalculatePerAttemptTimeout_WithNoBudget_ShouldReturnZero(int remainingBudgetMs, int attemptsRemaining)
     {
         var config = new PluginConfiguration();
-        int actual = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(remainingBudgetMs, attemptsRemaining, config);
+        var actual = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(remainingBudgetMs, attemptsRemaining, config);
         Assert.Equal(0, actual);
     }
 
@@ -355,7 +329,7 @@ public sealed class FailoverTimeoutTests
     public void CalculatePerAttemptTimeout_WithZeroAttempts_ShouldUseFullBudget()
     {
         var config = new PluginConfiguration();
-        int actual = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(5000, 0, config);
+        var actual = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(5000, 0, config);
         // With 0 attempts remaining, uses full budget (capped at stream open timeout)
         Assert.Equal(5000, actual);
     }
@@ -376,11 +350,11 @@ public sealed class FailoverTimeoutTests
         // Remaining for actual attempts: 15000 - 1400 = 13600ms
         // Each attempt timeout capped by stream open timeout (10s)
 
-        int budget = StreamingTimeoutPolicy.DefaultFailoverBudgetMs;
-        int maxAttempts = StreamingTimeoutPolicy.DefaultMaxFailoverAttempts;
-        int totalBackoff = 0;
+        const int budget = StreamingTimeoutPolicy.DefaultFailoverBudgetMs;
+        const int maxAttempts = StreamingTimeoutPolicy.DefaultMaxFailoverAttempts;
+        var totalBackoff = 0;
 
-        for (int i = 1; i <= maxAttempts; i++)
+        for (var i = 1; i <= maxAttempts; i++)
         {
             totalBackoff += StreamingTimeoutPolicy.CalculateFailoverBackoff(i);
         }
@@ -401,15 +375,15 @@ public sealed class FailoverTimeoutTests
     public void RealisticFailover_ShouldAllowMultipleAttempts()
     {
         var config = new PluginConfiguration();
-        int budget = StreamingTimeoutPolicy.DefaultFailoverBudgetMs;
-        int maxAttempts = StreamingTimeoutPolicy.DefaultMaxFailoverAttempts;
+        const int budget = StreamingTimeoutPolicy.DefaultFailoverBudgetMs;
+        const int maxAttempts = StreamingTimeoutPolicy.DefaultMaxFailoverAttempts;
 
         // Simulate failover loop
-        int remainingBudget = budget;
-        int attemptsMade = 0;
-        int totalTimeUsed = 0;
+        var remainingBudget = budget;
+        var attemptsMade = 0;
+        var totalTimeUsed = 0;
 
-        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             if (remainingBudget <= 0)
             {
@@ -419,7 +393,7 @@ public sealed class FailoverTimeoutTests
             // Add backoff delay (not on first attempt)
             if (attempt > 1)
             {
-                int backoff = StreamingTimeoutPolicy.CalculateFailoverBackoff(attempt);
+                var backoff = StreamingTimeoutPolicy.CalculateFailoverBackoff(attempt);
                 remainingBudget -= backoff;
                 totalTimeUsed += backoff;
             }
@@ -430,8 +404,8 @@ public sealed class FailoverTimeoutTests
             }
 
             // Calculate per-attempt timeout
-            int attemptsRemaining = maxAttempts - attempt + 1;
-            int perAttemptTimeout = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(
+            var attemptsRemaining = maxAttempts - attempt + 1;
+            var perAttemptTimeout = StreamingTimeoutPolicy.CalculatePerAttemptTimeout(
                 remainingBudget,
                 attemptsRemaining,
                 config
