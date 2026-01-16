@@ -23,19 +23,26 @@ using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.MpegTs.Core;
+using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
+using Jellyfin.Xtream.Service.MpegTs.Models;
+using Jellyfin.Xtream.Service.MpegTs.UseCases;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service;
 
 /// <summary>
+/// <para>
 /// Circular buffer write stream with self-overwriting behavior.
 /// Ultra-optimized using unsafe code, direct memory operations, SIMD vectorization, and aggressive inlining.
 /// Optimized for multi-core systems with cache-line awareness and hardware acceleration.
-///
+/// </para>
+/// <para>
 /// Thread Safety: This class is designed for SINGLE WRITER, MULTIPLE READERS pattern.
 /// - Only ONE thread should write at a time.
 /// - Multiple threads can read concurrently via CircularBufferReadStream.
 /// - Uses memory barriers and atomic operations to ensure visibility across cores.
+/// </para>
 /// </summary>
 public sealed class CircularBufferWriteStream : Stream
 {
@@ -73,7 +80,13 @@ public sealed class CircularBufferWriteStream : Stream
     private volatile bool _isSourceConnected;
     private volatile bool _isReconnecting;
     private CacheLinePaddedInt _reconnectionAttempts;
-    private DateTime _lastWriteTime;
+
+    // Track last reader position for continuity between FFprobe and FFmpeg
+    // When a reader disconnects, it records its position here so the next reader can continue
+    private CacheLinePadded _lastReaderPosition;
+
+    // FFmpeg demuxer for program detection - owned by this stream, passed to TsIndexer
+    private readonly FFmpegStreamDemuxer? _demuxer;
 
     /// <summary>
     /// Gets the maximal size in bytes of read/write chunks.
@@ -135,17 +148,139 @@ public sealed class CircularBufferWriteStream : Stream
     /// Gets the time of the last successful write (UTC).
     /// Used by readers to detect stale connections.
     /// </summary>
-    public DateTime LastWriteTime => _lastWriteTime;
+    public DateTime LastWriteTime { get; private set; }
+
+    /// <summary>
+    /// Gets the last known reader position for continuity between consecutive readers.
+    /// Used when FFmpeg connects after FFprobe to continue from where FFprobe left off.
+    /// </summary>
+    public long LastReaderPosition => Volatile.Read(ref _lastReaderPosition.Value);
+
+    /// <summary>
+    /// Gets the time when the last reader disconnected.
+    /// </summary>
+    public DateTime LastReaderDisconnectTime { get; private set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the FFmpeg demuxer has completed initialization.
+    /// The demuxer needs to probe enough data to detect programs and streams before
+    /// it can provide video PID and keyframe information for stream alignment.
+    /// </summary>
+    /// <remarks>
+    /// Returns true if:
+    /// - FFmpeg demuxer is available and has completed <c>avformat_find_stream_info</c>
+    /// - At least one program has been detected (ProgramCount > 0)
+    /// Returns false if:
+    /// - FFmpeg demuxer is not available (IsAvailable was false)
+    /// - Demuxer is still initializing (probing stream data)
+    /// </remarks>
+    public bool IsDemuxerInitialized => _demuxer?.IsInitialized == true && _demuxer.ProgramCount > 0;
+
+    /// <summary>
+    /// Records a reader's final position when it disconnects.
+    /// The next reader can use this to continue from the same position.
+    /// </summary>
+    /// <param name="position">The reader's final read head position.</param>
+    public void RecordReaderDisconnect(long position)
+    {
+        _ = Interlocked.Exchange(ref _lastReaderPosition.Value, position);
+        LastReaderDisconnectTime = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Consumes the last reader position if it's recent (within threshold).
+    /// Returns -1 if no recent reader position is available.
+    /// </summary>
+    /// <param name="maxAgeMs">Maximum age in milliseconds for the position to be considered valid.</param>
+    /// <returns>The last reader position, or -1 if not available or too old.</returns>
+    public long ConsumeLastReaderPosition(int maxAgeMs = 10000)
+    {
+        var position = Volatile.Read(ref _lastReaderPosition.Value);
+        if (position <= 0)
+        {
+            return -1;
+        }
+
+        // Check if the position is recent enough
+        var age = DateTime.UtcNow - LastReaderDisconnectTime;
+        if (age.TotalMilliseconds > maxAgeMs)
+        {
+            return -1;
+        }
+
+        // Check if position is still within valid buffer range
+        var totalWritten = TotalBytesWritten;
+        var minValidOffset = totalWritten - BufferSize + 524288; // 512KB safety margin
+
+        if (position < minValidOffset || position > totalWritten)
+        {
+            return -1;
+        }
+
+        // Clear the position so it's only used once
+        _ = Interlocked.Exchange(ref _lastReaderPosition.Value, 0);
+        return position;
+    }
+
+    /// <summary>
+    /// Gets the cached parameter sets (SPS/PPS) for the specified program, or null if not available.
+    /// </summary>
+    /// <param name="programNumber">The program number, or -1 for the first detected program.</param>
+    /// <returns>A CachedParameterSets instance if extradata is available; null otherwise.</returns>
+    public CachedParameterSets? GetCachedParameterSets(int programNumber = -1)
+    {
+        if (_demuxer == null)
+        {
+            return null;
+        }
+
+        var programs = _demuxer.Programs;
+        if (programs.Count == 0)
+        {
+            return null;
+        }
+
+        // Find the requested program or use the first one
+        FFmpegProgramInfo? programInfo = null;
+        if (programNumber >= 0 && programs.TryGetValue(programNumber, out var found))
+        {
+            programInfo = found;
+        }
+        else
+        {
+            // Use the first available program
+            foreach (var kvp in programs)
+            {
+                programInfo = kvp.Value;
+                break;
+            }
+        }
+
+        if (programInfo?.VideoExtradata == null || programInfo.VideoExtradata.Length == 0)
+        {
+            return null;
+        }
+
+        // Parse the AVCC/HVCC/Annex B extradata into NAL units using FFmpeg bitstream filter
+        // Falls back to manual parsing if FFmpeg is not available
+        var cache = new CachedParameterSets();
+        if (FFmpegParameterSetExtractor.Extract(programInfo.VideoExtradata, programInfo.VideoCodecId, cache))
+        {
+            return cache;
+        }
+
+        return null;
+    }
 
     /// <inheritdoc />
     public override long Position
     {
         get
         {
-            long written = TotalBytesWritten;
+            var written = TotalBytesWritten;
             return _isPowerOfTwo ? (written & _bufferMask) : (written % BufferSize);
         }
-        set { throw new NotSupportedException(); }
+        set => throw new NotSupportedException();
     }
 
     /// <inheritdoc />
@@ -158,42 +293,76 @@ public sealed class CircularBufferWriteStream : Stream
     public override bool CanSeek => false;
 
     /// <inheritdoc />
-    public override long Length
-    {
-        get { throw new NotSupportedException(); }
-    }
+    public override long Length => throw new NotSupportedException();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CircularBufferWriteStream"/> class.
     /// </summary>
     /// <param name="bufferSize">Size in bytes of the internal buffer.</param>
     /// <param name="loggerFactory">Optional logger factory for creating loggers.</param>
-    public CircularBufferWriteStream(int bufferSize, ILoggerFactory? loggerFactory = null)
+    /// <param name="ffmpegContext">Optional FFmpeg context for program detection. If null, uses the default adapter.</param>
+    public CircularBufferWriteStream(
+        int bufferSize,
+        ILoggerFactory? loggerFactory = null,
+        IFFmpegContext? ffmpegContext = null
+    )
     {
         BufferSize = bufferSize;
         _isPowerOfTwo = (bufferSize & (bufferSize - 1)) == 0;
         _bufferMask = bufferSize - 1;
-        TsIndexer = new TsIndexer(bufferSize, loggerFactory?.CreateLogger<TsIndexer>());
+
+        // Use provided context or default to production adapter
+        ffmpegContext ??= FFmpegContextAdapter.Instance;
+
+        // Create FFmpeg demuxer for program detection if available
+        var logger = loggerFactory?.CreateLogger<CircularBufferWriteStream>();
+        var ffmpegAvailable = ffmpegContext.IsAvailable;
+        logger?.PluginLogInformation(
+            "CircularBufferWriteStream: FFmpegContext.IsAvailable={IsAvailable}, FFmpegPath={Path}",
+            ffmpegAvailable,
+            ffmpegContext.FFmpegPath ?? "(null)"
+        );
+
+        if (ffmpegAvailable)
+        {
+            try
+            {
+                // Use 8MB buffer to handle bursts and prevent overflow during high bitrate streams
+                // Live TV streams can burst up to 20 Mbps which is ~2.5MB/s
+                // 8MB provides ~3.2 seconds of buffering at max bitrate, allowing FFmpeg to catch up
+                _demuxer = new FFmpegStreamDemuxer(
+                    inputBufferSize: 8 * 1024 * 1024,
+                    loggerFactory?.CreateLogger<FFmpegStreamDemuxer>(),
+                    ffmpegContext
+                );
+                logger?.PluginLogInformation("FFmpegStreamDemuxer created successfully for program detection");
+            }
+            catch (Exception ex)
+            {
+                logger?.PluginLogWarning(ex, "Failed to create FFmpeg demuxer, program detection will be limited");
+            }
+        }
+        else
+        {
+            logger?.PluginLogWarning(
+                "FFmpeg not available - program detection will be limited. "
+                    + "Ensure FFmpegInitializationService runs before streams are opened."
+            );
+        }
+
+        TsIndexer = new TsIndexer(bufferSize, loggerFactory?.CreateLogger<TsIndexer>(), _demuxer);
         Buffer = new byte[bufferSize];
     }
 
     /// <inheritdoc />
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        throw new NotSupportedException();
-    }
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
     /// <inheritdoc />
-    public override void Write(byte[] buffer, int offset, int count)
-    {
+    public override void Write(byte[] buffer, int offset, int count) =>
         WriteSpan(new ReadOnlySpan<byte>(buffer, offset, count));
-    }
 
     /// <inheritdoc />
-    public override void Write(ReadOnlySpan<byte> buffer)
-    {
-        WriteSpan(buffer);
-    }
+    public override void Write(ReadOnlySpan<byte> buffer) => WriteSpan(buffer);
 
     /// <inheritdoc />
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
@@ -215,21 +384,27 @@ public sealed class CircularBufferWriteStream : Stream
     }
 
     /// <inheritdoc />
-    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    public override async ValueTask WriteAsync(
+        ReadOnlyMemory<byte> buffer,
+        CancellationToken cancellationToken = default
+    )
     {
         if (cancellationToken.IsCancellationRequested)
         {
-            return ValueTask.FromCanceled(cancellationToken);
+            await ValueTask.FromCanceled(cancellationToken).ConfigureAwait(false);
+            return;
         }
 
         try
         {
             WriteSpan(buffer.Span);
-            return ValueTask.CompletedTask;
+            await ValueTask.CompletedTask.ConfigureAwait(false);
+            return;
         }
         catch (Exception exception)
         {
-            return ValueTask.FromException(exception);
+            await ValueTask.FromException(exception).ConfigureAwait(false);
+            return;
         }
     }
 
@@ -241,11 +416,11 @@ public sealed class CircularBufferWriteStream : Stream
             return;
         }
 
-        int remaining = source.Length;
-        int sourceOffset = 0;
-        long localWriteHead = Volatile.Read(ref _totalBytesWritten.Value);
-        int localBufferSize = BufferSize;
-        long startOffsetForIndexer = localWriteHead;
+        var remaining = source.Length;
+        var sourceOffset = 0;
+        var localWriteHead = Volatile.Read(ref _totalBytesWritten.Value);
+        var localBufferSize = BufferSize;
+        var startOffsetForIndexer = localWriteHead;
 
         fixed (byte* srcPtr = source)
         {
@@ -253,10 +428,10 @@ public sealed class CircularBufferWriteStream : Stream
             {
                 while (remaining > 0)
                 {
-                    long currentPosition = _isPowerOfTwo
+                    var currentPosition = _isPowerOfTwo
                         ? (localWriteHead & _bufferMask)
                         : (localWriteHead % localBufferSize);
-                    int writable = (int)Math.Min(remaining, localBufferSize - currentPosition);
+                    var writable = (int)Math.Min(remaining, localBufferSize - currentPosition);
 
                     if (writable >= _simdThreshold)
                     {
@@ -280,8 +455,8 @@ public sealed class CircularBufferWriteStream : Stream
         }
 
         TsIndexer.ProcessChunk(source, startOffsetForIndexer);
-        Interlocked.Exchange(ref _totalBytesWritten.Value, localWriteHead);
-        _lastWriteTime = DateTime.UtcNow;
+        _ = Interlocked.Exchange(ref _totalBytesWritten.Value, localWriteHead);
+        LastWriteTime = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -290,27 +465,16 @@ public sealed class CircularBufferWriteStream : Stream
     /// </summary>
     private static int DetermineSimdThreshold()
     {
-        if (Avx2.IsSupported)
-        {
-            return 512;
-        }
-
-        if (Sse2.IsSupported)
-        {
-            return 1024;
-        }
-
-        return 4096;
+        return Avx2.IsSupported ? 512
+            : Sse2.IsSupported ? 1024
+            : 4096;
     }
 
     /// <summary>
     /// Determines optimal prefetch distance based on CPU capabilities.
     /// Smaller caches on low-end CPUs need shorter prefetch distance to avoid cache pollution.
     /// </summary>
-    private static int DeterminePrefetchDistance()
-    {
-        return Avx2.IsSupported ? 256 : 128;
-    }
+    private static int DeterminePrefetchDistance() => Avx2.IsSupported ? 256 : 128;
 
     /// <summary>
     /// Hardware-accelerated memory copy using SIMD instructions.
@@ -320,39 +484,60 @@ public sealed class CircularBufferWriteStream : Stream
     [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     private static unsafe void CopyMemorySimd(byte* src, byte* dst, int length)
     {
-        int offset = 0;
-        bool useNonTemporal = length >= NonTemporalThreshold;
+        var offset = 0;
+        var useNonTemporal = length >= NonTemporalThreshold;
 
         if (_avx512Supported && length >= 64)
         {
-            for (int avx512Length = length & -64; offset < avx512Length; offset += 64)
+            for (var avx512Length = length & -64; offset < avx512Length; offset += 64)
             {
                 if (offset + _prefetchDistance < length)
                 {
                     Sse.Prefetch0(src + offset + _prefetchDistance);
                 }
 
-                Vector512<byte> vec = Avx512F.LoadVector512(src + offset);
+                var vec = Avx512F.LoadVector512(src + offset);
                 Avx512F.Store(dst + offset, vec);
             }
         }
         else if (_avx2Supported && length >= 32)
         {
-            int avx2Length = length & -32;
+            var avx2Length = length & -32;
             if (useNonTemporal && Sse2.IsSupported)
             {
-                for (; offset < avx2Length; offset += 32)
-                {
-                    if (offset + _prefetchDistance < length)
-                    {
-                        Sse.Prefetch0(src + offset + _prefetchDistance);
-                    }
+                // Check if destination is 16-byte aligned for non-temporal stores
+                // StoreAlignedNonTemporal requires 16-byte alignment; use regular Store if unaligned
+                var isAligned = ((nuint)(dst + offset) & 15) == 0;
 
-                    Vector256<byte> vec = Avx.LoadVector256(src + offset);
-                    Vector128<byte> lo = vec.GetLower();
-                    Vector128<byte> hi = vec.GetUpper();
-                    Sse2.StoreAlignedNonTemporal(dst + offset, lo);
-                    Sse2.StoreAlignedNonTemporal(dst + offset + 16, hi);
+                if (isAligned)
+                {
+                    for (; offset < avx2Length; offset += 32)
+                    {
+                        if (offset + _prefetchDistance < length)
+                        {
+                            Sse.Prefetch0(src + offset + _prefetchDistance);
+                        }
+
+                        var vec = Avx.LoadVector256(src + offset);
+                        var lo = vec.GetLower();
+                        var hi = vec.GetUpper();
+                        Sse2.StoreAlignedNonTemporal(dst + offset, lo);
+                        Sse2.StoreAlignedNonTemporal(dst + offset + 16, hi);
+                    }
+                }
+                else
+                {
+                    // Fallback to regular stores for unaligned destinations
+                    for (; offset < avx2Length; offset += 32)
+                    {
+                        if (offset + _prefetchDistance < length)
+                        {
+                            Sse.Prefetch0(src + offset + _prefetchDistance);
+                        }
+
+                        var vec = Avx.LoadVector256(src + offset);
+                        Avx.Store(dst + offset, vec);
+                    }
                 }
             }
             else
@@ -364,25 +549,45 @@ public sealed class CircularBufferWriteStream : Stream
                         Sse.Prefetch0(src + offset + _prefetchDistance);
                     }
 
-                    Vector256<byte> vec = Avx.LoadVector256(src + offset);
+                    var vec = Avx.LoadVector256(src + offset);
                     Avx.Store(dst + offset, vec);
                 }
             }
         }
         else if (_sse2Supported && length >= 16)
         {
-            int sse2Length = length & -16;
+            var sse2Length = length & -16;
             if (useNonTemporal)
             {
-                for (; offset < sse2Length; offset += 16)
-                {
-                    if (offset + _prefetchDistance < length)
-                    {
-                        Sse.Prefetch0(src + offset + _prefetchDistance);
-                    }
+                // Check if destination is 16-byte aligned for non-temporal stores
+                var isAligned = ((nuint)(dst + offset) & 15) == 0;
 
-                    Vector128<byte> vec = Sse2.LoadVector128(src + offset);
-                    Sse2.StoreAlignedNonTemporal(dst + offset, vec);
+                if (isAligned)
+                {
+                    for (; offset < sse2Length; offset += 16)
+                    {
+                        if (offset + _prefetchDistance < length)
+                        {
+                            Sse.Prefetch0(src + offset + _prefetchDistance);
+                        }
+
+                        var vec = Sse2.LoadVector128(src + offset);
+                        Sse2.StoreAlignedNonTemporal(dst + offset, vec);
+                    }
+                }
+                else
+                {
+                    // Fallback to regular stores for unaligned destinations
+                    for (; offset < sse2Length; offset += 16)
+                    {
+                        if (offset + _prefetchDistance < length)
+                        {
+                            Sse.Prefetch0(src + offset + _prefetchDistance);
+                        }
+
+                        var vec = Sse2.LoadVector128(src + offset);
+                        Sse2.Store(dst + offset, vec);
+                    }
                 }
             }
             else
@@ -394,7 +599,7 @@ public sealed class CircularBufferWriteStream : Stream
                         Sse.Prefetch0(src + offset + _prefetchDistance);
                     }
 
-                    Vector128<byte> vec = Sse2.LoadVector128(src + offset);
+                    var vec = Sse2.LoadVector128(src + offset);
                     Sse2.Store(dst + offset, vec);
                 }
             }
@@ -402,17 +607,17 @@ public sealed class CircularBufferWriteStream : Stream
         else if (Vector.IsHardwareAccelerated && length >= Vector<byte>.Count)
         {
             for (
-                int vectorLength = length & ~(Vector<byte>.Count - 1);
+                var vectorLength = length & ~(Vector<byte>.Count - 1);
                 offset < vectorLength;
                 offset += Vector<byte>.Count
             )
             {
-                Vector<byte> vec = Unsafe.ReadUnaligned<Vector<byte>>(src + offset);
+                var vec = Unsafe.ReadUnaligned<Vector<byte>>(src + offset);
                 Unsafe.WriteUnaligned(dst + offset, vec);
             }
         }
 
-        int remaining = length - offset;
+        var remaining = length - offset;
         if (remaining > 0)
         {
             if (remaining >= 8)
@@ -444,44 +649,38 @@ public sealed class CircularBufferWriteStream : Stream
     }
 
     /// <inheritdoc />
-    public override long Seek(long offset, SeekOrigin origin)
-    {
-        throw new NotSupportedException();
-    }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 
     /// <inheritdoc />
-    public override void SetLength(long value)
-    {
-        throw new NotSupportedException();
-    }
+    public override void SetLength(long value) => throw new NotSupportedException();
 
     /// <inheritdoc />
     public override void Flush() { }
 
     /// <inheritdoc />
-    public override Task FlushAsync(CancellationToken cancellationToken)
-    {
-        return Task.CompletedTask;
-    }
+    public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     /// <summary>
+    /// <para>
     /// Resets the buffer for a new stream session, resetting counters.
     /// Note: The buffer is NOT cleared for performance reasons. Readers track position
     /// via _totalBytesWritten, so they will never read stale data as long as they
     /// respect the write head position.
-    ///
+    /// </para>
+    /// <para>
     /// Thread Safety: Safe to call while readers are active. Readers will see the reset
     /// atomically and will wait for new data to be written.
+    /// </para>
     /// </summary>
     public void Reset()
     {
         TsIndexer.Reset();
-        Interlocked.Exchange(ref _totalBytesWritten.Value, 0L);
-        Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, 0L);
-        Interlocked.Exchange(ref _discontinuityCount.Value, 0);
-        Interlocked.Exchange(ref _reconnectionAttempts.Value, 0);
+        _ = Interlocked.Exchange(ref _totalBytesWritten.Value, 0L);
+        _ = Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, 0L);
+        _ = Interlocked.Exchange(ref _discontinuityCount.Value, 0);
+        _ = Interlocked.Exchange(ref _reconnectionAttempts.Value, 0);
         _lastDiscontinuityTime = default;
-        _lastWriteTime = default;
+        LastWriteTime = default;
         _isSourceConnected = false;
         _isReconnecting = false;
     }
@@ -495,9 +694,59 @@ public sealed class CircularBufferWriteStream : Stream
     public void MarkDiscontinuity()
     {
         var currentOffset = Volatile.Read(ref _totalBytesWritten.Value);
-        Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, currentOffset);
-        Interlocked.Increment(ref _discontinuityCount.Value);
+        _ = Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, currentOffset);
+        _ = Interlocked.Increment(ref _discontinuityCount.Value);
         _lastDiscontinuityTime = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Aligns the current write position to the next MPEG-TS packet boundary (188 bytes).
+    /// Call this before marking a discontinuity during provider switch to ensure no partial
+    /// packets exist at the switch boundary. This prevents decoder errors from partial packets.
+    /// </summary>
+    /// <remarks>
+    /// If the current position is not aligned, null packets (PID 0x1FFF) are written to
+    /// pad to the next boundary. Per ISO/IEC 13818-1, null packets are used for CBR padding
+    /// and should be silently discarded by decoders.
+    /// </remarks>
+    /// <returns>The number of padding bytes written (0 if already aligned).</returns>
+    public int AlignToPacketBoundary()
+    {
+        var currentOffset = Volatile.Read(ref _totalBytesWritten.Value);
+        var remainder = (int)(currentOffset % TsConstants.PacketSize);
+
+        if (remainder == 0)
+        {
+            return 0; // Already aligned
+        }
+
+        var paddingNeeded = TsConstants.PacketSize - remainder;
+
+        // Create a null packet for padding
+        // Null packet: sync byte (0x47), PID 0x1FFF, no adaptation field, payload all 0xFF
+        Span<byte> nullPacket = stackalloc byte[TsConstants.PacketSize];
+        nullPacket[0] = TsConstants.SyncByte; // Sync byte
+        nullPacket[1] = 0x1F; // PID high byte (0x1FFF >> 8) with TEI=0, PUSI=0, priority=0
+        nullPacket[2] = 0xFF; // PID low byte
+        nullPacket[3] = 0x10; // Adaptation field control = 01 (payload only), CC = 0
+        nullPacket[4..].Fill(0xFF); // Payload filled with 0xFF
+
+        // Write only the padding portion needed
+        WriteSpan(nullPacket[..paddingNeeded]);
+
+        return paddingNeeded;
+    }
+
+    /// <summary>
+    /// Marks a discontinuity with automatic packet boundary alignment.
+    /// This is the recommended method for provider switches to ensure clean boundaries.
+    /// </summary>
+    /// <returns>The number of padding bytes written for alignment.</returns>
+    public int MarkDiscontinuityAligned()
+    {
+        var paddingBytes = AlignToPacketBoundary();
+        MarkDiscontinuity();
+        return paddingBytes;
     }
 
     /// <summary>
@@ -508,7 +757,7 @@ public sealed class CircularBufferWriteStream : Stream
     {
         _isSourceConnected = true;
         _isReconnecting = false;
-        _lastWriteTime = DateTime.UtcNow;
+        LastWriteTime = DateTime.UtcNow;
     }
 
     /// <summary>
@@ -519,17 +768,22 @@ public sealed class CircularBufferWriteStream : Stream
     {
         _isReconnecting = true;
         _isSourceConnected = false;
-        Interlocked.Increment(ref _reconnectionAttempts.Value);
+        _ = Interlocked.Increment(ref _reconnectionAttempts.Value);
     }
 
     /// <summary>
     /// Signals that the source has disconnected (EOF, error, or intentional close).
     /// </summary>
-    public void SignalSourceDisconnected()
-    {
-        _isSourceConnected = false;
-    }
+    public void SignalSourceDisconnected() => _isSourceConnected = false;
 
     /// <inheritdoc />
-    protected override void Dispose(bool disposing) => base.Dispose(disposing);
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _demuxer?.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
 }

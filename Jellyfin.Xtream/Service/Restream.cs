@@ -23,9 +23,11 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Client;
+using Jellyfin.Xtream.Service.MpegTs.Core;
+using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
+using Jellyfin.Xtream.Service.MpegTs.UseCases;
 using Jellyfin.Xtream.Service.ProviderManagement;
-using Jellyfin.Xtream.Service.Switching;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
@@ -75,25 +77,22 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <summary>
     /// Global registry of all active Restream instances for monitoring and management.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, Restream> _activeStreams = new ConcurrentDictionary<
-        string,
-        Restream
-    >(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Restream> _activeStreams = new(StringComparer.Ordinal);
 
-    private static readonly HttpStatusCode[] _redirects = new HttpStatusCode[]
-    {
+    private static readonly HttpStatusCode[] _redirects =
+    [
         HttpStatusCode.MovedPermanently,
         HttpStatusCode.MovedPermanently,
         HttpStatusCode.PermanentRedirect,
         HttpStatusCode.Found,
-    };
+    ];
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<Restream> _logger;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IDiscordNotificationService? _discordService;
     private readonly string _sourceUrl;
-    private readonly SemaphoreSlim _openLock = new SemaphoreSlim(1, 1);
+    private readonly SemaphoreSlim _openLock = new(1, 1);
     private readonly CircularBufferWriteStream _buffer;
     private readonly RefCountedResourcePool<CircularBufferReadStream> _readerPool;
     private readonly string _streamQuality;
@@ -111,9 +110,46 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private string? _killReason;
     private CancellationTokenSource? _cleanupCts;
 
-    // Hot-swap: depends on abstraction (DIP), not concrete implementation
-    private readonly IStreamHotSwapService? _hotSwapService;
+    // Provider switching: single unified service for all switching needs (DIP)
+    private readonly IProviderSwitchService? _providerSwitchService;
+
+    // TR 101 290 violation-triggered switching (DIP: injected abstraction)
+    private readonly IViolationSwitchTrigger? _violationSwitchTrigger;
     private volatile string _currentSourceUrl;
+
+    // Tier 2: Automatic failover service - single source of truth for provider management
+    // Includes metrics tracking, trend analysis, and failover decisions
+    private readonly IAutomaticFailoverService? _failoverService;
+
+    // FFmpeg context for native demuxing support in TsIndexer
+    private readonly IFFmpegContext? _ffmpegContext;
+
+    // Reconnection timestamp continuity tracking
+    // These track the timing state at disconnection so we can remap timestamps on reconnection
+    private DateTime _lastDisconnectTime;
+    private long _lastDisconnectVideoPts;
+    private long _lastDisconnectAudioPts;
+    private long _lastDisconnectPcr;
+    private bool _needsReconnectionRemapping;
+    private bool _pendingReconnectionActivation; // True when we need to activate remapping on first data chunk
+
+    // Expected PTS at reconnection - this is what the output timeline should be after remapping
+    // Stored when we calculate the expected PTS, used when we activate remapping
+    private long _expectedPtsAtReconnection;
+    private DateTime _reconnectionTime;
+
+    // Output timeline tracking - independent of provider timestamps
+    // Once we start outputting, we track what PTS values we're sending to FFmpeg
+    // This is our "output timeline" that must remain continuous across reconnections
+    private DateTime _outputTimelineStartTime;
+    private long _outputTimelineBasePts; // The first PTS we established as our output baseline
+    private bool _outputTimelineInitialized;
+
+    // PTS discontinuity handling
+    // Some IPTV streams have systematic PTS discontinuities (e.g., ~9 second jumps between two sources).
+    // Use a longer cooldown (15 seconds) to prevent continuous re-remapping that causes A/V desync.
+    private DateTime _lastDiscontinuityRemappingTime = DateTime.MinValue;
+    private const int DiscontinuityRemappingCooldownMs = 15000; // 15 second cooldown between activations
 
     /// <inheritdoc />
     public int ConsumerCount
@@ -152,19 +188,32 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <param name="loggerFactory">Instance of the <see cref="ILoggerFactory"/> interface.</param>
     /// <param name="mediaSource">The media which must be restreamed.</param>
     /// <param name="discordService">Optional Discord notification service.</param>
+    /// <param name="ffmpegContext">Optional FFmpeg context for native demuxing.</param>
     public Restream(
         IServerApplicationHost appHost,
         IHttpClientFactory httpClientFactory,
         ILogger<Restream> logger,
         ILoggerFactory loggerFactory,
         MediaSourceInfo mediaSource,
-        IDiscordNotificationService? discordService = null
+        IDiscordNotificationService? discordService = null,
+        IFFmpegContext? ffmpegContext = null
     )
-        : this(appHost, httpClientFactory, logger, loggerFactory, mediaSource, discordService, null) { }
+        : this(
+            appHost,
+            httpClientFactory,
+            logger,
+            loggerFactory,
+            mediaSource,
+            discordService,
+            providerSwitchService: null,
+            failoverService: null,
+            violationSwitchTrigger: null,
+            ffmpegContext
+        ) { }
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="Restream"/> class with hot-swap support.
-    /// Follows DIP: depends on IStreamHotSwapService abstraction, not concrete implementation.
+    /// Initializes a new instance of the <see cref="Restream"/> class with full provider resilience support.
+    /// Follows DIP: depends on abstractions for provider switching and failover services.
     /// </summary>
     /// <param name="appHost">Instance of the <see cref="IServerApplicationHost"/> interface.</param>
     /// <param name="httpClientFactory">Instance of the <see cref="IHttpClientFactory"/> interface.</param>
@@ -172,7 +221,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <param name="loggerFactory">Instance of the <see cref="ILoggerFactory"/> interface.</param>
     /// <param name="mediaSource">The media which must be restreamed.</param>
     /// <param name="discordService">Optional Discord notification service.</param>
-    /// <param name="hotSwapService">Optional hot-swap service for mid-stream provider switching (DIP).</param>
+    /// <param name="providerSwitchService">Optional unified provider switch service (DIP).</param>
+    /// <param name="failoverService">Optional failover service - single source of truth for provider management.</param>
+    /// <param name="violationSwitchTrigger">Optional TR 101 290 violation switch trigger (DIP).</param>
+    /// <param name="ffmpegContext">Optional FFmpeg context for native demuxing.</param>
     public Restream(
         IServerApplicationHost appHost,
         IHttpClientFactory httpClientFactory,
@@ -180,21 +232,28 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         ILoggerFactory loggerFactory,
         MediaSourceInfo mediaSource,
         IDiscordNotificationService? discordService,
-        IStreamHotSwapService? hotSwapService
+        IProviderSwitchService? providerSwitchService,
+        IAutomaticFailoverService? failoverService,
+        IViolationSwitchTrigger? violationSwitchTrigger,
+        IFFmpegContext? ffmpegContext = null
     )
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _loggerFactory = loggerFactory;
         _discordService = discordService;
-        _hotSwapService = hotSwapService;
+        _providerSwitchService = providerSwitchService;
+        _failoverService = failoverService;
+        _violationSwitchTrigger = violationSwitchTrigger;
+        _ffmpegContext = ffmpegContext;
         MediaSource = mediaSource;
         _tokenSource = new CancellationTokenSource();
         _streamQuality = DetectStreamQuality(mediaSource);
-        int bufferSize = GetBufferSize(_streamQuality);
-        _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory);
+        var bufferSize = GetBufferSize(_streamQuality);
+        _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory, _ffmpegContext);
         _buffer.TsIndexer.StreamQualityViolation += OnStreamQualityViolation;
         _buffer.TsIndexer.SyncDriftDetected += OnSyncDriftDetected;
+        _buffer.TsIndexer.PtsDiscontinuityDetected += OnPtsDiscontinuityDetected;
         _logger.PluginLogInformation(
             "Initialized stream {StreamId} ({Quality}) with automatic quality-based buffering ({BufferSizeMB}MB buffer)",
             mediaSource.Id,
@@ -205,17 +264,18 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         UniqueId = Guid.NewGuid().ToString();
         _sourceUrl = MediaSource.Path;
         _currentSourceUrl = _sourceUrl;
-        string path = "/LiveTv/LiveStreamFiles/" + UniqueId + "/stream.ts";
+        var path = "/LiveTv/LiveStreamFiles/" + UniqueId + "/stream.ts";
         MediaSource.Path = appHost.GetSmartApiUrl(IPAddress.Any) + path;
         MediaSource.EncoderPath = appHost.GetApiUrlForLocalAccess() + path;
         MediaSource.Protocol = MediaProtocol.Http;
         _readerPool = new RefCountedResourcePool<CircularBufferReadStream>(CreateReaderStream, OnConsumerCountChanged);
-        _activeStreams.TryAdd(MediaSource.Id, this);
+        _ = _activeStreams.TryAdd(MediaSource.Id, this);
         _logger.LogDebugIfEnabled(
-            "Registered Restream {StreamId} (total active: {Count}){HotSwap}",
+            "Registered Restream {StreamId} (total active: {Count}){ProviderSwitch}{Metrics}",
             MediaSource.Id,
             _activeStreams.Count,
-            hotSwapService != null ? " [hot-swap enabled]" : string.Empty
+            providerSwitchService != null ? " [provider-switch enabled]" : string.Empty,
+            failoverService != null ? " [metrics enabled]" : string.Empty
         );
     }
 
@@ -231,10 +291,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <summary>
     /// Factory method to create a new reader stream instance.
     /// </summary>
-    private CircularBufferReadStream CreateReaderStream()
-    {
-        return new CircularBufferReadStream(_buffer, _logger, MediaSource.Id, MediaSource.Name, _discordService, -1);
-    }
+    private CircularBufferReadStream CreateReaderStream() =>
+        new(_buffer, _logger, MediaSource.Id, MediaSource.Name, _discordService, -1);
 
     /// <summary>
     /// Callback when consumer count changes.
@@ -242,6 +300,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     private void OnConsumerCountChanged(int newCount)
     {
+        // Update the tracked consumer count
+        ConsumerCount = newCount;
+
         _logger.PluginLogInformation(
             "Consumer count changed for channel {ChannelId}: {Count} active",
             MediaSource.Id,
@@ -275,9 +336,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             _cleanupCts?.Cancel();
             _cleanupCts?.Dispose();
             _cleanupCts = new CancellationTokenSource();
-            CancellationToken cancellationToken = _cleanupCts.Token;
+            var cancellationToken = _cleanupCts.Token;
 
-            Task.Run(
+            _ = Task.Run(
                 async () =>
                 {
                     try
@@ -312,17 +373,27 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     {
         // Create timeout-aware cancellation for fast-fail on connection + first byte
         // Industry standard: 5-10s total for initial connection phase
-        int streamOpenTimeoutMs = StreamingTimeoutPolicy.GetStreamOpenTimeoutMs();
+        var streamOpenTimeoutMs = StreamingTimeoutPolicy.GetStreamOpenTimeoutMs();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(openCancellationToken);
         timeoutCts.CancelAfter(streamOpenTimeoutMs);
 
         await _openLock.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
         try
         {
-            if (_broadcastTask != null)
+            if (_broadcastTask != null && !_broadcastTask.IsCompleted)
             {
                 _logger.LogDebugIfEnabled("Broadcast for channel {ChannelId} is already running.", MediaSource.Id);
                 return;
+            }
+
+            // If broadcast task completed (died), reset it so we can start fresh
+            if (_broadcastTask?.IsCompleted == true)
+            {
+                _logger.PluginLogWarning(
+                    "Broadcast task for channel {ChannelId} had previously completed/failed. Restarting...",
+                    MediaSource.Id
+                );
+                _broadcastTask = null;
             }
 
             _logger.LogDebugIfEnabled(
@@ -343,9 +414,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 _tokenSource = new CancellationTokenSource();
                 _logger.LogDebugIfEnabled("CancellationTokenSource recreated for channel {ChannelId}", MediaSource.Id);
             }
-            else if (_tokenSource == null)
+            else
             {
-                _tokenSource = new CancellationTokenSource();
+                _tokenSource ??= new CancellationTokenSource();
             }
 
             _resolvedUrl = await ResolveStreamUrlAsync(_sourceUrl, timeoutCts.Token).ConfigureAwait(false);
@@ -353,7 +424,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
             // Wait for first data with timeout (fast-fail if no data)
             // This detects "connected but no data" scenarios common with overloaded providers
-            int firstByteTimeoutMs = StreamingTimeoutPolicy.GetFirstByteTimeoutMs();
+            var firstByteTimeoutMs = StreamingTimeoutPolicy.GetFirstByteTimeoutMs();
             if (!await WaitForFirstDataAsync(firstByteTimeoutMs, timeoutCts.Token).ConfigureAwait(false))
             {
                 _logger.PluginLogWarning(
@@ -369,6 +440,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 MediaSource.Id,
                 _resolvedUrl
             );
+
+            // Register stream with provider switch service for lifecycle management
+            _providerSwitchService?.RegisterStream(MediaSource.Id, _currentSourceUrl);
 
             _discordService.SendFireAndForget(svc =>
                 svc.NotifyStreamStartAsync(MediaSource.Id, MediaSource.Name ?? "Unknown Channel")
@@ -386,7 +460,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
         finally
         {
-            _openLock.Release();
+            _ = _openLock.Release();
         }
     }
 
@@ -408,7 +482,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             timeoutMs
         );
 
-        int pollCount = 0;
+        var pollCount = 0;
         while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
         {
             if (_buffer.TotalBytesWritten > 0)
@@ -443,27 +517,48 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// Resolves the final stream URL by following all redirects including HTTPS→HTTP downgrades.
     /// .NET blocks HTTPS→HTTP redirects by default, so we handle them manually.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This method implements "zombie backend" detection - a common IPTV provider failure mode where:
+    /// 1. Load balancer accepts TCP connection ✓
+    /// 2. Load balancer sends 302 redirect to backend ✓
+    /// 3. Backend accepts TCP connection ✓
+    /// 4. Backend NEVER sends HTTP response headers ✗ (hangs indefinitely)
+    /// </para>
+    /// <para>
+    /// To detect this, we apply a response headers timeout to each redirect hop.
+    /// If a backend is dead but accepting TCP, we fail fast and try the next provider.
+    /// </para>
+    /// </remarks>
     private async Task<Uri> ResolveStreamUrlAsync(string initialUrl, CancellationToken cancellationToken)
     {
-        Uri currentUrl = new Uri(initialUrl);
-        HttpClient client = _httpClientFactory.CreateClient("XtreamClient");
+        var currentUrl = new Uri(initialUrl);
+        var client = _httpClientFactory.CreateClient("XtreamClient");
+        var healthValidator = new BackendHealthValidator(client, _logger);
 
-        for (int redirectCount = 0; redirectCount < MaxRedirects; redirectCount++)
+        // Response headers timeout: detects zombie backends that accept TCP but never respond
+        var responseHeadersTimeoutMs = StreamingTimeoutPolicy.GetResponseHeadersTimeoutMs();
+
+        for (var redirectCount = 0; redirectCount < MaxRedirects; redirectCount++)
         {
-            using HttpResponseMessage response = await client
-                .GetAsync(currentUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            var requestStartTime = DateTime.UtcNow;
+            using var response = await healthValidator
+                .SendWithZombieDetectionAsync(currentUrl, responseHeadersTimeoutMs, cancellationToken)
                 .ConfigureAwait(false);
+
+            var responseTimeMs = (DateTime.UtcNow - requestStartTime).TotalMilliseconds;
             _logger.LogDebugIfEnabled(
-                "URL resolution for channel {ChannelId} - Attempt {Attempt}, URL: {Url}, Status: {StatusCode}",
+                "URL resolution for channel {ChannelId} - Attempt {Attempt}, URL: {Url}, Status: {StatusCode}, ResponseTime: {ResponseTimeMs}ms",
                 MediaSource.Id,
                 redirectCount + 1,
                 currentUrl,
-                response.StatusCode
+                response.StatusCode,
+                responseTimeMs
             );
 
             if (_redirects.Contains(response.StatusCode))
             {
-                Uri? redirectLocation = response.Headers.Location;
+                var redirectLocation = response.Headers.Location;
                 if (redirectLocation == null)
                 {
                     _logger.PluginLogWarning(
@@ -478,13 +573,42 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     redirectLocation = new Uri(currentUrl, redirectLocation);
                 }
 
+                // Log redirect with host change detection (critical for backend validation)
+                var isHostChange = !string.Equals(
+                    currentUrl.Host,
+                    redirectLocation.Host,
+                    StringComparison.OrdinalIgnoreCase
+                );
                 _logger.LogDebugIfEnabled(
-                    "Stream for channel {ChannelId} redirected: {OldUrl} → {NewUrl} (HTTPS→HTTP: {IsDowngrade})",
+                    "Stream for channel {ChannelId} redirected: {OldUrl} → {NewUrl} (HTTPS→HTTP: {IsDowngrade}, HostChange: {IsHostChange})",
                     MediaSource.Id,
                     currentUrl,
                     redirectLocation,
-                    currentUrl.Scheme == "https" && redirectLocation.Scheme == "http"
+                    currentUrl.Scheme == "https" && redirectLocation.Scheme == "http",
+                    isHostChange
                 );
+
+                // If redirecting to a different host, validate it can respond before following
+                // This catches zombie backend scenarios BEFORE we commit to the redirect
+                if (isHostChange && redirectCount < MaxRedirects - 1)
+                {
+                    var isHealthy = await healthValidator
+                        .ValidateRedirectTargetAsync(currentUrl, redirectLocation, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (!isHealthy)
+                    {
+                        _logger.PluginLogWarning(
+                            "Redirect target {Host} failed health check for channel {ChannelId}. "
+                                + "Backend may be at capacity or offline. Failing fast to try next provider.",
+                            redirectLocation.Host,
+                            MediaSource.Id
+                        );
+                        throw new HttpRequestException(
+                            $"Redirect target {redirectLocation.Host} failed pre-flight health check"
+                        );
+                    }
+                }
+
                 currentUrl = redirectLocation;
                 continue;
             }
@@ -536,7 +660,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             throw new InvalidOperationException("Broadcast URL not resolved");
         }
 
-        int networkBufferSize = _streamQuality switch
+        var networkBufferSize = _streamQuality switch
         {
             "UHD/4K" => CopyBufferSizeUhd,
             "Full HD" => CopyBufferSizeHd,
@@ -555,11 +679,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             );
         }
 
-        Memory<byte> bufferMemory = _networkBuffer.AsMemory();
-        long totalBytesAllConnections = 0L;
-        DateTime sessionStartTime = DateTime.UtcNow;
-        int connectionAttempt = 0;
-        int consecutiveFailures = 0;
+        var bufferMemory = _networkBuffer.AsMemory();
+        var totalBytesAllConnections = 0L;
+        var sessionStartTime = DateTime.UtcNow;
+        var connectionAttempt = 0;
+        var consecutiveFailures = 0;
 
         _logger.LogDebugIfEnabled(
             "BroadcastFromSourceAsync: starting for channel {ChannelId}, max attempts={MaxAttempts}, URL={Url}",
@@ -591,7 +715,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 );
 
                 var httpStartTime = DateTime.UtcNow;
-                using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, _resolvedUrl);
+                using var request = new HttpRequestMessage(HttpMethod.Get, _resolvedUrl);
                 response = await _httpClientFactory
                     .CreateClient("XtreamClient")
                     .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
@@ -609,11 +733,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 {
                     if (!response.IsSuccessStatusCode)
                     {
-                        string responseHeaders = string.Join(
+                        var responseHeaders = string.Join(
                             ", ",
-                            response.Headers.Select(h => h.Key + "=" + string.Join(";", h.Value))
+                            response.Headers.Select(h => h.Key + "=" + string.Join(';', h.Value))
                         );
-                        string contentType = response.Content.Headers.ContentType?.ToString() ?? "none";
+                        var contentType = response.Content.Headers.ContentType?.ToString() ?? "none";
                         _logger.PluginLogError(
                             "Failed to open broadcast source for channel {ChannelId}. Status: {StatusCode} ({StatusCodeInt}), ContentType: {ContentType}, Response Headers: [{Headers}]",
                             MediaSource.Id,
@@ -626,7 +750,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         if (response.StatusCode == HttpStatusCode.Conflict)
                         {
                             consecutiveFailures++;
-                            int conflictBackoff = Math.Max(3000, CalculateBackoffDelay(consecutiveFailures, 2000));
+                            var conflictBackoff = Math.Max(3000, CalculateBackoffDelay(consecutiveFailures, 2000));
                             _logger.PluginLogWarning(
                                 "Provider conflict ({StatusCode}) for channel {ChannelId}. Previous connection may still be active on provider side. Failure #{FailureCount}. Retrying in {DelayMs}ms (extended backoff)...",
                                 response.StatusCode,
@@ -638,13 +762,68 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             continue;
                         }
 
-                        bool isPermanentError = response.StatusCode switch
+                        // Handle 407 Proxy Authentication Required specially
+                        // This error often comes from Cloudflare-protected providers when their origin
+                        // server has an upstream proxy that requires auth. It's not a client config issue -
+                        // it's a provider infrastructure problem that may be transient or provider-specific.
+                        // Solution: Retry with backoff, then attempt provider switch if it persists.
+                        if (response.StatusCode == HttpStatusCode.ProxyAuthenticationRequired)
+                        {
+                            consecutiveFailures++;
+                            const int Max407Retries = 2;
+
+                            if (consecutiveFailures <= Max407Retries)
+                            {
+                                var proxyBackoff = Math.Max(1000, CalculateBackoffDelay(consecutiveFailures, 500));
+                                _logger.PluginLogWarning(
+                                    "Proxy Authentication Required (407) for channel {ChannelId}. This is a provider infrastructure issue (origin proxy requires auth). Attempt {Attempt}/{MaxRetries}. Retrying in {DelayMs}ms...",
+                                    MediaSource.Id,
+                                    consecutiveFailures,
+                                    Max407Retries,
+                                    proxyBackoff
+                                );
+                                await Task.Delay(proxyBackoff, cancellationToken).ConfigureAwait(false);
+                                continue;
+                            }
+
+                            // After retries exhausted, try provider switch
+                            _logger.PluginLogWarning(
+                                "Persistent 407 error for channel {ChannelId}. Provider's origin proxy may be misconfigured. Attempting provider switch...",
+                                MediaSource.Id
+                            );
+
+                            if (
+                                await TryProviderSwitchAsync(SwitchReason.HealthDegraded, cancellationToken)
+                                    .ConfigureAwait(false)
+                            )
+                            {
+                                _resolvedUrl = await ResolveStreamUrlAsync(_currentSourceUrl, cancellationToken)
+                                    .ConfigureAwait(false);
+                                consecutiveFailures = 0;
+                                _logger.PluginLogInformation(
+                                    "Provider switch resolved 407 error for channel {ChannelId}, continuing with new provider",
+                                    MediaSource.Id
+                                );
+                                continue;
+                            }
+
+                            // No alternative provider available - fail
+                            _logger.PluginLogError(
+                                "Unable to resolve 407 error for channel {ChannelId}. No alternative providers available. This is a provider infrastructure issue.",
+                                MediaSource.Id
+                            );
+                            throw new HttpRequestException(
+                                $"Provider proxy authentication failed: {response.StatusCode}"
+                            );
+                        }
+
+                        var isPermanentError = response.StatusCode switch
                         {
                             HttpStatusCode.Unauthorized => true,
                             HttpStatusCode.Forbidden => true,
                             HttpStatusCode.NotFound => true,
+                            HttpStatusCode.MethodNotAllowed => true, // 405 - provider doesn't support HTTP method
                             HttpStatusCode.NotAcceptable => true,
-                            HttpStatusCode.ProxyAuthenticationRequired => true, // 407 - provider auth issue
                             HttpStatusCode.Gone => true,
                             (HttpStatusCode)509 => true, // Bandwidth Limit Exceeded - provider connection limit
                             _ => false,
@@ -666,7 +845,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             }
 
                             consecutiveFailures++;
-                            int acceptBackoff = Math.Max(4000, CalculateBackoffDelay(consecutiveFailures, 2500));
+                            var acceptBackoff = Math.Max(4000, CalculateBackoffDelay(consecutiveFailures, 2500));
                             _logger.PluginLogWarning(
                                 "Not Acceptable ({StatusCode}) for channel {ChannelId}. May be connection limit or provider rejecting reconnect. Failure #{FailureCount}/{MaxRetries}. Retrying in {DelayMs}ms...",
                                 response.StatusCode,
@@ -693,7 +872,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                                 // Try hot-swap before giving up completely
                                 if (
-                                    await TryHotSwapAsync(SwitchReason.HealthDegraded, cancellationToken)
+                                    await TryProviderSwitchAsync(SwitchReason.HealthDegraded, cancellationToken)
                                         .ConfigureAwait(false)
                                 )
                                 {
@@ -720,7 +899,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                                 );
                             }
 
-                            int backoffDelay = CalculateBackoffDelay(consecutiveFailures);
+                            var backoffDelay = CalculateBackoffDelay(consecutiveFailures);
                             _logger.PluginLogWarning(
                                 "Transient error ({StatusCode}) for channel {ChannelId}. Failure #{FailureCount}/5. Retrying in {DelayMs}ms (exponential backoff)...",
                                 response.StatusCode,
@@ -745,51 +924,204 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                     if (totalBytesAllConnections > 0)
                     {
-                        // Mark discontinuity point so readers skip past stale pre-disconnect data
-                        // This prevents video loops caused by timestamp discontinuities after reconnection
-                        _buffer.MarkDiscontinuity();
+                        // Activate timestamp remapping for same-provider reconnection
+                        // This calculates the expected PTS based on wall-clock time elapsed during disconnection
+                        // and remaps the new stream's timestamps to maintain continuity
+                        if (
+                            _needsReconnectionRemapping
+                            && _providerSwitchService != null
+                            && _lastDisconnectVideoPts > 0
+                        )
+                        {
+                            var elapsedSinceDisconnect = DateTime.UtcNow - _lastDisconnectTime;
+                            var elapsedPts90Khz = (long)(elapsedSinceDisconnect.TotalSeconds * 90000);
+
+                            // Calculate expected PTS: last known PTS + wall-clock elapsed time
+                            // This is where the stream SHOULD be if it had continued playing
+                            var expectedVideoPts = _lastDisconnectVideoPts + elapsedPts90Khz;
+
+                            // Store for output timeline reset after remapping activation
+                            // This is the PTS value that the remapped output will start from
+                            _expectedPtsAtReconnection = expectedVideoPts;
+                            _reconnectionTime = DateTime.UtcNow;
+
+                            // Update the timing state in the provider switch service with the expected values
+                            // The remapping service will use this to calculate the offset when we receive
+                            // the first PTS from the new connection
+                            _providerSwitchService.UpdateTimingState(
+                                MediaSource.Id,
+                                expectedVideoPts,
+                                _lastDisconnectAudioPts > 0 ? _lastDisconnectAudioPts + elapsedPts90Khz : 0,
+                                _lastDisconnectPcr > 0
+                                    ? _lastDisconnectPcr + (long)(elapsedSinceDisconnect.TotalSeconds * 27000000)
+                                    : 0
+                            );
+
+                            _logger.PluginLogInformation(
+                                "Reconnection timestamp continuity for channel {ChannelId}: elapsed={ElapsedMs}ms, expectedPTS={ExpectedPts} (last={LastPts} + elapsed={ElapsedPts})",
+                                MediaSource.Id,
+                                elapsedSinceDisconnect.TotalMilliseconds,
+                                expectedVideoPts,
+                                _lastDisconnectVideoPts,
+                                elapsedPts90Khz
+                            );
+
+                            _needsReconnectionRemapping = false;
+                            _pendingReconnectionActivation = true; // Activate remapping on first data chunk
+                            // CRITICAL: Do NOT mark discontinuity here! The discontinuity offset must point
+                            // to data that has ALREADY been remapped. If we mark it here, data written before
+                            // remapping is activated will have un-remapped timestamps, causing DTS out-of-order
+                            // errors in FFmpeg ("DTS X < Y out of order"). The discontinuity will be marked
+                            // when remapping is successfully activated in the data processing loop below.
+                        }
+                        else
+                        {
+                            // Without remapping, mark discontinuity immediately at the new connection start
+                            // The data from the new connection is valid as-is (no timestamp adjustment needed)
+                            var paddingBytes = _buffer.MarkDiscontinuityAligned();
+                            if (paddingBytes > 0)
+                            {
+                                _logger.LogDebugIfEnabled(
+                                    "Added {PaddingBytes} bytes of null packet padding at reconnection for channel {ChannelId}",
+                                    paddingBytes,
+                                    MediaSource.Id
+                                );
+                            }
+                            _logger.LogDebugIfEnabled(
+                                "Marked discontinuity at offset {Offset} for channel {ChannelId} after reconnection (no remapping)",
+                                _buffer.TotalBytesWritten,
+                                MediaSource.Id
+                            );
+
+                            _logger.PluginLogWarning(
+                                "Reconnection for channel {ChannelId} without timestamp continuity: needsRemapping={NeedsRemapping}, hasSwitchService={HasSwitchService}, lastVideoPts={LastVideoPts}",
+                                MediaSource.Id,
+                                _needsReconnectionRemapping,
+                                _providerSwitchService != null,
+                                _lastDisconnectVideoPts
+                            );
+                        }
+
                         _buffer.TsIndexer.ResetTimingState();
-                        _logger.LogDebugIfEnabled(
-                            "Marked discontinuity at offset {Offset} for channel {ChannelId} after reconnection",
-                            _buffer.TotalBytesWritten,
-                            MediaSource.Id
-                        );
+
+                        // CRITICAL: Reset the in-process remuxer on reconnection.
+                        // The FFmpeg demuxer holds stale PAT/PMT and stream mapping from before
+                        // the disconnection. Without resetting, it cannot process the new stream
+                        // (which may have different PIDs), causing ProcessDataForRemapping to
+                        // return empty output and all data to be silently dropped.
+                        _providerSwitchService?.ResetRemuxer(MediaSource.Id);
+
+                        // Reset violation counters to prevent false positives after reconnection
+                        // Stale PAT/PCR timing from before disconnect shouldn't trigger provider switches
+                        _violationSwitchTrigger?.ResetCounters(MediaSource.Id);
                     }
 
-                    long connectionBytes = 0L;
-                    DateTime connectionStartTime = DateTime.UtcNow;
-                    DateTime lastLogTime = connectionStartTime;
-                    DateTime lastHealthCheckTime = connectionStartTime;
+                    var connectionBytes = 0L;
+                    var lastHealthCheckBytes = 0L; // Track bytes at last health check for bitrate calculation
+                    var connectionStartTime = DateTime.UtcNow;
+                    var lastLogTime = connectionStartTime;
+                    var lastHealthCheckTime = connectionStartTime;
 
-                    // Get configurable data stall timeout (industry standard: 10-20s)
-                    int dataStallTimeoutMs = StreamingTimeoutPolicy.GetDataStallTimeoutMs();
+                    // Stall detection: Use cumulative tracking for bursty IPTV streams
+                    // - perReadTimeoutMs: Short timeout per read to stay responsive (5s)
+                    // - dataStallTimeoutMs: Total no-data time before triggering reconnect (20s)
+                    // This allows for normal bursty behavior (5-15s gaps) while detecting true stalls
+                    var dataStallTimeoutMs = StreamingTimeoutPolicy.GetDataStallTimeoutMs();
+                    const int PerReadTimeoutMs = 5000; // 5s per-read timeout for responsiveness
+                    var lastDataReceivedTime = DateTime.UtcNow;
+                    var consecutiveReadTimeouts = 0;
 
                     while (!cancellationToken.IsCancellationRequested)
                     {
                         int bytesRead;
                         try
                         {
-                            // Apply data stall timeout to detect hung connections
+                            // Guard against disposed stream (can happen during reconnection race)
+                            if (sourceStream == null)
+                            {
+                                _logger.LogDebugIfEnabled(
+                                    "Source stream is null for channel {ChannelId}, breaking read loop",
+                                    MediaSource.Id
+                                );
+                                break;
+                            }
+
+                            // Apply short per-read timeout to detect hung connections quickly
+                            // but only trigger reconnect after cumulative stall time exceeds threshold
                             using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                            readCts.CancelAfter(dataStallTimeoutMs);
+                            readCts.CancelAfter(PerReadTimeoutMs);
 
                             bytesRead = await sourceStream.ReadAsync(bufferMemory, readCts.Token).ConfigureAwait(false);
+
+                            // Data received - reset stall tracking
+                            if (bytesRead > 0)
+                            {
+                                lastDataReceivedTime = DateTime.UtcNow;
+                                consecutiveReadTimeouts = 0;
+                            }
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // Stream was disposed (connection closed by server or timeout)
+                            // This is expected during reconnection - break out and reconnect
+                            _logger.LogDebugIfEnabled(
+                                "Source stream disposed for channel {ChannelId} during read - connection closed",
+                                MediaSource.Id
+                            );
+                            _buffer.SignalSourceDisconnected();
+                            CaptureTimingStateForReconnection();
+                            break;
+                        }
+                        catch (IOException ioEx) when (ioEx.InnerException is ObjectDisposedException)
+                        {
+                            // Wrapped ObjectDisposedException in IOException
+                            _logger.LogDebugIfEnabled(
+                                "Source stream disposed (wrapped in IOException) for channel {ChannelId}",
+                                MediaSource.Id
+                            );
+                            _buffer.SignalSourceDisconnected();
+                            CaptureTimingStateForReconnection();
+                            break;
                         }
                         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                         {
-                            // Data stall detected - connection is alive but not sending data
+                            // Per-read timeout - check if we've exceeded cumulative stall threshold
+                            consecutiveReadTimeouts++;
+                            var totalStallMs = (DateTime.UtcNow - lastDataReceivedTime).TotalMilliseconds;
+
+                            if (totalStallMs < dataStallTimeoutMs)
+                            {
+                                // Not yet at threshold - this is likely normal burst behavior
+                                // Log at debug level only after multiple consecutive timeouts
+                                if (consecutiveReadTimeouts >= 2)
+                                {
+                                    _logger.LogDebugIfEnabled(
+                                        "Read timeout #{Count} for channel {ChannelId} ({StallMs:F0}ms / {ThresholdMs}ms). Waiting for data burst...",
+                                        consecutiveReadTimeouts,
+                                        MediaSource.Id,
+                                        totalStallMs,
+                                        dataStallTimeoutMs
+                                    );
+                                }
+
+                                continue; // Keep waiting for data - don't break out of loop
+                            }
+
+                            // Data stall threshold exceeded - connection is alive but truly stalled
                             // Signal disconnection so readers know source is stalled
                             _buffer.SignalSourceDisconnected();
 
                             _logger.PluginLogWarning(
-                                "Data stall detected for channel {ChannelId} after {TimeoutMs}ms without data. Attempting hot-swap...",
+                                "Data stall detected for channel {ChannelId} after {TotalStallMs:F0}ms without data (threshold: {ThresholdMs}ms, {TimeoutCount} read timeouts). Attempting hot-swap...",
                                 MediaSource.Id,
-                                dataStallTimeoutMs
+                                totalStallMs,
+                                dataStallTimeoutMs,
+                                consecutiveReadTimeouts
                             );
 
                             // Try hot-swap to a different provider before reconnecting
                             if (
-                                await TryHotSwapAsync(SwitchReason.ConnectionFailed, cancellationToken)
+                                await TryProviderSwitchAsync(SwitchReason.ConnectionFailed, cancellationToken)
                                     .ConfigureAwait(false)
                             )
                             {
@@ -815,6 +1147,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             // Signal disconnection so readers know to wait for reconnection
                             _buffer.SignalSourceDisconnected();
 
+                            // Capture timing state for reconnection timestamp continuity
+                            CaptureTimingStateForReconnection();
+
                             if (connectionBytes == 0)
                             {
                                 _logger.PluginLogError(
@@ -825,7 +1160,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                                 break;
                             }
 
-                            double connectionDuration = (DateTime.UtcNow - connectionStartTime).TotalSeconds;
+                            var connectionDuration = (DateTime.UtcNow - connectionStartTime).TotalSeconds;
                             if (connectionBytes < MinimumBytesForHealthyStream || connectionDuration < 10.0)
                             {
                                 consecutiveFailures++;
@@ -841,7 +1176,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                                 // Try hot-swap on premature EOF (likely capacity/rate limit issue)
                                 if (
                                     consecutiveFailures >= 2
-                                    && await TryHotSwapAsync(SwitchReason.CapacityReached, cancellationToken)
+                                    && await TryProviderSwitchAsync(SwitchReason.CapacityReached, cancellationToken)
                                         .ConfigureAwait(false)
                                 )
                                 {
@@ -869,18 +1204,175 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             break;
                         }
 
-                        await _buffer
-                            .WriteAsync(bufferMemory.Slice(0, bytesRead), cancellationToken)
-                            .ConfigureAwait(false);
-                        connectionBytes += bytesRead;
-                        totalBytesAllConnections += bytesRead;
+                        // Activate reconnection timestamp remapping on first data chunk after reconnection
+                        // This extracts the first video PTS and activates remapping based on expected vs actual PTS
+                        // CRITICAL: Must be done BEFORE writing to buffer so the remapped data goes into the buffer
+                        var remappingJustActivated = false;
+                        if (_pendingReconnectionActivation && _providerSwitchService != null)
+                        {
+                            // FIX: Only clear the flag if activation succeeds.
+                            // The first chunk might not contain a video PES with PTS, so we need to
+                            // keep trying on subsequent chunks until we find one.
+                            if (
+                                _providerSwitchService.ActivateReconnectionRemapping(
+                                    MediaSource.Id,
+                                    bufferMemory[..bytesRead].Span
+                                )
+                            )
+                            {
+                                // Activation succeeded - clear the flag
+                                _pendingReconnectionActivation = false;
+                                remappingJustActivated = true;
 
-                        DateTime now = DateTime.UtcNow;
+                                // Reset output timeline to match the remapped output.
+                                // The remapper calculates: offset = expectedPTS - actualFirstPTS
+                                // Then all incoming PTS values are remapped: remapped = actual + offset
+                                // So the first remapped PTS will be: actualFirstPTS + offset = expectedPTS
+                                _outputTimelineBasePts = _expectedPtsAtReconnection;
+                                _outputTimelineStartTime = _reconnectionTime;
+
+                                // CRITICAL: Set the discontinuity remapping cooldown timer to prevent
+                                // source stream discontinuities from triggering additional remapping.
+                                // Some IPTV streams have inherent PTS discontinuities (e.g., ~9 second jumps)
+                                // that would cause double-remapping if not suppressed.
+                                _lastDiscontinuityRemappingTime = DateTime.UtcNow;
+
+                                _logger.PluginLogInformation(
+                                    "Reconnection timestamp remapping activated for channel {ChannelId}. "
+                                        + "Reset output timeline: BasePTS={BasePts} (expected at reconnection) at {BaseTime}",
+                                    MediaSource.Id,
+                                    _outputTimelineBasePts,
+                                    _reconnectionTime
+                                );
+                            }
+                            else
+                            {
+                                // CRITICAL FIX: Do NOT write data to buffer until remapping is activated!
+                                // Data chunks that arrive before we find a video PTS have un-remapped timestamps.
+                                // Writing them to the buffer would cause DTS out-of-order errors in FFmpeg
+                                // because readers could jump to these un-remapped packets after discontinuity.
+                                // Instead, we discard these early chunks and wait for a chunk with video PTS.
+                                _logger.LogDebugIfEnabled(
+                                    "Discarding {BytesRead} bytes of pre-remapping data for channel {ChannelId} (waiting for video PTS)",
+                                    bytesRead,
+                                    MediaSource.Id
+                                );
+                                continue; // Skip to next iteration without writing to buffer
+                            }
+                        }
+
+                        // Process data through in-process FFmpeg remuxer for proper A/V synchronization.
+                        // Handles: A/V sync via genpts/igndts, PCR regeneration, timestamp continuity.
+                        // The output bytes may differ from input due to FFmpeg's internal buffering.
+                        ReadOnlyMemory<byte> dataToWrite = bufferMemory[..bytesRead];
+
+                        if (_providerSwitchService != null)
+                        {
+                            var pipelineActive = _providerSwitchService.ProcessDataForRemapping(
+                                MediaSource.Id,
+                                bufferMemory[..bytesRead].Span,
+                                out var remuxedOutput
+                            );
+
+                            if (pipelineActive)
+                            {
+                                if (remuxedOutput is { Length: > 0 })
+                                {
+                                    // Pipeline is running and producing output - use remuxed data
+                                    // This ensures proper A/V sync and timestamp continuity
+                                    dataToWrite = remuxedOutput;
+                                }
+                                else if (_providerSwitchService.IsRemappingActive(MediaSource.Id))
+                                {
+                                    // Remuxer IS running but output queue is empty (internal buffering)
+                                    // Check if remuxer is healthy (producing output at reasonable ratio)
+                                    if (_providerSwitchService.IsRemuxerHealthy(MediaSource.Id))
+                                    {
+                                        // Healthy remuxer - just wait for next chunk
+                                        // CRITICAL: Don't write raw data here - it would cause DTS out-of-order
+                                        // errors because raw timestamps would mix with remapped timestamps
+                                        continue;
+                                    }
+
+                                    // Remuxer is STUCK (consumed lots of data but not producing output)
+                                    // Disable it permanently for this session to prevent repeated init/stuck cycles
+                                    _logger.PluginLogWarning(
+                                        "Remuxer stuck for channel {ChannelId} - disabling and falling back to raw data",
+                                        MediaSource.Id
+                                    );
+                                    _providerSwitchService.DisableRemuxer(MediaSource.Id);
+                                    // Fall through to write raw data
+                                }
+                                else
+                                {
+                                    // Remuxer is INITIALIZING (needs 512KB before producing output)
+                                    // Fall through to write raw data to keep buffer filled
+                                    // This prevents reader timeouts while remuxer warms up
+                                    // Raw data is safe here because no timestamp remapping has started yet
+                                    _logger.LogDebugIfEnabled(
+                                        "Remuxer initializing for channel {ChannelId}, writing raw data ({Bytes} bytes)",
+                                        MediaSource.Id,
+                                        bytesRead
+                                    );
+                                }
+                            }
+                            // If pipeline is not active (stream not registered with remuxer),
+                            // fall through to write raw data. This only happens when remuxing
+                            // is truly not configured for this stream.
+                        }
+
+                        // Mark discontinuity AFTER remapping is activated and this chunk is remapped,
+                        // but BEFORE writing to buffer. This ensures the discontinuity offset points to the first
+                        // REMAPPED data, not to un-remapped data that would cause DTS out-of-order errors.
+                        if (remappingJustActivated)
+                        {
+                            var paddingBytes = _buffer.MarkDiscontinuityAligned();
+                            if (paddingBytes > 0)
+                            {
+                                _logger.LogDebugIfEnabled(
+                                    "Added {PaddingBytes} bytes of null packet padding before remapped data for channel {ChannelId}",
+                                    paddingBytes,
+                                    MediaSource.Id
+                                );
+                            }
+                            _logger.PluginLogInformation(
+                                "Marked discontinuity at offset {Offset} for channel {ChannelId} after remapping activated (first remapped chunk)",
+                                _buffer.TotalBytesWritten,
+                                MediaSource.Id
+                            );
+                        }
+
+                        await _buffer.WriteAsync(dataToWrite, cancellationToken).ConfigureAwait(false);
+                        connectionBytes += dataToWrite.Length;
+                        totalBytesAllConnections += dataToWrite.Length;
+
+                        // Cache parameter sets (SPS/PPS/VPS) for injection during provider switches
+                        _providerSwitchService?.UpdateParameterSetCache(MediaSource.Id, bufferMemory[..bytesRead].Span);
+
+                        // Initialize output timeline on first valid PTS - must happen early for reconnection remapping
+                        // The health check runs every 30s which is too late for fast-disconnecting providers
+                        if (!_outputTimelineInitialized)
+                        {
+                            var (videoPts, _, _) = _buffer.TsIndexer.GetCurrentTimingState();
+                            if (videoPts > 0)
+                            {
+                                _outputTimelineBasePts = videoPts;
+                                _outputTimelineStartTime = DateTime.UtcNow;
+                                _outputTimelineInitialized = true;
+                                _logger.LogDebugIfEnabled(
+                                    "Output timeline initialized for channel {ChannelId}: BasePTS={BasePts}",
+                                    MediaSource.Id,
+                                    videoPts
+                                );
+                            }
+                        }
+
+                        var now = DateTime.UtcNow;
                         if ((now - lastLogTime).TotalSeconds >= ProgressLogIntervalSeconds)
                         {
-                            double sessionElapsed = (now - sessionStartTime).TotalSeconds;
-                            double mbps = (double)totalBytesAllConnections * 8.0 / 1000000.0 / sessionElapsed;
-                            double bufferFillPct =
+                            var sessionElapsed = (now - sessionStartTime).TotalSeconds;
+                            var mbps = (double)totalBytesAllConnections * 8.0 / 1000000.0 / sessionElapsed;
+                            var bufferFillPct =
                                 (double)(_buffer.TotalBytesWritten % _buffer.BufferSize)
                                 * 100.0
                                 / (double)_buffer.BufferSize;
@@ -898,18 +1390,18 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                         if ((now - lastHealthCheckTime).TotalSeconds >= HealthCheckIntervalSeconds)
                         {
-                            double bufferFillPct2 =
+                            var bufferFillPct2 =
                                 (double)(_buffer.TotalBytesWritten % _buffer.BufferSize)
                                 * 100.0
                                 / (double)_buffer.BufferSize;
-                            double currentBitrate =
+                            var currentBitrate =
                                 totalBytesAllConnections > 0
                                     ? (double)totalBytesAllConnections
                                         * 8.0
                                         / 1000000.0
                                         / (now - sessionStartTime).TotalSeconds
                                     : 0.0;
-                            bool isUnderrun = bufferFillPct2 < BufferUnderrunThresholdPercent;
+                            var isUnderrun = bufferFillPct2 < BufferUnderrunThresholdPercent;
 
                             if (isUnderrun)
                             {
@@ -928,9 +1420,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                                     if (_bufferUnderrunCount >= BufferUnderrunNotificationThreshold)
                                     {
-                                        int underrunCount = _bufferUnderrunCount;
-                                        double fillPct = bufferFillPct2;
-                                        double bitrate = currentBitrate;
+                                        var underrunCount = _bufferUnderrunCount;
+                                        var fillPct = bufferFillPct2;
+                                        var bitrate = currentBitrate;
                                         _discordService.SendFireAndForget(svc =>
                                             svc.NotifyBufferHealthIssueAsync(
                                                 MediaSource.Id,
@@ -944,7 +1436,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                                 }
                             }
 
-                            bool isNearFull = bufferFillPct2 > BufferNearFullThresholdPercent;
+                            var isNearFull = bufferFillPct2 > BufferNearFullThresholdPercent;
                             if (isNearFull)
                             {
                                 _bufferHealthWarnings++;
@@ -966,6 +1458,34 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                                     ConsumerCount,
                                     _buffer.TotalBytesWritten / 1048576
                                 );
+                            }
+
+                            // Tier 2: Bitrate monitoring for metrics and trend tracking
+                            RecordBitrateMetrics(connectionBytes, lastHealthCheckBytes, lastHealthCheckTime, now);
+                            lastHealthCheckBytes = connectionBytes;
+
+                            // Sync timing state to provider switch service for seamless failover
+                            if (_providerSwitchService != null)
+                            {
+                                var (videoPts, audioPts, pcr) = _buffer.TsIndexer.GetCurrentTimingState();
+                                if (videoPts > 0 || audioPts > 0 || pcr > 0)
+                                {
+                                    _providerSwitchService.UpdateTimingState(MediaSource.Id, videoPts, audioPts, pcr);
+
+                                    // Initialize output timeline on first valid PTS
+                                    // This establishes our baseline for continuous output regardless of provider timestamps
+                                    if (!_outputTimelineInitialized && videoPts > 0)
+                                    {
+                                        _outputTimelineBasePts = videoPts;
+                                        _outputTimelineStartTime = DateTime.UtcNow;
+                                        _outputTimelineInitialized = true;
+                                        _logger.LogDebugIfEnabled(
+                                            "Output timeline initialized for channel {ChannelId}: BasePTS={BasePts}",
+                                            MediaSource.Id,
+                                            videoPts
+                                        );
+                                    }
+                                }
                             }
 
                             lastHealthCheckTime = now;
@@ -996,7 +1516,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                 if (!cancellationToken.IsCancellationRequested)
                 {
-                    int cleanupDelayMs = consecutiveFailures == 0 && totalBytesAllConnections > 1048576 ? 250 : 500;
+                    var cleanupDelayMs = consecutiveFailures == 0 && totalBytesAllConnections > 1048576 ? 250 : 500;
                     await Task.Delay(cleanupDelayMs, CancellationToken.None).ConfigureAwait(false);
                     _logger.LogDebugIfEnabled(
                         "Connection cleanup delay ({DelayMs}ms) complete for channel {ChannelId}",
@@ -1016,12 +1536,19 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     // Signal that we're attempting to reconnect - readers will wait longer
                     _buffer.SignalReconnecting();
 
-                    bool isHealthyStream =
+                    // Tier 2: Check if current provider is predicted to fail and try hot-swap preemptively
+                    if (await TryTrendBasedHotSwapAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        // Hot-swap succeeded based on trend prediction - reset failures and continue
+                        consecutiveFailures = 0;
+                    }
+
+                    var isHealthyStream =
                         consecutiveFailures == 0 && totalBytesAllConnections > MinimumBytesForHealthyStream;
-                    int minimumReconnectDelay = isHealthyStream
+                    var minimumReconnectDelay = isHealthyStream
                         ? 500
                         : (totalBytesAllConnections > MinimumBytesForHealthyStream ? 1500 : 0);
-                    int backoffDelay2 = Math.Max(minimumReconnectDelay, CalculateBackoffDelay(consecutiveFailures));
+                    var backoffDelay2 = Math.Max(minimumReconnectDelay, CalculateBackoffDelay(consecutiveFailures));
                     _logger.LogDebugIfEnabled(
                         "Waiting {DelayMs}ms before reconnecting channel {ChannelId} (healthy: {IsHealthy}, failures: {FailureCount}, bytes: {BytesMB}MB)...",
                         backoffDelay2,
@@ -1058,7 +1585,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
                 if (!cancellationToken.IsCancellationRequested && connectionAttempt < MaxConnectionAttempts)
                 {
-                    int backoffDelay3 = CalculateBackoffDelay(consecutiveFailures);
+                    var backoffDelay3 = CalculateBackoffDelay(consecutiveFailures);
                     _logger.LogDebugIfEnabled(
                         "Waiting {DelayMs}ms before retry #{NextAttempt} (exponential backoff)",
                         backoffDelay3,
@@ -1069,7 +1596,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             }
         }
 
-        double totalSessionDuration = (DateTime.UtcNow - sessionStartTime).TotalSeconds;
+        var totalSessionDuration = (DateTime.UtcNow - sessionStartTime).TotalSeconds;
         _logger.PluginLogInformation(
             "Broadcast session ended for channel {ChannelId}: {TotalMB} MB in {Duration:F1}s across {Attempts} connection(s)",
             MediaSource.Id,
@@ -1119,7 +1646,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             return;
         }
 
-        if (_tokenSource != null && !_tokenSource.IsCancellationRequested)
+        if (_tokenSource?.IsCancellationRequested == false)
         {
             try
             {
@@ -1162,16 +1689,17 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             throw new InvalidOperationException("Stream " + MediaSource.Id + " has been disposed");
         }
 
-        if (_broadcastTask == null)
+        if (_broadcastTask == null || _broadcastTask.IsCompleted)
         {
             _logger.PluginLogWarning(
-                "Broadcast not initialized for channel {ChannelId}, initializing now...",
-                MediaSource.Id
+                "Broadcast not running for channel {ChannelId} (task={TaskState}), initializing now...",
+                MediaSource.Id,
+                _broadcastTask?.Status.ToString() ?? "null"
             );
             Open(CancellationToken.None).GetAwaiter().GetResult();
         }
 
-        Stream? stream = _readerPool.Acquire();
+        var stream = _readerPool.Acquire();
         if (stream == null)
         {
             _logger.PluginLogWarning(
@@ -1213,8 +1741,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             return;
         }
 
-        long bytesTransferred = _buffer.TotalBytesWritten;
-        bool streamActuallyStarted = bytesTransferred > 0 || _broadcastTask != null;
+        // Unregister from provider switch service for proper lifecycle cleanup
+        _providerSwitchService?.UnregisterStream(MediaSource.Id);
+
+        var bytesTransferred = _buffer.TotalBytesWritten;
+        var streamActuallyStarted = bytesTransferred > 0 || _broadcastTask != null;
 
         if (streamActuallyStarted)
         {
@@ -1247,6 +1778,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         _buffer.TsIndexer.StreamQualityViolation -= OnStreamQualityViolation;
         _buffer.TsIndexer.SyncDriftDetected -= OnSyncDriftDetected;
+        _buffer.TsIndexer.PtsDiscontinuityDetected -= OnPtsDiscontinuityDetected;
 
         if (_tokenSource != null)
         {
@@ -1267,10 +1799,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
     /// <summary>
     /// Handles TR 101 290 stream quality violation events from the TsIndexer.
-    /// Sends Discord notifications for stream quality issues.
+    /// Sends Discord notifications and delegates switch evaluation to IViolationSwitchTrigger (DIP).
     /// </summary>
     private void OnStreamQualityViolation(object? sender, StreamQualityViolationEventArgs e)
     {
+        // Send Discord notification (SRP: notification is separate from switch logic)
         _discordService.SendFireAndForget(svc =>
             svc.NotifyStreamQualityViolationAsync(
                 MediaSource.Id,
@@ -1279,26 +1812,90 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 e.Details
             )
         );
+
+        // Delegate switch evaluation to injected service (DIP/SRP)
+        if (_violationSwitchTrigger == null || _providerSwitchService == null)
+        {
+            return;
+        }
+
+        var result = _violationSwitchTrigger.RecordViolation(MediaSource.Id, e.ViolationType);
+        if (result.ShouldSwitch)
+        {
+            _logger.PluginLogWarning(
+                "TR 101 290 violation threshold exceeded for channel {ChannelId}: {Reason}. Attempting provider switch.",
+                MediaSource.Id,
+                result.Reason
+            );
+
+            // Capture the cancellation token before fire-and-forget to avoid race condition
+            // where _tokenSource could be disposed while the async method is running
+            var token = _tokenSource?.Token ?? CancellationToken.None;
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _ = TryViolationBasedSwitchAsync(result.Reason ?? "Unknown violation", token);
+        }
+    }
+
+    /// <summary>
+    /// Attempts a provider switch triggered by TR 101 290 violations.
+    /// </summary>
+    /// <param name="violationReason">The reason for the violation.</param>
+    /// <param name="cancellationToken">Cancellation token captured before fire-and-forget call.</param>
+    private async Task TryViolationBasedSwitchAsync(string violationReason, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (await TryProviderSwitchAsync(SwitchReason.HealthDegraded, cancellationToken).ConfigureAwait(false))
+            {
+                // Use the passed cancellationToken consistently to avoid race with _tokenSource disposal
+                _resolvedUrl = await ResolveStreamUrlAsync(_currentSourceUrl, cancellationToken).ConfigureAwait(false);
+                _logger.PluginLogInformation(
+                    "TR 101 290 violation-triggered switch successful for channel {ChannelId}: {Reason}",
+                    MediaSource.Id,
+                    violationReason
+                );
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected during shutdown - don't log as error
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebugIfEnabled(
+                ex,
+                "TR 101 290 violation-triggered switch failed for channel {ChannelId}",
+                MediaSource.Id
+            );
+        }
     }
 
     /// <summary>
     /// Handles A/V synchronization drift events from the TsIndexer.
-    /// Sends Discord notifications when audio and video drift out of sync.
+    /// Sends Discord notifications and delegates switch evaluation to IViolationSwitchTrigger (DIP).
     /// </summary>
     private void OnSyncDriftDetected(object? sender, SyncDriftEventArgs e)
     {
         var indexer = _buffer.TsIndexer;
-        var peakDrift = Math.Abs(e.DriftMs);
-        var violationCount = 1L;
-        var program = indexer.GetFirstProgramWithVideo();
+        var peakDrift = indexer.GetPeakDriftMs();
+        var violationCount = indexer.GetDriftViolationCount();
 
-        if (program != null)
+        // Fallback if no program detected yet
+        if (peakDrift == 0)
         {
-            var tracker = program.GetOrCreateTimestampTracker();
-            peakDrift = tracker.PeakDriftMs;
-            violationCount = tracker.DriftViolationCount;
+            peakDrift = Math.Abs(e.DriftMs);
         }
 
+        if (violationCount == 0)
+        {
+            violationCount = 1;
+        }
+
+        // Send Discord notification (SRP: notification is separate from switch logic)
         _discordService.SendFireAndForget(svc =>
             svc.NotifyAVDriftAsync(
                 MediaSource.Id,
@@ -1309,47 +1906,260 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 violationCount
             )
         );
+
+        // Delegate switch evaluation to injected service (DIP/SRP)
+        if (_violationSwitchTrigger == null || _providerSwitchService == null)
+        {
+            return;
+        }
+
+        var result = _violationSwitchTrigger.RecordDrift(MediaSource.Id, e.DriftMs);
+        if (result.ShouldSwitch)
+        {
+            _logger.PluginLogWarning(
+                "Severe A/V drift detected for channel {ChannelId}: {Reason}. Attempting provider switch.",
+                MediaSource.Id,
+                result.Reason
+            );
+
+            // Capture the cancellation token before fire-and-forget to avoid race condition
+            var token = _tokenSource?.Token ?? CancellationToken.None;
+            if (!token.IsCancellationRequested)
+            {
+                _ = TryViolationBasedSwitchAsync(result.Reason ?? "A/V drift", token);
+            }
+        }
     }
 
     /// <summary>
-    /// Attempts a hot-swap to a new provider when the current one is failing.
-    /// Delegates to IStreamHotSwapService following DIP (Dependency Inversion Principle).
+    /// Captures the current timing state for reconnection timestamp continuity.
+    /// Called when the HTTP connection is closed (either gracefully or via exception).
     /// </summary>
-    /// <param name="reason">The reason for the hot-swap attempt.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>True if the hot-swap succeeded and _currentSourceUrl was updated.</returns>
-    private async Task<bool> TryHotSwapAsync(SwitchReason reason, CancellationToken cancellationToken)
+    /// <remarks>
+    /// Uses our output timeline (wall-clock based) rather than provider timestamps.
+    /// Provider PCR/PTS values are not continuous across reconnections because each
+    /// HTTP connection gets a different point in the provider's broadcast timeline.
+    /// Our output timeline is continuous and monotonically increasing.
+    /// </remarks>
+    private void CaptureTimingStateForReconnection()
     {
-        // Fast-path: check if hot-swap service is available (DIP - depend on abstraction)
-        if (_hotSwapService == null)
+        // Primary approach: Use output timeline based on wall-clock time
+        // This is independent of provider timestamps and remains continuous across reconnections
+        if (_outputTimelineInitialized)
+        {
+            var elapsedSinceStart = DateTime.UtcNow - _outputTimelineStartTime;
+            var elapsedPts90Khz = (long)(elapsedSinceStart.TotalSeconds * 90000);
+            var outputPts = _outputTimelineBasePts + elapsedPts90Khz;
+
+            _lastDisconnectTime = DateTime.UtcNow;
+            _lastDisconnectVideoPts = outputPts;
+            _lastDisconnectAudioPts = outputPts; // Use same for audio since they should be in sync
+            _lastDisconnectPcr = outputPts * 300; // Convert 90kHz to 27MHz
+            _needsReconnectionRemapping = true;
+
+            _logger.PluginLogInformation(
+                "Captured timing state at disconnect for channel {ChannelId} (output timeline): "
+                    + "OutputPTS={OutputPts} (base={BasePts} + elapsed={ElapsedPts}), ElapsedMs={ElapsedMs:F1}",
+                MediaSource.Id,
+                outputPts,
+                _outputTimelineBasePts,
+                elapsedPts90Khz,
+                elapsedSinceStart.TotalMilliseconds
+            );
+            return;
+        }
+
+        // Fallback: Try to get timing from TsIndexer (for initial connection before output timeline is established)
+        var (videoPts, audioPts, pcr) = _buffer.TsIndexer.GetCurrentTimingState();
+
+        if (videoPts > 0)
+        {
+            _lastDisconnectTime = DateTime.UtcNow;
+            _lastDisconnectVideoPts = videoPts;
+            _lastDisconnectAudioPts = audioPts;
+            _lastDisconnectPcr = pcr;
+            _needsReconnectionRemapping = true;
+
+            _logger.PluginLogInformation(
+                "Captured timing state at disconnect for channel {ChannelId}: VideoPTS={VideoPts}, AudioPTS={AudioPts}, PCR={Pcr}",
+                MediaSource.Id,
+                videoPts,
+                audioPts,
+                pcr
+            );
+            return;
+        }
+
+        // Fallback 2: Derive from PCR if no video PTS available
+        if (pcr > 0)
+        {
+            var pcrDerivedPts = pcr / 300; // Convert 27MHz to 90kHz
+
+            _lastDisconnectTime = DateTime.UtcNow;
+            _lastDisconnectVideoPts = pcrDerivedPts;
+            _lastDisconnectAudioPts = pcrDerivedPts;
+            _lastDisconnectPcr = pcr;
+            _needsReconnectionRemapping = true;
+
+            _logger.PluginLogInformation(
+                "Captured timing state at disconnect for channel {ChannelId} (PCR-derived): VideoPTS={VideoPts}, PCR={Pcr}",
+                MediaSource.Id,
+                pcrDerivedPts,
+                pcr
+            );
+            return;
+        }
+
+        // No timing state available
+        _logger.PluginLogWarning(
+            "No timing state available at disconnect for channel {ChannelId} - reconnection remapping will not be available",
+            MediaSource.Id
+        );
+    }
+
+    /// <summary>
+    /// Handles PTS discontinuity events from the TsIndexer.
+    /// When a large PTS jump is detected in the source stream, this activates timestamp remapping
+    /// to smooth out the discontinuity and prevent frame jumping/looping for viewers.
+    /// </summary>
+    private void OnPtsDiscontinuityDetected(object? sender, PtsDiscontinuityEventArgs e)
+    {
+        // Only handle if we have the remapping service available
+        if (_providerSwitchService == null)
+        {
+            return;
+        }
+
+        // Apply cooldown to prevent rapid-fire activations from streams with systematic small jumps
+        var now = DateTime.UtcNow;
+        var timeSinceLastActivation = (now - _lastDiscontinuityRemappingTime).TotalMilliseconds;
+        if (timeSinceLastActivation < DiscontinuityRemappingCooldownMs)
+        {
+            _logger.LogDebugIfEnabled(
+                "PTS discontinuity for channel {ChannelId} ignored - cooldown active ({TimeSince:F0}ms < {Cooldown}ms)",
+                MediaSource.Id,
+                timeSinceLastActivation,
+                DiscontinuityRemappingCooldownMs
+            );
+            return;
+        }
+
+        _lastDiscontinuityRemappingTime = now;
+
+        _logger.PluginLogWarning(
+            "Source stream PTS discontinuity for channel {ChannelId}: {Direction} jump of {DeltaMs:F1}ms. Activating timestamp smoothing.",
+            MediaSource.Id,
+            e.IsBackwardJump ? "BACKWARD" : "FORWARD",
+            e.AbsoluteDeltaMs
+        );
+
+        // Activate remapping IMMEDIATELY with known PTS values.
+        // This is critical - the discontinuity has already occurred in the data that was just parsed,
+        // so we need to start remapping right away. The next packets will have their timestamps adjusted.
+        // Note: The packet that triggered this event has already been written to the buffer unremapped,
+        // but all subsequent packets will be remapped correctly.
+        _providerSwitchService.ActivateDiscontinuityRemapping(MediaSource.Id, e.PreviousPts, e.NewPts);
+
+        _logger.LogDebugIfEnabled(
+            "Activated discontinuity remapping for channel {ChannelId}: baseline PTS={BaselinePts}, remapping from {NewPts}",
+            MediaSource.Id,
+            e.PreviousPts,
+            e.NewPts
+        );
+    }
+
+    /// <summary>
+    /// Attempts to switch to a new provider when the current one is failing.
+    /// Delegates to IProviderSwitchService following DIP (Dependency Inversion Principle).
+    /// </summary>
+    /// <param name="reason">The reason for the switch attempt.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if the switch succeeded and _currentSourceUrl was updated.</returns>
+    private async Task<bool> TryProviderSwitchAsync(SwitchReason reason, CancellationToken cancellationToken)
+    {
+        // Fast-path: check if provider switch service is available (DIP - depend on abstraction)
+        if (_providerSwitchService == null)
         {
             return false;
         }
 
-        // Create context for the hot-swap service
-        var context = new HotSwapContext
+        // CRITICAL: Sync timing state BEFORE the switch begins
+        // The switch service needs the current PTS/PCR values to calculate remapping offsets.
+        // Without this, timestamp remapping cannot produce continuous playback.
+        var (videoPts, audioPts, pcr) = _buffer.TsIndexer.GetCurrentTimingState();
+        if (videoPts > 0 || audioPts > 0 || pcr > 0)
         {
-            StreamId = MediaSource.Id,
-            CurrentUrl = _currentSourceUrl,
-            BytesTransferred = _buffer.TotalBytesWritten,
-        };
+            _providerSwitchService.UpdateTimingState(MediaSource.Id, videoPts, audioPts, pcr);
+        }
 
-        // Delegate to the hot-swap service (SRP - Restream doesn't manage hot-swap logic)
-        var result = await _hotSwapService.TrySwitchAsync(context, reason, cancellationToken).ConfigureAwait(false);
+        // Delegate to the provider switch service (SRP - Restream doesn't manage switch logic)
+        var result = await _providerSwitchService
+            .TrySwitchAsync(MediaSource.Id, _currentSourceUrl, reason, cancellationToken)
+            .ConfigureAwait(false);
 
         if (result.Success && result.NewUrl is { Length: > 0 })
         {
-            // Update URL atomically
+            // Update URL atomically - but DON'T mark discontinuity yet!
+            // We need to verify the URL works before marking discontinuity, otherwise
+            // if the URL fails, we'll have a discontinuity pointing to nowhere useful.
             _currentSourceUrl = result.NewUrl;
 
-            // Mark discontinuity for timestamp handling (critical for seamless playback)
-            _buffer.MarkDiscontinuity();
-            _buffer.TsIndexer.ResetTimingState();
+            // CRITICAL FIX: Only mark discontinuity if we have aligned data (which means the
+            // connection was successfully established and data was received). If AlignedData
+            // is null/empty, it means the aligned switch failed and we're falling back to a
+            // simple URL switch - in which case the main HTTP loop will handle discontinuity
+            // when the new connection is actually established and remapping is activated.
+            if (result.AlignedData is { Length: > 0 })
+            {
+                // P1 FIX: Mark discontinuity for timestamp handling (critical for seamless playback)
+                // MarkDiscontinuityAligned pads to 188-byte boundary to prevent partial packets at switch
+                // This MUST happen before writing aligned data to ensure consumers see the discontinuity first
+                var paddingBytes = _buffer.MarkDiscontinuityAligned();
+                _buffer.TsIndexer.ResetTimingState();
+
+                if (paddingBytes > 0)
+                {
+                    _logger.LogDebugIfEnabled(
+                        "Added {PaddingBytes} bytes of null packet padding at provider switch for {ChannelId}",
+                        paddingBytes,
+                        MediaSource.Id
+                    );
+                }
+
+                // P0 FIX: Write aligned data from the switch to the buffer
+                // This is CRITICAL - the aligned data contains:
+                // 1. Data starting at a keyframe boundary (if found)
+                // 2. Timestamps that have been remapped for continuity
+                // 3. Discontinuity indicators injected in adaptation fields
+                // Without writing this data, consumers receive unaligned/un-remapped data from the new provider
+                _buffer.Write(result.AlignedData);
+                _logger.LogDebugIfEnabled(
+                    "Injected {AlignedDataBytes} bytes of aligned data into buffer for {ChannelId} (keyframe: {Keyframe})",
+                    result.AlignedData.Length,
+                    MediaSource.Id,
+                    result.AlignedToKeyframe
+                );
+            }
+            else
+            {
+                // No aligned data means the aligned switch failed. The main HTTP loop will handle
+                // discontinuity marking when it establishes the new connection. We still reset
+                // timing state to prepare for the new stream.
+                _buffer.TsIndexer.ResetTimingState();
+
+                _logger.LogDebugIfEnabled(
+                    "Provider switch without aligned data for {ChannelId} - discontinuity will be marked when new connection is established",
+                    MediaSource.Id
+                );
+            }
 
             _logger.PluginLogInformation(
-                "Hot-swap successful for {ChannelId} in {ElapsedMs}ms",
+                "Provider switch successful for {ChannelId} in {ElapsedMs}ms (remapping: {Remapping}, keyframe: {Keyframe}, alignedData: {AlignedBytes} bytes)",
                 MediaSource.Id,
-                result.ElapsedMs
+                result.DurationMs,
+                result.TimestampRemappingActive,
+                result.AlignedToKeyframe,
+                result.AlignedData?.Length ?? 0
             );
 
             // Fire-and-forget notification (non-blocking)
@@ -1358,8 +2168,133 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     MediaSource.Id,
                     MediaSource.Name ?? "Unknown",
                     "Provider Switch",
-                    $"Hot-swap: {reason}"
+                    $"Switch reason: {reason}"
                 )
+            );
+
+            // Post-switch PSI monitoring: verify PAT appears within 500ms (TR 101 290 requirement)
+            // This runs in the background and only logs a warning if PSI is missing
+            _ = MonitorPostSwitchPsiAsync(cancellationToken);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Monitors PSI presence after a provider switch per TR 101 290 requirements.
+    /// PAT must appear within 500ms of a switch for compliant streams.
+    /// Runs as fire-and-forget; only logs warnings on failure.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the monitoring operation.</returns>
+    private async Task MonitorPostSwitchPsiAsync(CancellationToken cancellationToken)
+    {
+        const int PsiMonitorDelayMs = 500; // TR 101 290: PAT must appear within 500ms
+
+        try
+        {
+            // Capture bytes written before waiting to detect if new data arrived
+            var bytesBeforeWait = _buffer.TotalBytesWritten;
+
+            await Task.Delay(PsiMonitorDelayMs, cancellationToken).ConfigureAwait(false);
+
+            // Check if data was received and programs are detected (PAT processed)
+            var bytesAfterWait = _buffer.TotalBytesWritten;
+            var programCount = _buffer.TsIndexer.ProgramCount;
+
+            // If we received significant data but no programs, PSI is missing
+            var bytesReceived = bytesAfterWait - bytesBeforeWait;
+            if (bytesReceived > 10000 && programCount == 0)
+            {
+                _logger.PluginLogWarning(
+                    "No PAT/PMT received from new provider within {TimeoutMs}ms for channel {ChannelId} "
+                        + "({BytesReceived} bytes received, 0 programs). Stream may have PSI issues (TR 101 290 violation).",
+                    PsiMonitorDelayMs,
+                    MediaSource.Id,
+                    bytesReceived
+                );
+
+                // Notify via Discord if available
+                _discordService.SendFireAndForget(svc =>
+                    svc.NotifyStreamQualityViolationAsync(
+                        MediaSource.Id,
+                        MediaSource.Name ?? "Unknown",
+                        "PSI Warning",
+                        $"No PAT received within {PsiMonitorDelayMs}ms after provider switch"
+                    )
+                );
+            }
+            else if (programCount > 0)
+            {
+                _logger.LogDebugIfEnabled(
+                    "Post-switch PSI validation passed for channel {ChannelId}: {ProgramCount} program(s) detected",
+                    MediaSource.Id,
+                    programCount
+                );
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Stream was stopped during monitoring - ignore
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebugIfEnabled(
+                ex,
+                "Error during post-switch PSI monitoring for channel {ChannelId}",
+                MediaSource.Id
+            );
+        }
+    }
+
+    /// <summary>
+    /// Attempts a preemptive hot-swap based on health trend predictions.
+    /// Uses the failover service's trend tracker to predict imminent failures.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if hot-swap was triggered and succeeded.</returns>
+    private async Task<bool> TryTrendBasedHotSwapAsync(CancellationToken cancellationToken)
+    {
+        // Skip if trend tracking is not available
+        if (_failoverService?.TrendTracker is not { } trendTracker)
+        {
+            return false;
+        }
+
+        var providerId = GetCurrentProviderId();
+        if (string.IsNullOrEmpty(providerId))
+        {
+            return false;
+        }
+
+        // Get trend snapshot for current provider
+        var snapshot = trendTracker.GetSnapshot(providerId);
+
+        // Only trigger preemptive switch if imminent failure is predicted
+        if (!snapshot.SuggestsImminentFailure)
+        {
+            return false;
+        }
+
+        _logger.PluginLogInformation(
+            "Provider {ProviderId} predicted to fail (trend={Trend}, predicted60s={Score}). Attempting preemptive hot-swap for channel {ChannelId}.",
+            providerId,
+            snapshot.Trend,
+            snapshot.PredictedScore60s,
+            MediaSource.Id
+        );
+
+        // Try hot-swap to a healthier provider
+        if (await TryProviderSwitchAsync(SwitchReason.HealthDegraded, cancellationToken).ConfigureAwait(false))
+        {
+            // Update resolved URL to the new provider
+            _resolvedUrl = await ResolveStreamUrlAsync(_currentSourceUrl, cancellationToken).ConfigureAwait(false);
+
+            _logger.PluginLogInformation(
+                "Preemptive hot-swap successful for channel {ChannelId} - switched away from degrading provider",
+                MediaSource.Id
             );
 
             return true;
@@ -1369,14 +2304,109 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     }
 
     /// <summary>
+    /// Extracts a provider ID from the current source URL for metrics tracking.
+    /// Uses the URL host as the provider identifier for simplicity.
+    /// </summary>
+    /// <returns>The provider ID (host), or null if extraction fails.</returns>
+    private string? GetCurrentProviderId()
+    {
+        try
+        {
+            var url = _currentSourceUrl;
+            if (string.IsNullOrEmpty(url))
+            {
+                return null;
+            }
+
+            var uri = new Uri(url);
+            return $"{uri.Host}:{uri.Port}";
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Records bitrate metrics for the current provider and updates health trends.
+    /// Implements Tier 2 bitrate monitoring per the provider resilience plan.
+    /// </summary>
+    /// <param name="currentBytes">Current connection bytes.</param>
+    /// <param name="previousBytes">Bytes at previous health check.</param>
+    /// <param name="previousTime">Time of previous health check.</param>
+    /// <param name="currentTime">Current time.</param>
+    private void RecordBitrateMetrics(
+        long currentBytes,
+        long previousBytes,
+        DateTime previousTime,
+        DateTime currentTime
+    )
+    {
+        // Skip if metrics tracking is not configured
+        if (_failoverService == null)
+        {
+            return;
+        }
+
+        var providerId = GetCurrentProviderId();
+        if (string.IsNullOrEmpty(providerId))
+        {
+            return;
+        }
+
+        // Calculate interval-specific bitrate
+        var intervalSeconds = (currentTime - previousTime).TotalSeconds;
+        if (intervalSeconds <= 0 || previousBytes <= 0)
+        {
+            return;
+        }
+
+        var bytesDelta = currentBytes - previousBytes;
+        var intervalMbps = bytesDelta * 8.0 / (intervalSeconds * 1_000_000);
+
+        // Record throughput for metrics tracking
+        _failoverService.RecordThroughput(providerId, bytesDelta, (long)(intervalSeconds * 1000));
+
+        // Low bitrate detection: <0.5 Mbps is below minimum viable streaming
+        // This catches slow providers before complete stalls (per Netflix QoE research)
+        const double MinViableMbps = 0.5;
+        if (intervalMbps < MinViableMbps && currentBytes > MinimumBytesForHealthyStream)
+        {
+            _logger.PluginLogWarning(
+                "Low bitrate detected for channel {ChannelId}: {Mbps:F2} Mbps (minimum: {Min} Mbps)",
+                MediaSource.Id,
+                intervalMbps,
+                MinViableMbps
+            );
+
+            // Record as data stall for health scoring
+            _failoverService.RecordError(providerId, StreamErrorType.DataStall);
+
+            // Update health trend for predictive failover
+            if (_failoverService?.TrendTracker is { } trendTracker)
+            {
+                var currentScore = _failoverService.CalculateHealthScore(providerId);
+                // Penalize score for low bitrate (-20 points)
+                trendTracker.RecordSample(providerId, Math.Max(0, currentScore - 20));
+            }
+        }
+        else if (_failoverService?.TrendTracker is { } trendTracker)
+        {
+            // Record healthy sample for trend tracking
+            var currentScore = _failoverService.CalculateHealthScore(providerId);
+            trendTracker.RecordSample(providerId, currentScore);
+        }
+    }
+
+    /// <summary>
     /// Calculates exponential backoff delay with jitter to prevent thundering herd effect.
     /// </summary>
     private static int CalculateBackoffDelay(int failureCount, int baseDelayMs = 1000)
     {
-        int exponentialDelay = baseDelayMs * (int)Math.Pow(2.0, Math.Min(failureCount - 1, 5));
-        int cappedDelay = Math.Min(exponentialDelay, 30000);
-        Random random = Random.Shared;
-        double jitterFactor = 0.8 + random.NextDouble() * 0.4;
+        var exponentialDelay = baseDelayMs * (int)Math.Pow(2.0, Math.Min(failureCount - 1, 5));
+        var cappedDelay = Math.Min(exponentialDelay, 30000);
+        var random = Random.Shared;
+        var jitterFactor = 0.8 + (random.NextDouble() * 0.4);
         return (int)(cappedDelay * jitterFactor);
     }
 
@@ -1385,7 +2415,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     private static string DetectStreamQuality(MediaSourceInfo mediaSource)
     {
-        string name = mediaSource.Name?.ToLowerInvariant() ?? string.Empty;
+        var name = mediaSource.Name?.ToLowerInvariant() ?? string.Empty;
 
         if (
             name.Contains("4k", StringComparison.Ordinal)
@@ -1413,7 +2443,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         if (mediaSource.MediaStreams != null)
         {
-            foreach (MediaStream stream in mediaSource.MediaStreams)
+            foreach (var stream in mediaSource.MediaStreams)
             {
                 if (stream.Type == MediaStreamType.Video)
                 {
@@ -1422,17 +2452,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         return "UHD/4K";
                     }
 
-                    if (stream.Width >= 1920 || stream.Height >= 1080)
-                    {
-                        return "Full HD";
-                    }
-
-                    if (stream.Width >= 1280 || stream.Height >= 720)
-                    {
-                        return "HD";
-                    }
-
-                    return "SD";
+                    return stream.Width >= 1920 || stream.Height >= 1080 ? "Full HD"
+                        : stream.Width >= 1280 || stream.Height >= 720 ? "HD"
+                        : "SD";
                 }
             }
         }
@@ -1466,10 +2488,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// Gets the count of active Restream instances.
     /// </summary>
     /// <returns>The number of active streams.</returns>
-    public static int GetActiveStreamCount()
-    {
-        return _activeStreams.Count;
-    }
+    public static int GetActiveStreamCount() => _activeStreams.Count;
 
     /// <summary>
     /// Gets information about all active streams for API/UI purposes.
@@ -1477,18 +2496,18 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <returns>A list of stream information objects.</returns>
     public static IReadOnlyList<StreamInfoSnapshot> GetActiveStreamSnapshots()
     {
-        List<StreamInfoSnapshot> result = new List<StreamInfoSnapshot>();
+        List<StreamInfoSnapshot> result = [];
 
-        foreach (KeyValuePair<string, Restream> activeStream in _activeStreams)
+        foreach (var activeStream in _activeStreams)
         {
-            Restream stream = activeStream.Value;
+            var stream = activeStream.Value;
             try
             {
                 long bufferSize = stream._buffer.BufferSize;
-                long totalWritten = stream._buffer.TotalBytesWritten;
-                long currentPosition = totalWritten % bufferSize;
-                double fillPct = bufferSize > 0 ? (double)currentPosition * 100.0 / (double)bufferSize : 0.0;
-                bool hasWrapped = totalWritten >= bufferSize;
+                var totalWritten = stream._buffer.TotalBytesWritten;
+                var currentPosition = totalWritten % bufferSize;
+                var fillPct = bufferSize > 0 ? (double)currentPosition * 100.0 / (double)bufferSize : 0.0;
+                var hasWrapped = totalWritten >= bufferSize;
                 string status;
 
                 if (stream._broadcastTask == null)
@@ -1497,7 +2516,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 }
                 else if (!hasWrapped)
                 {
-                    double initialFillPct = (double)totalWritten * 100.0 / (double)bufferSize;
+                    var initialFillPct = (double)totalWritten * 100.0 / (double)bufferSize;
                     status = initialFillPct > 75.0 ? "Filling" : "Buffering";
                     fillPct = initialFillPct;
                 }
@@ -1507,13 +2526,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 }
 
                 // Get quality metrics from TsIndexer
-                MpegTs.TsIndexer monitor = stream._buffer.TsIndexer;
-                long packetErrors = monitor.TotalPacketErrors;
-                long continuityErrors = monitor.TotalContinuityErrors;
-                long syncErrors = monitor.SyncByteErrors;
-                long patViolations = monitor.PatIntervalViolations;
-                long crcErrors = monitor.PatCrcErrors + monitor.PmtCrcErrors + monitor.CatCrcErrors;
-                double avDriftMs = monitor.GetCurrentDriftMs();
+                var monitor = stream._buffer.TsIndexer;
+                var packetErrors = monitor.TotalPacketErrors;
+                var continuityErrors = monitor.TotalContinuityErrors;
+                var syncErrors = monitor.SyncByteErrors;
+                var patViolations = monitor.PatIntervalViolations;
+                var crcErrors = monitor.PatCrcErrors + monitor.PmtCrcErrors + monitor.CatCrcErrors;
+                var avDriftMs = monitor.GetCurrentDriftMs();
                 var syncStatus = monitor.GetSyncStatus();
 
                 // Calculate quality level and issues
@@ -1548,7 +2567,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     issues.Add(string.Format(CultureInfo.InvariantCulture, "A/V drift {0:F0}ms", avDriftMs));
                 }
 
-                string qualityLevel =
+                var qualityLevel =
                     issues.Count == 0 ? "None"
                     : Math.Abs(avDriftMs) > 100 || crcErrors > 10 || packetErrors > 100 ? "Critical"
                     : "Warning";
@@ -1611,7 +2630,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <returns>True if the stream was found and killed, false otherwise.</returns>
     public static bool KillStream(string streamId, string? reason = null)
     {
-        if (_activeStreams.TryGetValue(streamId, out Restream? stream))
+        if (_activeStreams.TryGetValue(streamId, out var stream))
         {
             stream._killReason = reason ?? "Manual termination";
             stream.Dispose();
@@ -1628,9 +2647,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <returns>The number of streams killed.</returns>
     public static int KillAllStreams(string? reason = null)
     {
-        int count = 0;
+        var count = 0;
 
-        foreach (Restream stream in _activeStreams.Values.ToList())
+        foreach (var stream in _activeStreams.Values.ToList())
         {
             try
             {
