@@ -16,11 +16,14 @@
 using System;
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Discord;
 using Discord.Webhook;
 using Jellyfin.Xtream.Service.Discord;
+using Jellyfin.Xtream.Service.MpegTs.Core;
+using Jellyfin.Xtream.Service.MpegTs.Models;
 using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
@@ -31,29 +34,26 @@ namespace Jellyfin.Xtream.Service;
 /// Service for sending Discord webhook notifications about stream health using Discord.Net.
 /// Implements IDiscordNotificationService for dependency injection and testability.
 /// </summary>
-public sealed class DiscordNotificationService : IDiscordNotificationService, IDisposable
+/// <remarks>
+/// Initializes a new instance of the <see cref="DiscordNotificationService"/> class.
+/// </remarks>
+/// <param name="logger">The logger.</param>
+public sealed class DiscordNotificationService(ILogger<DiscordNotificationService> logger)
+    : IDiscordNotificationService,
+        IDisposable
 {
     private const int MinNotificationIntervalSeconds = 10; // Prevent spam
     private const int AVDriftCooldownMinutes = 5; // Per-channel cooldown for A/V drift notifications
     private const string JellyfinIconUrl =
         "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/icon-transparent.svg";
 
-    private readonly ILogger<DiscordNotificationService> _logger;
+    private readonly ILogger<DiscordNotificationService> _logger = logger;
     private readonly SemaphoreSlim _rateLimiter = new(1, 1);
     private readonly ConcurrentDictionary<string, DateTime> _lastAVDriftNotificationPerChannel = new(
         StringComparer.Ordinal
     );
     private DateTime _lastNotification = DateTime.MinValue;
     private bool _disposed;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="DiscordNotificationService"/> class.
-    /// </summary>
-    /// <param name="logger">The logger.</param>
-    public DiscordNotificationService(ILogger<DiscordNotificationService> logger)
-    {
-        _logger = logger;
-    }
 
     /// <summary>
     /// Sends a buffer overflow notification to Discord.
@@ -75,7 +75,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnBufferOverflow)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnBufferOverflow)
         {
             return;
         }
@@ -91,15 +91,15 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("Buffer Overflow")
             .WithDescription($"**⚠️ WARNING** - Stream buffer overflow detected\n**Channel:** `{streamId}`")
             .WithColor(Color.Orange)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("# Channel", channelName, true)
-            .AddField("⚠️ Event", $"Overflow #{overflowCount}", true)
-            .AddField("💾 Data Lost", $"{lostMB:F2} MB", true)
-            .AddField("📉 Total Lost", $"{totalLostMB:F2} MB", true)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("# Channel", channelName, inline: true)
+            .AddField("⚠️ Event", $"Overflow #{overflowCount}", inline: true)
+            .AddField("💾 Data Lost", $"{lostMB:F2} MB", inline: true)
+            .AddField("📉 Total Lost", $"{totalLostMB:F2} MB", inline: true)
             .WithTimestamp(now)
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -116,7 +116,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnStreamStart)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnStreamStart)
         {
             return;
         }
@@ -127,13 +127,13 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("Stream Started")
             .WithDescription($"**Channel:** `{channelName}` ({streamId})")
             .WithColor(Color.Blue)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("🖥️ Server", Environment.MachineName, true)
-            .AddField("📡 Status", "Broadcasting", true)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("🖥️ Server", Environment.MachineName, inline: true)
+            .AddField("📡 Status", "Broadcasting", inline: true)
             .WithTimestamp(now)
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -152,7 +152,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnStreamError)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnStreamError)
         {
             return;
         }
@@ -167,14 +167,14 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("Stream Error")
             .WithDescription($"**🔴 ERROR** - Stream encountered an error\n**Channel:** `{streamId}`")
             .WithColor(Color.Red)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("# Channel", channelName, true)
-            .AddField("❌ Status", "Failed", true)
-            .AddField("⚠️ Error Details", truncatedError, false)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("# Channel", channelName, inline: true)
+            .AddField("❌ Status", "Failed", inline: true)
+            .AddField("⚠️ Error Details", truncatedError, inline: false)
             .WithTimestamp(now)
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -197,7 +197,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnStreamKilled)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnStreamKilled)
         {
             return;
         }
@@ -215,15 +215,15 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("Stream Killed")
             .WithDescription($"**Channel:** `{channelName}` ({streamId})")
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("⏱️ Duration", FormatDuration(duration), true)
-            .AddField("📊 Data Transferred", FormatBytes(bytesTransferred), true)
-            .AddField("📝 Reason", reason, false)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("⏱️ Duration", FormatDuration(duration), inline: true)
+            .AddField("📊 Data Transferred", FormatBytes(bytesTransferred), inline: true)
+            .AddField("📝 Reason", reason, inline: false)
             .WithTimestamp(now)
             .WithFooter("Stream terminated")
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -246,7 +246,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications)
+        if (config?.EnableDiscordNotifications != true)
         {
             return;
         }
@@ -280,16 +280,16 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("Buffer Health Alert")
             .WithDescription($"{severity} · Buffer underrun detected\n**Channel:** `{channelName}` ({streamId})")
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("⚠️ Underrun Count", $"#{underrunCount}", true)
-            .AddField("📊 Buffer Fill", $"{fillPercentage:F1}%", true)
-            .AddField("📡 Bitrate", $"{currentBitrate:F2} Mbps", true)
-            .AddField("💡 Recommendation", recommendation, false)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("⚠️ Underrun Count", $"#{underrunCount}", inline: true)
+            .AddField("📊 Buffer Fill", $"{fillPercentage:F1}%", inline: true)
+            .AddField("📡 Bitrate", $"{currentBitrate:F2} Mbps", inline: true)
+            .AddField("💡 Recommendation", recommendation, inline: false)
             .WithTimestamp(now)
             .WithFooter("Buffer health monitoring")
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -308,7 +308,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications)
+        if (config?.EnableDiscordNotifications != true)
         {
             return;
         }
@@ -328,14 +328,14 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         //   Status: {status}
 
         var lines = diagnostics.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        string bufferSize = "Unknown";
-        string totalWritten = "Unknown";
-        string totalRead = "Unknown";
-        string currentGap = "Unknown";
-        string overflows = "Unknown";
-        string dataLost = "Unknown";
-        string aligned = "Unknown";
-        string status = "Unknown";
+        var bufferSize = "Unknown";
+        var totalWritten = "Unknown";
+        var totalRead = "Unknown";
+        var currentGap = "Unknown";
+        var overflows = "Unknown";
+        var dataLost = "Unknown";
+        var aligned = "Unknown";
+        var status = "Unknown";
 
         foreach (var line in lines)
         {
@@ -394,20 +394,20 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("Buffer Diagnostics")
             .WithDescription($"📊 **Detailed Buffer Status**\n**Channel:** `{channelName}` ({streamId})")
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("📊 Status", $"{statusEmoji} {status}", true)
-            .AddField("💾 Buffer Size", bufferSize, true)
-            .AddField("📤 Written", totalWritten, true)
-            .AddField("📥 Read", totalRead, true)
-            .AddField("⏱️ Gap", currentGap, true)
-            .AddField("⚠️ Overflows", overflows, true)
-            .AddField("📉 Data Lost", dataLost, true)
-            .AddField("🎯 Aligned", aligned, true)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("📊 Status", $"{statusEmoji} {status}", inline: true)
+            .AddField("💾 Buffer Size", bufferSize, inline: true)
+            .AddField("📤 Written", totalWritten, inline: true)
+            .AddField("📥 Read", totalRead, inline: true)
+            .AddField("⏱️ Gap", currentGap, inline: true)
+            .AddField("⚠️ Overflows", overflows, inline: true)
+            .AddField("📉 Data Lost", dataLost, inline: true)
+            .AddField("🎯 Aligned", aligned, inline: true)
             .WithTimestamp(now)
             .WithFooter("Buffer diagnostics snapshot")
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -430,140 +430,48 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("Test Notification")
             .WithDescription("**SUCCESS** · Discord integration is working!")
             .WithColor(Color.Green)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("# Channel", "Configuration", true)
-            .AddField("▶ Event", "Webhook Test", true)
-            .AddField("📊 Status", "Ready", true)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("# Channel", "Configuration", inline: true)
+            .AddField("▶ Event", "Webhook Test", inline: true)
+            .AddField("📊 Status", "Ready", inline: true)
             .WithTimestamp(now)
             .Build();
 
         return await SendDiscordMessageAsync(embed, cancellationToken, webhookUrl).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Sends MPEG-TS indexer diagnostics to Discord.
-    /// Reports stream health metrics including packet loss, PCR jitter, and transport errors.
-    /// </summary>
-    /// <param name="streamId">The stream identifier.</param>
-    /// <param name="channelName">The channel name.</param>
-    /// <param name="diagnostics">The TsIndexer diagnostics string from GetDiagnostics().</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A task representing the asynchronous operation.</returns>
-    public async Task SendTsIndexerDiagnosticsAsync(
+    /// <inheritdoc/>
+    public async Task SendTsIndexerMetricsAsync(
         string streamId,
         string channelName,
-        string diagnostics,
+        TsIndexerMetrics metrics,
         CancellationToken cancellationToken = default
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications)
+        if (config?.EnableDiscordNotifications != true)
         {
             return;
         }
 
         var now = DateTime.UtcNow;
 
-        // Parse TsIndexer diagnostics to extract key metrics
-        var lines = diagnostics.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        string programsDetected = "0";
-        string programsWithVideo = "0";
-        string packetsParsed = "0";
-        string bytesProcessed = "0 MB";
-        string resyncEvents = "0";
-        string transportErrors = "0 (0%)";
-        string continuityErrors = "0 (0%)";
-        string partialPacket = "0 bytes";
-
-        // Program-specific metrics
-        string videoPid = "N/A";
-        string pcrPid = "N/A";
-        string keyframes = "0";
-        string avgGop = "N/A";
-        string packetLoss = "0";
-        string pcrStatus = "N/A";
-
-        foreach (var line in lines)
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("Programs Detected:", StringComparison.Ordinal))
-            {
-                programsDetected = trimmed[18..].Trim();
-            }
-            else if (trimmed.StartsWith("Programs with Video:", StringComparison.Ordinal))
-            {
-                programsWithVideo = trimmed[20..].Trim();
-            }
-            else if (trimmed.StartsWith("Packets Parsed:", StringComparison.Ordinal))
-            {
-                packetsParsed = trimmed[15..].Trim();
-            }
-            else if (trimmed.StartsWith("Bytes Processed:", StringComparison.Ordinal))
-            {
-                bytesProcessed = trimmed[16..].Trim();
-            }
-            else if (trimmed.StartsWith("Resync Events:", StringComparison.Ordinal))
-            {
-                resyncEvents = trimmed[14..].Trim();
-            }
-            else if (trimmed.StartsWith("Transport Errors (TEI):", StringComparison.Ordinal))
-            {
-                transportErrors = trimmed[23..].Trim();
-            }
-            else if (trimmed.StartsWith("Continuity Errors (CC):", StringComparison.Ordinal))
-            {
-                continuityErrors = trimmed[23..].Trim();
-            }
-            else if (trimmed.StartsWith("Partial Packet Buffered:", StringComparison.Ordinal))
-            {
-                partialPacket = trimmed[24..].Trim();
-            }
-            else if (trimmed.StartsWith("Video PID:", StringComparison.Ordinal))
-            {
-                videoPid = trimmed[10..].Trim();
-            }
-            else if (trimmed.StartsWith("PCR PID:", StringComparison.Ordinal))
-            {
-                pcrPid = trimmed[8..].Trim();
-            }
-            else if (trimmed.StartsWith("Keyframes:", StringComparison.Ordinal))
-            {
-                keyframes = trimmed[10..].Trim();
-            }
-            else if (trimmed.StartsWith("Avg GOP:", StringComparison.Ordinal))
-            {
-                avgGop = trimmed[8..].Trim();
-            }
-            else if (trimmed.StartsWith("Packet Loss:", StringComparison.Ordinal))
-            {
-                packetLoss = trimmed[12..].Trim();
-            }
-            else if (trimmed.StartsWith("PCR Status:", StringComparison.Ordinal))
-            {
-                pcrStatus = trimmed[11..].Trim();
-            }
-        }
-
-        // Determine health status and color based on error rates
-        var hasErrors =
-            continuityErrors.Contains('(', StringComparison.Ordinal)
-            && !continuityErrors.Contains("(0.0000%)", StringComparison.Ordinal);
-        var hasTransportErrors =
-            transportErrors.Contains('(', StringComparison.Ordinal)
-            && !transportErrors.Contains("(0.0000%)", StringComparison.Ordinal);
-        var hasResync = resyncEvents != "0";
+        // Determine health status based on error rates
+        var hasSignificantErrors = metrics.ContinuityErrorRate > 0.0001; // > 0.01%
+        var hasTransportErrors = metrics.TransportErrorRate > 0;
+        var isEncrypted = metrics.IsEncrypted;
 
         Color color;
         string statusEmoji;
         string healthStatus;
 
-        if (hasTransportErrors || (hasErrors && !continuityErrors.Contains("(0.", StringComparison.Ordinal)))
+        if (hasTransportErrors || hasSignificantErrors)
         {
             color = Color.Red;
             statusEmoji = "🔴";
             healthStatus = "DEGRADED";
         }
-        else if (hasErrors || hasResync)
+        else if (metrics.ContinuityErrorRate > 0 || isEncrypted)
         {
             color = Color.Orange;
             statusEmoji = "⚠️";
@@ -576,40 +484,110 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             healthStatus = "HEALTHY";
         }
 
+        // Format data processed
+        var bytesProcessed =
+            metrics.TotalBytesProcessed >= 1024 * 1024
+                ? string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0:N1} MB",
+                    metrics.TotalBytesProcessed / (1024.0 * 1024.0)
+                )
+                : string.Format(CultureInfo.InvariantCulture, "{0:N0} KB", metrics.TotalBytesProcessed / 1024.0);
+
+        // Format error rates
+        var transportErrors = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:N0} ({1:F4}%)",
+            metrics.TransportErrorCount,
+            metrics.TransportErrorRate * 100
+        );
+        var continuityErrors = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0:N0} ({1:F4}%)",
+            metrics.ContinuityErrorCount,
+            metrics.ContinuityErrorRate * 100
+        );
+
         var embed = new EmbedBuilder()
             .WithAuthor("Jellyfin.Xtream", JellyfinIconUrl)
             .WithTitle("MPEG-TS Stream Diagnostics")
             .WithDescription($"📊 **Stream Health Report**\n**Channel:** `{channelName}` ({streamId})")
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("📊 Status", $"{statusEmoji} {healthStatus}", true)
-            .AddField("📺 Programs", $"{programsWithVideo}/{programsDetected} with video", true)
-            .AddField("📦 Packets Parsed", packetsParsed, true)
-            .AddField("💾 Data Processed", bytesProcessed, true)
-            .AddField("🔄 Resync Events", resyncEvents, true)
-            .AddField("❌ Transport Errors", transportErrors, true)
-            .AddField("⚠️ Continuity Errors", continuityErrors, true)
-            .AddField("📼 Partial Buffer", partialPacket, true);
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("📊 Status", $"{statusEmoji} {healthStatus}", inline: true)
+            .AddField(
+                "📺 Programs",
+                $"{metrics.ProgramsWithVideoCount}/{metrics.ProgramCount} with video",
+                inline: true
+            )
+            .AddField(
+                "📦 Packets Parsed",
+                string.Format(CultureInfo.InvariantCulture, "{0:N0}", metrics.TotalPacketsParsed),
+                inline: true
+            )
+            .AddField("💾 Data Processed", bytesProcessed, inline: true)
+            .AddField(
+                "🔐 Encrypted",
+                metrics.IsEncrypted ? $"Yes ({metrics.ScrambledPidCount} PIDs)" : "No",
+                inline: true
+            )
+            .AddField("❌ Transport Errors", transportErrors, inline: true)
+            .AddField("⚠️ Continuity Errors", continuityErrors, inline: true)
+            .AddField(
+                "📋 PAT Violations",
+                metrics.PatIntervalViolations.ToString(CultureInfo.InvariantCulture),
+                inline: true
+            );
 
-        // Add program-specific fields if available
-        if (videoPid != "N/A")
+        // Add first program's details if available
+        if (metrics.Programs.Count > 0)
         {
-            embed
-                .AddField("🎬 Video PID", videoPid, true)
-                .AddField("⏱️ PCR PID", pcrPid, true)
-                .AddField("🔑 Keyframes", keyframes, true)
-                .AddField("📐 Avg GOP", avgGop, true)
-                .AddField("📉 Packet Loss", packetLoss, true)
+            var prog = metrics.Programs[0];
+            var avgGop =
+                prog.AverageGopDuration > TimeSpan.Zero
+                    ? string.Format(CultureInfo.InvariantCulture, "{0:F2}s", prog.AverageGopDuration.TotalSeconds)
+                    : "N/A";
+            var pcrStatus = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} PCRs, {1} jitter violations, buffer: {2:F0}ms",
+                prog.PcrCount,
+                prog.PcrJitterViolations,
+                prog.PcrBufferMs
+            );
+            var syncInfo = FormatSyncStatus(prog.SyncStatus, prog.DriftMs);
+
+            _ = embed
+                .AddField("🎬 Video PID", prog.VideoPid.ToString(CultureInfo.InvariantCulture), inline: true)
+                .AddField("⏱️ PCR PID", prog.PcrPid.ToString(CultureInfo.InvariantCulture), inline: true)
+                .AddField("🔑 Keyframes", prog.KeyframeCount.ToString(CultureInfo.InvariantCulture), inline: true)
+                .AddField("📐 Avg GOP", avgGop, inline: true)
+                .AddField("📉 Packet Loss", $"{prog.PacketLossCount} discontinuities", inline: true)
+                .AddField("🔊 A/V Sync", syncInfo, inline: true)
                 .AddField(
                     "🕰️ PCR Status",
-                    pcrStatus.Length > 100 ? string.Concat(pcrStatus.AsSpan(0, 97), "...") : pcrStatus,
-                    false
+                    pcrStatus.Length > 100 ? $"{pcrStatus.AsSpan(0, 97)}..." : pcrStatus,
+                    inline: false
                 );
         }
 
-        embed.WithTimestamp(now).WithFooter("MPEG-TS Indexer Diagnostics (ISO/IEC 13818-1, TR 101 290)");
+        _ = embed.WithTimestamp(now).WithFooter("MPEG-TS Indexer Diagnostics (ISO/IEC 13818-1, TR 101 290)");
 
-        await SendDiscordMessageAsync(embed.Build(), cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed.Build(), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string FormatSyncStatus(SyncStatus status, double driftMs)
+    {
+        return status switch
+        {
+            SyncStatus.Synchronized => $"✅ In Sync ({driftMs:+0.0;-0.0;0}ms)",
+            SyncStatus.AudioAhead => $"⚠️ Audio Ahead ({driftMs:+0.0;-0.0;0}ms)",
+            SyncStatus.AudioBehind => $"⚠️ Audio Behind ({driftMs:+0.0;-0.0;0}ms)",
+            SyncStatus.Drifting => $"🔴 Drifting ({driftMs:+0.0;-0.0;0}ms)",
+            SyncStatus.NoVideo => "📵 No Video",
+            SyncStatus.NoAudio => "🔇 No Audio",
+            SyncStatus.Unknown => "❓ Unknown",
+            _ => "❓ Unknown",
+        };
     }
 
     /// <inheritdoc/>
@@ -622,7 +600,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnStreamQualityViolation)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnStreamQualityViolation)
         {
             return;
         }
@@ -642,25 +620,21 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("TR 101 290 Stream Quality Violation")
             .WithDescription($"{emoji} **{violationType}**\n**Channel:** `{channelName}` ({streamId})")
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("📋 Violation Type", violationType, true)
-            .AddField(
-                "📝 Details",
-                details.Length > 1000 ? string.Concat(details.AsSpan(0, 997), "...") : details,
-                false
-            )
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("📋 Violation Type", violationType, inline: true)
+            .AddField("📝 Details", details.Length > 1000 ? $"{details.AsSpan(0, 997)}..." : details, inline: false)
             .WithTimestamp(now)
             .WithFooter("TR 101 290 Stream Quality Monitoring")
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
     public async Task NotifyEpgRefreshStartedAsync(int channelCount, CancellationToken cancellationToken = default)
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnEpgRefresh)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnEpgRefresh)
         {
             return;
         }
@@ -672,27 +646,27 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("EPG Refresh Started")
             .WithDescription("🔄 **STARTED** - EPG data refresh in progress")
             .WithColor(Color.Blue)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true);
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true);
 
         // Only show channel count if known (> 0)
         if (channelCount > 0)
         {
-            embedBuilder.AddField("📺 Channels", $"{channelCount}", true);
+            _ = embedBuilder.AddField("📺 Channels", $"{channelCount}", inline: true);
         }
 
-        embedBuilder
-            .AddField("⚡ Status", "Processing...", true)
+        _ = embedBuilder
+            .AddField("⚡ Status", "Processing...", inline: true)
             .WithTimestamp(now)
             .WithFooter("EPG Refresh Monitoring");
 
-        await SendDiscordMessageAsync(embedBuilder.Build(), cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embedBuilder.Build(), cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
     public async Task NotifyEpgRefreshAsync(EpgRefreshResult result, CancellationToken cancellationToken = default)
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnEpgRefresh)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnEpgRefresh)
         {
             return;
         }
@@ -729,51 +703,49 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("EPG Refresh Complete")
             .WithDescription($"{statusEmoji} **{statusText}** - EPG data refresh completed")
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("⏱️ Duration", FormatDuration(result.Duration), true)
-            .AddField("📊 Success Rate", $"{successRate:F1}%", true)
-            .AddField("✅ Channels with EPG", $"{result.SuccessCount}", true)
-            .AddField("📺 Total Channels", $"{result.TotalCount}", true)
-            .AddField("🔄 Retried Success", $"{result.RetriedSuccessCount}", true);
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("⏱️ Duration", FormatDuration(result.Duration), inline: true)
+            .AddField("📊 Success Rate", $"{successRate:F1}%", inline: true)
+            .AddField("✅ Channels with EPG", $"{result.SuccessCount}", inline: true)
+            .AddField("📺 Total Channels", $"{result.TotalCount}", inline: true)
+            .AddField("🔄 Retried Success", $"{result.RetriedSuccessCount}", inline: true);
 
         if (result.HttpErrorCount > 0 || result.NoDataCount > 0)
         {
-            embedBuilder
-                .AddField("🌐 HTTP Errors", $"{result.HttpErrorCount}", true)
-                .AddField("📭 No Data", $"{result.NoDataCount}", true);
+            _ = embedBuilder
+                .AddField("🌐 HTTP Errors", $"{result.HttpErrorCount}", inline: true)
+                .AddField("📭 No Data", $"{result.NoDataCount}", inline: true);
         }
 
         if (!string.IsNullOrEmpty(result.ErrorMessage))
         {
             var errorMsg =
-                result.ErrorMessage.Length > 500
-                    ? string.Concat(result.ErrorMessage.AsSpan(0, 497), "...")
-                    : result.ErrorMessage;
-            embedBuilder.AddField("⚠️ Error", errorMsg, false);
+                result.ErrorMessage.Length > 500 ? $"{result.ErrorMessage.AsSpan(0, 497)}..." : result.ErrorMessage;
+            _ = embedBuilder.AddField("⚠️ Error", errorMsg, inline: false);
         }
 
-        if (result.FailedChannels.Count > 0 && result.FailedChannels.Count <= 10)
+        if (result.FailedChannels.Count is > 0 and <= 10)
         {
             var failedList = string.Join(", ", result.FailedChannels);
             if (failedList.Length > 500)
             {
-                failedList = string.Concat(failedList.AsSpan(0, 497), "...");
+                failedList = $"{failedList.AsSpan(0, 497)}...";
             }
 
-            embedBuilder.AddField("📋 Failed Channels", failedList, false);
+            _ = embedBuilder.AddField("📋 Failed Channels", failedList, inline: false);
         }
         else if (result.FailedChannels.Count > 10)
         {
-            embedBuilder.AddField(
+            _ = embedBuilder.AddField(
                 "📋 Failed Channels",
                 $"{result.FailedChannels.Count} channels (too many to list)",
-                false
+                inline: false
             );
         }
 
-        embedBuilder.WithTimestamp(now).WithFooter("EPG Refresh Monitoring");
+        _ = embedBuilder.WithTimestamp(now).WithFooter("EPG Refresh Monitoring");
 
-        await SendDiscordMessageAsync(embedBuilder.Build(), cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embedBuilder.Build(), cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -788,7 +760,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnAVDrift)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnAVDrift)
         {
             return;
         }
@@ -817,7 +789,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         _lastAVDriftNotificationPerChannel[streamId] = now;
 
         // Determine severity based on drift magnitude
-        double absDrift = Math.Abs(driftMs);
+        var absDrift = Math.Abs(driftMs);
         Color color;
         string emoji;
         string severity;
@@ -845,31 +817,31 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         }
 
         // Determine drift direction
-        string direction = driftMs > 0 ? "Audio ahead of video" : "Audio behind video";
-        string directionEmoji = driftMs > 0 ? "🔊⏩🎬" : "🎬⏩🔊";
+        var direction = driftMs > 0 ? "Audio ahead of video" : "Audio behind video";
+        var directionEmoji = driftMs > 0 ? "🔊⏩🎬" : "🎬⏩🔊";
 
         var embed = new EmbedBuilder()
             .WithAuthor("Jellyfin.Xtream", JellyfinIconUrl)
             .WithTitle("A/V Sync Drift Detected")
             .WithDescription($"{emoji} **{severity}** - {direction}\n**Channel:** `{channelName}` ({streamId})")
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("📊 Status", status, true)
-            .AddField(directionEmoji, $"{Math.Abs(driftMs):F1}ms", true)
-            .AddField("📈 Peak Drift", $"{peakDriftMs:F1}ms", true)
-            .AddField("⚠️ Violations", $"#{violationCount}", true)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("📊 Status", status, inline: true)
+            .AddField(directionEmoji, $"{Math.Abs(driftMs):F1}ms", inline: true)
+            .AddField("📈 Peak Drift", $"{peakDriftMs:F1}ms", inline: true)
+            .AddField("⚠️ Violations", $"#{violationCount}", inline: true)
             .AddField(
                 "💡 Info",
                 absDrift >= 100
                     ? "Severe desync may cause noticeable audio/video mismatch. Check source stream quality."
                     : "Minor drift detected. Usually self-corrects. Monitor if persistent.",
-                false
+                inline: false
             )
             .WithTimestamp(now)
             .WithFooter("A/V Synchronization Monitoring")
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -883,7 +855,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnConnectionLimitChange)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnConnectionLimitChange)
         {
             return;
         }
@@ -918,21 +890,21 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle(title)
             .WithDescription(description)
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("📊 Connections", $"{activeConnections}/{maxConnections}", true)
-            .AddField("📈 Utilization", $"{utilizationPercent}%", true);
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("📊 Connections", $"{activeConnections}/{maxConnections}", inline: true)
+            .AddField("📈 Utilization", $"{utilizationPercent}%", inline: true);
 
         if (externalConnections > 0)
         {
-            embedBuilder.AddField("🌐 External", $"{externalConnections} connections", true);
+            _ = embedBuilder.AddField("🌐 External", $"{externalConnections} connections", inline: true);
         }
 
-        embedBuilder
-            .AddField("🎰 Available", $"{availableSlots} slot{(availableSlots != 1 ? "s" : "")}", true)
+        _ = embedBuilder
+            .AddField("🎰 Available", $"{availableSlots} slot{(availableSlots != 1 ? "s" : "")}", inline: true)
             .WithTimestamp(now)
             .WithFooter("Connection Limit Monitoring");
 
-        await SendDiscordMessageAsync(embedBuilder.Build(), cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embedBuilder.Build(), cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -946,7 +918,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnProviderBlacklist)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnProviderBlacklist)
         {
             return;
         }
@@ -1005,6 +977,11 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
                 emoji = "🔄";
                 reasonText = "Too many transient errors";
                 break;
+            case ProviderFailureReason.ProxyAuthenticationError:
+                color = Color.Orange;
+                emoji = "🔐";
+                reasonText = "Provider origin proxy requires auth (407)";
+                break;
             default:
                 color = Color.DarkGrey;
                 emoji = "❓";
@@ -1019,25 +996,31 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             .WithTitle("Provider Blacklisted")
             .WithDescription($"{emoji} **BLACKLISTED** - Provider temporarily disabled\n**Provider:** `{providerName}`")
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("⏱️ Duration", FormatDuration(duration), true)
-            .AddField("🔓 Available At", $"<t:{new DateTimeOffset(blacklistEndTime).ToUnixTimeSeconds()}:R>", true)
-            .AddField("📝 Reason", reasonText, true)
-            .AddField("⚠️ Failures", $"#{consecutiveFailures} consecutive", true)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("⏱️ Duration", FormatDuration(duration), inline: true)
+            .AddField(
+                "🔓 Available At",
+                $"<t:{new DateTimeOffset(blacklistEndTime).ToUnixTimeSeconds()}:R>",
+                inline: true
+            )
+            .AddField("📝 Reason", reasonText, inline: true)
+            .AddField("⚠️ Failures", $"#{consecutiveFailures} consecutive", inline: true)
             .AddField(
                 "💡 Info",
                 reason == ProviderFailureReason.ConnectionLimit
                         ? "Provider has no available connection slots. Try again later."
                     : reason == ProviderFailureReason.ClientError
                         ? "Check provider credentials and subscription status."
+                    : reason == ProviderFailureReason.ProxyAuthenticationError
+                        ? "Provider's origin server has a misconfigured upstream proxy. This is a provider issue."
                     : "Provider will be retried automatically after blacklist expires.",
-                false
+                inline: false
             )
             .WithTimestamp(now)
             .WithFooter("Provider Health Monitoring")
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -1052,7 +1035,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     )
     {
         var config = Plugin.Instance?.Configuration;
-        if (config == null || !config.EnableDiscordNotifications || !config.NotifyOnAudioSyncCorrection)
+        if (config?.EnableDiscordNotifications != true || !config.NotifyOnAudioSyncCorrection)
         {
             return;
         }
@@ -1065,7 +1048,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         var now = DateTime.UtcNow;
 
         // Determine severity based on correction type and magnitude
-        double absDrift = Math.Abs(originalDriftMs);
+        var absDrift = Math.Abs(originalDriftMs);
         Color color;
         string emoji;
         string severity;
@@ -1096,9 +1079,9 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         }
 
         // Determine drift direction
-        string direction = originalDriftMs > 0 ? "Audio was ahead" : "Audio was behind";
-        string correctionDirection = correctionMs > 0 ? "delayed" : "advanced";
-        double residualDrift = originalDriftMs + correctionMs;
+        var direction = originalDriftMs > 0 ? "Audio was ahead" : "Audio was behind";
+        var correctionDirection = correctionMs > 0 ? "delayed" : "advanced";
+        var residualDrift = originalDriftMs + correctionMs;
 
         var embed = new EmbedBuilder()
             .WithAuthor("Jellyfin.Xtream", JellyfinIconUrl)
@@ -1107,24 +1090,24 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
                 $"{emoji} **{severity}** - PTS correction applied\n**Channel:** `{channelName}` ({streamId})"
             )
             .WithColor(color)
-            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", true)
-            .AddField("📊 Type", correctionType, true)
-            .AddField("🎯 Original Drift", $"{originalDriftMs:F1}ms", true)
-            .AddField("🔧 Correction", $"{Math.Abs(correctionMs):F1}ms {correctionDirection}", true)
-            .AddField("📍 Residual", $"{residualDrift:F1}ms", true)
-            .AddField("📦 Stream Offset", FormatBytes(streamOffset), true)
+            .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
+            .AddField("📊 Type", correctionType, inline: true)
+            .AddField("🎯 Original Drift", $"{originalDriftMs:F1}ms", inline: true)
+            .AddField("🔧 Correction", $"{Math.Abs(correctionMs):F1}ms {correctionDirection}", inline: true)
+            .AddField("📍 Residual", $"{residualDrift:F1}ms", inline: true)
+            .AddField("📦 Stream Offset", FormatBytes(streamOffset), inline: true)
             .AddField(
                 "💡 Info",
                 correctionType == "Reset"
                     ? "Drift exceeded correctable range. Audio PTS was reset to match video."
                     : $"{direction} by {Math.Abs(originalDriftMs):F1}ms. Audio PTS was {correctionDirection} to compensate.",
-                false
+                inline: false
             )
             .WithTimestamp(now)
             .WithFooter("Audio Synchronization Correction")
             .Build();
 
-        await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
+        _ = await SendDiscordMessageAsync(embed, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1141,17 +1124,9 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
             return $"{bytes / (double)gb:F2} GB";
         }
 
-        if (bytes >= mb)
-        {
-            return $"{bytes / (double)mb:F2} MB";
-        }
-
-        if (bytes >= kb)
-        {
-            return $"{bytes / (double)kb:F2} KB";
-        }
-
-        return $"{bytes} B";
+        return bytes >= mb ? $"{bytes / (double)mb:F2} MB"
+            : bytes >= kb ? $"{bytes / (double)kb:F2} KB"
+            : $"{bytes} B";
     }
 
     /// <summary>
@@ -1159,17 +1134,9 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
     /// </summary>
     private static string FormatDuration(TimeSpan duration)
     {
-        if (duration.TotalDays >= 1)
-        {
-            return $"{duration.Days}d {duration.Hours}h";
-        }
-
-        if (duration.TotalHours >= 1)
-        {
-            return $"{duration.Hours}h {duration.Minutes}m";
-        }
-
-        return $"{duration.Minutes}m {duration.Seconds}s";
+        return duration.TotalDays >= 1 ? $"{duration.Days}d {duration.Hours}h"
+            : duration.TotalHours >= 1 ? $"{duration.Hours}h {duration.Minutes}m"
+            : $"{duration.Minutes}m {duration.Seconds}s";
     }
 
     private async Task<bool> ShouldSendNotificationAsync()
@@ -1188,7 +1155,7 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
         }
         finally
         {
-            _rateLimiter.Release();
+            _ = _rateLimiter.Release();
         }
     }
 
@@ -1212,14 +1179,14 @@ public sealed class DiscordNotificationService : IDiscordNotificationService, ID
                 return false;
             }
 
-            var urlPreview = webhookUrl.Length > 50 ? string.Concat(webhookUrl.AsSpan(0, 50), "...") : webhookUrl;
+            var urlPreview = webhookUrl.Length > 50 ? $"{webhookUrl.AsSpan(0, 50)}..." : webhookUrl;
             _logger.LogDebugIfEnabled("Sending Discord notification to: {Url}", urlPreview);
 
             // Use Discord.Net's DiscordWebhookClient for proper webhook handling
             using var webhookClient = new DiscordWebhookClient(webhookUrl);
 
-            await webhookClient
-                .SendMessageAsync(embeds: new[] { embed }, username: "Jellyfin.Xtream")
+            _ = await webhookClient
+                .SendMessageAsync(embeds: [embed], username: "Jellyfin.Xtream")
                 .ConfigureAwait(false);
 
             _logger.LogDebugIfEnabled("Discord notification sent successfully");

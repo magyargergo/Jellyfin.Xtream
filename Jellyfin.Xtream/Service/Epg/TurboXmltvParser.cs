@@ -40,10 +40,8 @@ public static class TurboXmltvParser
     /// </summary>
     /// <param name="xmlContent">The XML content.</param>
     /// <returns>Read-only dictionary mapping channel IDs to their program lists.</returns>
-    public static IReadOnlyDictionary<string, IReadOnlyList<EpgProgram>> Parse(string xmlContent)
-    {
-        return Parse(xmlContent, DefaultChannelCount, DefaultProgramsPerChannel);
-    }
+    public static IReadOnlyDictionary<string, IReadOnlyList<EpgProgram>> Parse(string xmlContent) =>
+        Parse(xmlContent, DefaultChannelCount, DefaultProgramsPerChannel);
 
     /// <summary>
     /// Parses XMLTV data from a string with capacity hints.
@@ -92,9 +90,9 @@ public static class TurboXmltvParser
             return (DefaultChannelCount, DefaultProgramsPerChannel);
         }
 
-        int estimatedPrograms = (int)(stream.Length / BytesPerProgram);
-        int channels = Math.Clamp(estimatedPrograms / 100, MinChannelCount, MaxChannelCount);
-        int programsPerChannel = Math.Max(MinProgramsPerChannel, estimatedPrograms / channels);
+        var estimatedPrograms = (int)(stream.Length / BytesPerProgram);
+        var channels = Math.Clamp(estimatedPrograms / 100, MinChannelCount, MaxChannelCount);
+        var programsPerChannel = Math.Max(MinProgramsPerChannel, estimatedPrograms / channels);
 
         return (channels, programsPerChannel);
     }
@@ -154,10 +152,7 @@ public static class TurboXmltvParser
             }
         }
 
-        public void OnEndTagEmpty()
-        {
-            _currentElement = string.Empty;
-        }
+        public void OnEndTagEmpty() => _currentElement = string.Empty;
 
         public void OnEndTag(ReadOnlySpan<char> name, int line, int column)
         {
@@ -236,14 +231,14 @@ public static class TurboXmltvParser
 
         public readonly void OnCData(ReadOnlySpan<char> cdata, int line, int column) { }
 
-        public readonly void OnProcessingInstruction(
+        public static void OnProcessingInstruction(
             ReadOnlySpan<char> name,
             ReadOnlySpan<char> content,
             int line,
             int column
         ) { }
 
-        private void FinalizeCurrentProgram()
+        private readonly void FinalizeCurrentProgram()
         {
             var startUtc = XmltvDateTimeParser.Parse(_pendingStart);
             var endUtc = XmltvDateTimeParser.Parse(_pendingStop);

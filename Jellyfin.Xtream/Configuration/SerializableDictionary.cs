@@ -50,17 +50,14 @@ public sealed class SerializableDictionary<TKey, TValue> : Dictionary<TKey, TVal
     public SerializableDictionary() { }
 
     /// <inheritdoc />
-    public XmlSchema? GetSchema()
-    {
-        return null;
-    }
+    public XmlSchema? GetSchema() => null;
 
     /// <inheritdoc />
     public void ReadXml(XmlReader reader)
     {
         var wasEmpty = reader.IsEmptyElement;
 
-        reader.Read();
+        _ = reader.Read();
         if (wasEmpty)
         {
             return;
@@ -71,7 +68,7 @@ public sealed class SerializableDictionary<TKey, TValue> : Dictionary<TKey, TVal
             while (reader.NodeType != XmlNodeType.EndElement)
             {
                 ReadItem(reader);
-                reader.MoveToContent();
+                _ = reader.MoveToContent();
             }
         }
         finally
@@ -119,7 +116,7 @@ public sealed class SerializableDictionary<TKey, TValue> : Dictionary<TKey, TVal
         reader.ReadStartElement(KeyTag);
         try
         {
-            TKey deserialized =
+            var deserialized =
                 (TKey?)_keySerializer.Deserialize(reader) ?? throw new SerializationException("Key cannot be null");
             return deserialized;
         }
@@ -139,7 +136,7 @@ public sealed class SerializableDictionary<TKey, TValue> : Dictionary<TKey, TVal
         reader.ReadStartElement(ValueTag);
         try
         {
-            TValue deserialized =
+            var deserialized =
                 (TValue?)_valueSerializer.Deserialize(reader)
                 ?? throw new SerializationException("Value cannot be null");
             return deserialized;

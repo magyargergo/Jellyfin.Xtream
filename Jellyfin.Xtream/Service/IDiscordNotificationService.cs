@@ -16,6 +16,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Service.MpegTs.Models;
 using Jellyfin.Xtream.Service.ProviderManagement;
 
 namespace Jellyfin.Xtream.Service;
@@ -130,18 +131,18 @@ public interface IDiscordNotificationService
     Task<bool> TestWebhookAsync(string webhookUrl, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sends MPEG-TS indexer diagnostics to Discord.
+    /// Sends MPEG-TS indexer metrics to Discord.
     /// Reports stream health metrics including packet loss, PCR jitter, and transport errors.
     /// </summary>
     /// <param name="streamId">The stream identifier.</param>
     /// <param name="channelName">The channel name.</param>
-    /// <param name="diagnostics">The TsIndexer diagnostics string from GetDiagnostics().</param>
+    /// <param name="metrics">The structured TsIndexer metrics.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task representing the asynchronous operation.</returns>
-    Task SendTsIndexerDiagnosticsAsync(
+    Task SendTsIndexerMetricsAsync(
         string streamId,
         string channelName,
-        string diagnostics,
+        TsIndexerMetrics metrics,
         CancellationToken cancellationToken = default
     );
 

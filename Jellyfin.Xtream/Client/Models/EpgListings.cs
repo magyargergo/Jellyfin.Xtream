@@ -35,5 +35,5 @@ public class EpgListings
         "CA2227:Collection properties should be read only",
         Justification = "Required for JSON deserialization"
     )]
-    public ICollection<EpgInfo> Listings { get; set; } = new List<EpgInfo>();
+    public ICollection<EpgInfo> Listings { get; set; } = [];
 }

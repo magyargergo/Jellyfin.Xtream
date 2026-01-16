@@ -31,7 +31,7 @@ namespace Jellyfin.Xtream.Client;
 /// Disconnected -> Connecting -> Negotiating -> Streaming
 ///                    |              |            |
 ///                    v              v            v
-///                 Failed         Failed    Reconnecting -> Connecting
+///                 Failed    Reconnecting -> Connecting
 ///                                              |
 ///                                              v
 ///                                           Failed (max retries)
@@ -60,8 +60,6 @@ public sealed class StreamingConnectionStateManager : IDisposable
         [ConnectionState.Failed] = [ConnectionState.Disconnected], // Can reset after failure
         [ConnectionState.Closing] = [ConnectionState.Disconnected],
     };
-
-    private readonly StreamingConnectionMetrics _metrics;
     private readonly ILogger? _logger;
     private readonly object _stateLock = new();
     private readonly Stopwatch _connectionStopwatch = new();
@@ -84,7 +82,7 @@ public sealed class StreamingConnectionStateManager : IDisposable
     )
     {
         _logger = logger;
-        _metrics = new StreamingConnectionMetrics
+        Metrics = new StreamingConnectionMetrics
         {
             StreamId = streamId,
             ChannelName = channelName,
@@ -100,12 +98,12 @@ public sealed class StreamingConnectionStateManager : IDisposable
     /// <summary>
     /// Gets the current connection state.
     /// </summary>
-    public ConnectionState State => _metrics.State;
+    public ConnectionState State => Metrics.State;
 
     /// <summary>
     /// Gets the connection metrics.
     /// </summary>
-    public StreamingConnectionMetrics Metrics => _metrics;
+    public StreamingConnectionMetrics Metrics { get; }
 
     /// <summary>
     /// Attempts to transition to a new state.
@@ -116,16 +114,16 @@ public sealed class StreamingConnectionStateManager : IDisposable
     {
         lock (_stateLock)
         {
-            var currentState = _metrics.State;
+            var currentState = Metrics.State;
 
             // Check if transition is valid
             if (
                 !_validTransitions.TryGetValue(currentState, out var allowedStates) || !allowedStates.Contains(newState)
             )
             {
-                _logger?.LogWarning(
+                _logger?.PluginLogWarning(
                     "Invalid state transition for stream {StreamId}: {Current} -> {Target}",
-                    _metrics.StreamId,
+                    Metrics.StreamId,
                     currentState,
                     newState
                 );
@@ -134,14 +132,14 @@ public sealed class StreamingConnectionStateManager : IDisposable
 
             // Apply transition
             var previousState = currentState;
-            _metrics.State = newState;
+            Metrics.State = newState;
 
             // Handle state-specific logic
             OnStateEnter(newState);
 
-            _logger?.LogDebug(
+            _logger?.LogDebugIfEnabled(
                 "Stream {StreamId} state: {Previous} -> {Current}",
-                _metrics.StreamId,
+                Metrics.StreamId,
                 previousState,
                 newState
             );
@@ -160,14 +158,14 @@ public sealed class StreamingConnectionStateManager : IDisposable
     {
         lock (_stateLock)
         {
-            var previousState = _metrics.State;
-            _metrics.Reset();
+            var previousState = Metrics.State;
+            Metrics.Reset();
             _bitrateWindow.Clear();
             _connectionStopwatch.Reset();
 
-            _logger?.LogInformation(
+            _logger?.PluginLogInformation(
                 "Stream {StreamId} state forcibly reset from {Previous} to Disconnected",
-                _metrics.StreamId,
+                Metrics.StreamId,
                 previousState
             );
 
@@ -184,7 +182,7 @@ public sealed class StreamingConnectionStateManager : IDisposable
     /// <param name="bytes">Number of bytes received.</param>
     public void RecordBytesReceived(long bytes)
     {
-        _metrics.AddBytesReceived(bytes);
+        Metrics.AddBytesReceived(bytes);
         UpdateBitrate(bytes);
     }
 
@@ -192,35 +190,23 @@ public sealed class StreamingConnectionStateManager : IDisposable
     /// Records packets received.
     /// </summary>
     /// <param name="packets">Number of packets received.</param>
-    public void RecordPacketsReceived(long packets)
-    {
-        _metrics.AddPacketsReceived(packets);
-    }
+    public void RecordPacketsReceived(long packets) => Metrics.AddPacketsReceived(packets);
 
     /// <summary>
     /// Records a reconnection attempt.
     /// </summary>
-    public void RecordReconnect()
-    {
-        _metrics.IncrementReconnects();
-    }
+    public void RecordReconnect() => Metrics.IncrementReconnects();
 
     /// <summary>
     /// Records an error.
     /// </summary>
-    public void RecordError()
-    {
-        _metrics.IncrementErrors();
-    }
+    public void RecordError() => Metrics.IncrementErrors();
 
     /// <summary>
     /// Sets the resolved URL after redirect handling.
     /// </summary>
     /// <param name="resolvedUrl">The final resolved URL.</param>
-    public void SetResolvedUrl(string resolvedUrl)
-    {
-        _metrics.ResolvedUrl = resolvedUrl;
-    }
+    public void SetResolvedUrl(string resolvedUrl) => Metrics.ResolvedUrl = resolvedUrl;
 
     /// <summary>
     /// Gets a formatted diagnostics string.
@@ -228,7 +214,7 @@ public sealed class StreamingConnectionStateManager : IDisposable
     /// <returns>Formatted connection diagnostics.</returns>
     public string GetDiagnostics()
     {
-        var metrics = _metrics;
+        var metrics = Metrics;
         return $"Connection Diagnostics for {metrics.StreamId}:\n"
             + $"  Channel: {metrics.ChannelName}\n"
             + $"  State: {metrics.State}\n"
@@ -251,25 +237,22 @@ public sealed class StreamingConnectionStateManager : IDisposable
     /// <returns>True if connection is healthy.</returns>
     public bool IsHealthy(int maxDataAgeSeconds = 30)
     {
-        if (_metrics.State != ConnectionState.Streaming)
+        if (Metrics.State != ConnectionState.Streaming)
         {
             return false;
         }
 
-        if (!_metrics.LastDataReceivedAt.HasValue)
+        if (!Metrics.LastDataReceivedAt.HasValue)
         {
             return false;
         }
 
-        var dataAge = DateTime.UtcNow - _metrics.LastDataReceivedAt.Value;
+        var dataAge = DateTime.UtcNow - Metrics.LastDataReceivedAt.Value;
         return dataAge.TotalSeconds <= maxDataAgeSeconds;
     }
 
     /// <inheritdoc />
-    public void Dispose()
-    {
-        StateChanged = null;
-    }
+    public void Dispose() => StateChanged = null;
 
     private void OnStateEnter(ConnectionState state)
     {
@@ -280,21 +263,21 @@ public sealed class StreamingConnectionStateManager : IDisposable
                 break;
 
             case ConnectionState.Streaming:
-                _metrics.ConnectedAt = DateTime.UtcNow;
+                Metrics.ConnectedAt = DateTime.UtcNow;
                 _connectionStopwatch.Stop();
-                _logger?.LogDebug(
+                _logger?.LogDebugIfEnabled(
                     "Stream {StreamId} connected in {ElapsedMs}ms",
-                    _metrics.StreamId,
+                    Metrics.StreamId,
                     _connectionStopwatch.ElapsedMilliseconds
                 );
                 break;
 
             case ConnectionState.Reconnecting:
-                _metrics.IncrementReconnects();
+                Metrics.IncrementReconnects();
                 break;
 
             case ConnectionState.Failed:
-                _metrics.IncrementErrors();
+                Metrics.IncrementErrors();
                 break;
 
             case ConnectionState.Disconnected:
@@ -316,22 +299,22 @@ public sealed class StreamingConnectionStateManager : IDisposable
             var cutoff = now.AddSeconds(-BitrateWindowSeconds);
             while (_bitrateWindow.Count > 0 && _bitrateWindow.Peek().Time < cutoff)
             {
-                _bitrateWindow.Dequeue();
+                _ = _bitrateWindow.Dequeue();
             }
 
             // Calculate bitrate from window
             if (_bitrateWindow.Count > 1)
             {
                 long totalBytes = 0;
-                foreach (var sample in _bitrateWindow)
+                foreach (var (time, bytes) in _bitrateWindow)
                 {
-                    totalBytes += sample.Bytes;
+                    totalBytes += bytes;
                 }
 
                 var windowDuration = (now - _bitrateWindow.Peek().Time).TotalSeconds;
                 if (windowDuration > 0)
                 {
-                    _metrics.CurrentBitrateMbps = (totalBytes * 8.0 / 1_000_000) / windowDuration;
+                    Metrics.CurrentBitrateMbps = totalBytes * 8.0 / 1_000_000 / windowDuration;
                 }
             }
         }

@@ -25,31 +25,26 @@ namespace Jellyfin.Xtream.Service.Discovery.Pipeline.Stages;
 /// First pipeline stage: Fast TCP connectivity check.
 /// Eliminates unreachable hosts before expensive API calls.
 /// </summary>
-public sealed class ConnectivityStage : PipelineStageBase
+/// <remarks>
+/// Initializes a new instance of the <see cref="ConnectivityStage"/> class.
+/// </remarks>
+/// <param name="logger">The logger.</param>
+/// <param name="timeoutMs">Connection timeout in milliseconds.</param>
+public sealed class ConnectivityStage(ILogger logger, int timeoutMs = ConnectivityStage.DefaultTimeoutMs)
+    : PipelineStageBase(
+        PipelineStage.Connectivity,
+        logger,
+        new StageConfiguration
+        {
+            Concurrency = 50,
+            TimeoutMs = timeoutMs + 50,
+            ContinueOnError = true,
+        }
+    )
 {
     private const int DefaultTimeoutMs = 100;
 
-    private readonly int _timeoutMs;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ConnectivityStage"/> class.
-    /// </summary>
-    /// <param name="logger">The logger.</param>
-    /// <param name="timeoutMs">Connection timeout in milliseconds.</param>
-    public ConnectivityStage(ILogger logger, int timeoutMs = DefaultTimeoutMs)
-        : base(
-            PipelineStage.Connectivity,
-            logger,
-            new StageConfiguration
-            {
-                Concurrency = 50,
-                TimeoutMs = timeoutMs + 50,
-                ContinueOnError = true,
-            }
-        )
-    {
-        _timeoutMs = timeoutMs;
-    }
+    private readonly int _timeoutMs = timeoutMs;
 
     /// <inheritdoc />
     protected override async ValueTask<StageResult<PipelineItem>> ProcessAsync(

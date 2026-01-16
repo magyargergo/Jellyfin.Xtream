@@ -20,32 +20,26 @@ namespace Jellyfin.Xtream.Client;
 /// <summary>
 /// Event arguments for connection state changes.
 /// </summary>
-public sealed class ConnectionStateChangedEventArgs : EventArgs
+/// <remarks>
+/// Initializes a new instance of the <see cref="ConnectionStateChangedEventArgs"/> class.
+/// </remarks>
+/// <param name="previousState">The previous connection state.</param>
+/// <param name="currentState">The current connection state.</param>
+public sealed class ConnectionStateChangedEventArgs(ConnectionState previousState, ConnectionState currentState)
+    : EventArgs
 {
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ConnectionStateChangedEventArgs"/> class.
-    /// </summary>
-    /// <param name="previousState">The previous connection state.</param>
-    /// <param name="currentState">The current connection state.</param>
-    public ConnectionStateChangedEventArgs(ConnectionState previousState, ConnectionState currentState)
-    {
-        PreviousState = previousState;
-        CurrentState = currentState;
-        Timestamp = DateTime.UtcNow;
-    }
-
     /// <summary>
     /// Gets the previous connection state.
     /// </summary>
-    public ConnectionState PreviousState { get; }
+    public ConnectionState PreviousState { get; } = previousState;
 
     /// <summary>
     /// Gets the current connection state.
     /// </summary>
-    public ConnectionState CurrentState { get; }
+    public ConnectionState CurrentState { get; } = currentState;
 
     /// <summary>
     /// Gets the timestamp of the state change.
     /// </summary>
-    public DateTime Timestamp { get; }
+    public DateTime Timestamp { get; } = DateTime.UtcNow;
 }

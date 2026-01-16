@@ -51,33 +51,27 @@ public class FlexibleBoolConverter : JsonConverter<bool>
 
         if (reader.TokenType == JsonToken.String)
         {
-            string? stringValue = reader.Value?.ToString();
+            var stringValue = reader.Value?.ToString();
             if (string.IsNullOrWhiteSpace(stringValue))
             {
                 return false;
             }
 
             // Handle "true"/"false" strings
-            if (bool.TryParse(stringValue, out bool boolResult))
+            if (bool.TryParse(stringValue, out var boolResult))
             {
                 return boolResult;
             }
 
             // Handle "1"/"0" strings
-            if (int.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int intResult))
-            {
-                return intResult != 0;
-            }
-
-            return false;
+            return int.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intResult)
+                && intResult != 0;
         }
 
         return false;
     }
 
     /// <inheritdoc />
-    public override void WriteJson(JsonWriter writer, bool value, JsonSerializer serializer)
-    {
+    public override void WriteJson(JsonWriter writer, bool value, JsonSerializer serializer) =>
         writer.WriteValue(value);
-    }
 }

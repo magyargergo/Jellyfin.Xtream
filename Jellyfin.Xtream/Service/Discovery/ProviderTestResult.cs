@@ -174,8 +174,5 @@ public sealed class ProviderTestResult
     /// <summary>
     /// Calculates and sets the trust score based on current test results.
     /// </summary>
-    public void CalculateTrustScore()
-    {
-        TrustScore = ProviderTrustScore.Calculate(this);
-    }
+    public void CalculateTrustScore() => TrustScore = ProviderTrustScore.Calculate(this);
 }

@@ -93,5 +93,5 @@ public class UserInfo
         "CA2227:Collection properties should be read only",
         Justification = "Required for JSON deserialization"
     )]
-    public ICollection<string> AllowedOutputFormats { get; set; } = new List<string>();
+    public ICollection<string> AllowedOutputFormats { get; set; } = [];
 }

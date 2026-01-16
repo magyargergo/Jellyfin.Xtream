@@ -26,10 +26,16 @@ namespace Jellyfin.Xtream.Service;
 /// Uses a sliding window approach - if no EPG requests come in for a threshold period,
 /// the batch is considered complete.
 /// </summary>
-public sealed class EpgRefreshTracker : IDisposable
+/// <remarks>
+/// Initializes a new instance of the <see cref="EpgRefreshTracker"/> class.
+/// </remarks>
+/// <param name="discordService">The Discord notification service.</param>
+/// <param name="logger">The logger.</param>
+public sealed class EpgRefreshTracker(IDiscordNotificationService discordService, ILogger<EpgRefreshTracker> logger)
+    : IDisposable
 {
-    private readonly IDiscordNotificationService _discordService;
-    private readonly ILogger<EpgRefreshTracker> _logger;
+    private readonly IDiscordNotificationService _discordService = discordService;
+    private readonly ILogger<EpgRefreshTracker> _logger = logger;
     private readonly object _lock = new();
     private readonly TimeSpan _completionDelay = TimeSpan.FromSeconds(30);
 
@@ -41,17 +47,6 @@ public sealed class EpgRefreshTracker : IDisposable
     private bool _batchInProgress;
     private CancellationTokenSource? _completionCts;
     private bool _disposed;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="EpgRefreshTracker"/> class.
-    /// </summary>
-    /// <param name="discordService">The Discord notification service.</param>
-    /// <param name="logger">The logger.</param>
-    public EpgRefreshTracker(IDiscordNotificationService discordService, ILogger<EpgRefreshTracker> logger)
-    {
-        _discordService = discordService;
-        _logger = logger;
-    }
 
     /// <summary>
     /// Records an EPG request, starting a new batch if needed.
@@ -109,19 +104,22 @@ public sealed class EpgRefreshTracker : IDisposable
         _logger.PluginLogInformation("EPG refresh batch started at {Time}", startTime);
 
         // Fire and forget - send start notification
-        _ = Task.Run(async () =>
-        {
-            try
+        _ = Task.Run(
+            async () =>
             {
-                await _discordService
-                    .NotifyEpgRefreshStartedAsync(expectedChannels, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.PluginLogWarning(ex, "Failed to send EPG refresh start notification");
-            }
-        });
+                try
+                {
+                    await _discordService
+                        .NotifyEpgRefreshStartedAsync(expectedChannels, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.PluginLogWarning(ex, "Failed to send EPG refresh start notification");
+                }
+            },
+            CancellationToken.None
+        );
     }
 
     private void ResetCompletionTimer()

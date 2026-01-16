@@ -46,26 +46,15 @@ public class FlexibleIntConverter : JsonConverter<int>
 
         if (reader.TokenType == JsonToken.String)
         {
-            string? stringValue = reader.Value?.ToString();
-            if (string.IsNullOrWhiteSpace(stringValue))
-            {
-                return 0;
-            }
-
-            if (int.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out int result))
-            {
-                return result;
-            }
-
-            return 0;
+            var stringValue = reader.Value?.ToString();
+            return string.IsNullOrWhiteSpace(stringValue) ? 0
+                : int.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? result
+                : 0;
         }
 
         return 0;
     }
 
     /// <inheritdoc />
-    public override void WriteJson(JsonWriter writer, int value, JsonSerializer serializer)
-    {
-        writer.WriteValue(value);
-    }
+    public override void WriteJson(JsonWriter writer, int value, JsonSerializer serializer) => writer.WriteValue(value);
 }

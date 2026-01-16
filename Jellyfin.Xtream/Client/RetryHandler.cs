@@ -27,19 +27,14 @@ namespace Jellyfin.Xtream.Client;
 /// HTTP message handler that implements retry logic with exponential backoff
 /// for transient errors and Cloudflare-specific issues.
 /// </summary>
-public class RetryHandler : DelegatingHandler
+/// <remarks>
+/// Initializes a new instance of the <see cref="RetryHandler"/> class.
+/// </remarks>
+/// <param name="logger">Optional logger for retry diagnostics.</param>
+public class RetryHandler(ILogger? logger = null) : DelegatingHandler
 {
     private const int MaxRetries = 3;
-    private readonly ILogger? _logger;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="RetryHandler"/> class.
-    /// </summary>
-    /// <param name="logger">Optional logger for retry diagnostics.</param>
-    public RetryHandler(ILogger? logger = null)
-    {
-        _logger = logger;
-    }
+    private readonly ILogger? _logger = logger;
 
     /// <inheritdoc />
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -50,7 +45,7 @@ public class RetryHandler : DelegatingHandler
         HttpResponseMessage? response = null;
         Exception? lastException = null;
 
-        for (int attempt = 0; attempt <= MaxRetries; attempt++)
+        for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
             HttpRequestMessage? clonedRequest = null;
             var shouldDisposeClone = true;
@@ -76,7 +71,7 @@ public class RetryHandler : DelegatingHandler
                 if (attempt < MaxRetries)
                 {
                     var delay = GetRetryDelay(attempt, response);
-                    _logger?.LogWarning(
+                    _logger?.PluginLogWarning(
                         "Request to {Uri} failed with status {StatusCode}. Attempt {Attempt}/{MaxRetries}. Retrying in {Delay}ms...",
                         request.RequestUri,
                         response.StatusCode,
@@ -100,7 +95,7 @@ public class RetryHandler : DelegatingHandler
                     // Log without stack trace for expected connection failures
                     if (IsExpectedConnectionFailure(ex))
                     {
-                        _logger?.LogDebug(
+                        _logger?.LogDebugIfEnabled(
                             "Request to {Uri} failed: {Message}. Attempt {Attempt}/{MaxRetries}. Retrying in {Delay}ms...",
                             request.RequestUri,
                             ex.Message,
@@ -111,7 +106,7 @@ public class RetryHandler : DelegatingHandler
                     }
                     else
                     {
-                        _logger?.LogWarning(
+                        _logger?.PluginLogWarning(
                             ex,
                             "Request to {Uri} failed with exception. Attempt {Attempt}/{MaxRetries}. Retrying in {Delay}ms...",
                             request.RequestUri,
@@ -131,7 +126,7 @@ public class RetryHandler : DelegatingHandler
                 if (attempt < MaxRetries)
                 {
                     var delay = GetRetryDelay(attempt, response: null);
-                    _logger?.LogWarning(
+                    _logger?.PluginLogWarning(
                         "Request to {Uri} timed out. Attempt {Attempt}/{MaxRetries}. Retrying in {Delay}ms...",
                         request.RequestUri,
                         attempt + 1,
@@ -163,7 +158,7 @@ public class RetryHandler : DelegatingHandler
         // Copy headers
         foreach (var header in request.Headers)
         {
-            clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            _ = clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
 
         // Copy content if present
@@ -174,7 +169,7 @@ public class RetryHandler : DelegatingHandler
 
             foreach (var header in request.Content.Headers)
             {
-                clone.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                _ = clone.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
         }
 
@@ -203,10 +198,11 @@ public class RetryHandler : DelegatingHandler
         {
             (HttpStatusCode)522 => true, // Connection timed out (Cloudflare)
             (HttpStatusCode)524 => true, // A timeout occurred (Cloudflare)
-            (HttpStatusCode)429 => true, // Too Many Requests (rate limit)
+            HttpStatusCode.TooManyRequests => true, // Too Many Requests (rate limit)
             HttpStatusCode.ServiceUnavailable => true, // 503
             HttpStatusCode.BadGateway => true, // 502
             HttpStatusCode.GatewayTimeout => true, // 504
+            HttpStatusCode.ProxyAuthenticationRequired => true, // 407 - Provider's upstream proxy issue
             _ => false,
         };
     }
@@ -234,8 +230,9 @@ public class RetryHandler : DelegatingHandler
         if (ex.StatusCode.HasValue)
         {
             var code = (int)ex.StatusCode.Value;
-            // 404 Not Found, 401 Unauthorized, 403 Forbidden are expected for invalid providers
-            return code is 404 or 401 or 403 or 406;
+            // 404 Not Found, 401 Unauthorized, 403 Forbidden, 405 Method Not Allowed, 406 Not Acceptable
+            // are expected for invalid providers or unsupported methods
+            return code is 404 or 401 or 403 or 405 or 406;
         }
 
         return false;

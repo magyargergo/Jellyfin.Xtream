@@ -45,10 +45,10 @@ public static class HttpClientConfiguration
     public static IHttpClientBuilder ConfigureXtreamClient(this IHttpClientBuilder builder)
     {
         return builder
-            .ConfigurePrimaryHttpMessageHandler(sp => CreateHttpMessageHandler(sp))
-            .AddHttpMessageHandler(sp => CreateRateLimitingHandler(sp))
+            .ConfigurePrimaryHttpMessageHandler(CreateHttpMessageHandler)
+            .AddHttpMessageHandler(CreateRateLimitingHandler)
             // Add User-Agent rotation handler (rotates UA per-request when enabled)
-            .AddHttpMessageHandler(sp => CreateUserAgentHandler(sp))
+            .AddHttpMessageHandler(CreateUserAgentHandler)
             // Add retry handler for transient errors and Cloudflare-specific issues
             .AddHttpMessageHandler(sp => new RetryHandler(CreateLogger(sp, "Jellyfin.Xtream.Retry")))
             .ConfigureHttpClient((sp, client) => ConfigureHttpClient(client, sp))
@@ -66,7 +66,7 @@ public static class HttpClientConfiguration
         // If no provider is registered, create a default one
         if (userAgentProvider == null)
         {
-            logger?.LogWarning("IUserAgentProvider not registered, User-Agent rotation will use fallback");
+            logger?.PluginLogWarning("IUserAgentProvider not registered, User-Agent rotation will use fallback");
             var providerLogger = serviceProvider.GetService<ILoggerFactory>()?.CreateLogger<UserAgentProvider>();
             userAgentProvider = new UserAgentProvider(configProvider, providerLogger!);
         }
@@ -156,13 +156,21 @@ public static class HttpClientConfiguration
                 );
 
                 // Resolve DNS to get all IP addresses for the host
-                var addresses = await System
+                var rawAddresses = await System
                     .Net.Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellationToken)
                     .ConfigureAwait(false);
 
+                // Prefer IPv4 over IPv6 for IPTV streaming
+                // Many IPTV providers (especially those using Cloudflare) have IPv6 connectivity issues
+                // or block IPv6 addresses more aggressively than IPv4. Sorting IPv4 first ensures
+                // we try the more reliable address family before falling back to IPv6.
+                var addresses = rawAddresses
+                    .OrderBy(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? 1 : 0)
+                    .ToArray();
+
                 var dnsResolveMs = (DateTime.UtcNow - connectStartTime).TotalMilliseconds;
                 logger?.LogDebugIfEnabled(
-                    "ConnectCallback: DNS resolved for '{Host}' in {DnsMs}ms - found {AddressCount} address(es): [{Addresses}]",
+                    "ConnectCallback: DNS resolved for '{Host}' in {DnsMs}ms - found {AddressCount} address(es): [{Addresses}] (IPv4 preferred)",
                     context.DnsEndPoint.Host,
                     dnsResolveMs,
                     addresses.Length,
@@ -180,7 +188,7 @@ public static class HttpClientConfiguration
 
                 // Try each address until one succeeds (create fresh socket for each attempt)
                 Exception? lastException = null;
-                int attemptNumber = 0;
+                var attemptNumber = 0;
 
                 foreach (var address in addresses)
                 {
@@ -315,13 +323,36 @@ public static class HttpClientConfiguration
             KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
             KeepAlivePingDelay = TimeSpan.FromSeconds(60),
             KeepAlivePingPolicy = System.Net.Http.HttpKeepAlivePingPolicy.WithActiveRequests,
+
+            // Response Drain Timeout: Time to wait for response body drain during connection reuse
+            // When a request is cancelled or response not fully read, this controls how long
+            // we wait to drain remaining data before closing the connection.
+            // 30s allows reuse of connections even with slow draining.
+            ResponseDrainTimeout = TimeSpan.FromSeconds(30),
+
+            // NOTE: "Zombie backend" detection (TCP connects but HTTP never responds) is handled
+            // at the request level in Restream.ResolveStreamUrlAsync using CancellationToken
+            // with StreamingTimeoutPolicy.GetResponseHeadersTimeoutMs(). SocketsHttpHandler
+            // doesn't have a dedicated response headers timeout property - ConnectTimeout only
+            // covers TCP establishment, not HTTP response. See Restream.SendWithZombieBackendDetectionAsync.
         };
 
         // Configure proxy if enabled
+        // IMPORTANT: When proxy is enabled, we must disable ConnectCallback because it bypasses
+        // .NET's built-in proxy handling. ConnectCallback provides custom socket connection logic
+        // that connects directly to target IPs, which would skip the proxy entirely.
         if (TryConfigureProxy(config, logger, out var proxy))
         {
             handler.Proxy = proxy;
             handler.UseProxy = true;
+            // Disable ConnectCallback so .NET routes traffic through the proxy
+            handler.ConnectCallback = null;
+            logger?.PluginLogInformation(
+                "Proxy enabled: {ProxyType} {ProxyAddress}:{ProxyPort} - ConnectCallback disabled for proxy support",
+                config.ProxyType,
+                config.ProxyAddress,
+                config.ProxyPort
+            );
         }
 
         logger?.LogTrace(
@@ -375,17 +406,15 @@ public static class HttpClientConfiguration
         else
         {
             userAgent = GetFallbackUserAgent();
-            logger?.LogWarning("IUserAgentProvider not registered, using fallback User-Agent");
+            logger?.PluginLogWarning("IUserAgentProvider not registered, using fallback User-Agent");
         }
 
-        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", userAgent);
+        _ = client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", userAgent);
     }
 
-    private static string GetFallbackUserAgent()
-    {
+    private static string GetFallbackUserAgent() =>
         // Used only when IUserAgentProvider is not registered (should not happen in production)
-        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-    }
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
     /// <summary>
     /// Adds browser-like headers to avoid WAF detection.
@@ -413,13 +442,13 @@ public static class HttpClientConfiguration
             //
             // Quality values could be added for HLS compatibility:
             // "video/mp2t;q=1.0, application/vnd.apple.mpegurl;q=0.9, */*;q=0.8"
-            client.DefaultRequestHeaders.TryAddWithoutValidation(
+            _ = client.DefaultRequestHeaders.TryAddWithoutValidation(
                 "Accept",
                 "video/mp2t, video/MP2T, application/octet-stream, */*"
             );
 
-            client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
-            client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br");
+            _ = client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+            _ = client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br");
 
             // Connection management: keep-alive for long-lived IPTV streaming sessions
             // Essential for reducing TCP handshake overhead and maintaining stable connections
@@ -430,7 +459,7 @@ public static class HttpClientConfiguration
             // Icy-MetaData: Streaming client capability indicator (Icecast/Shoutcast protocol)
             // Some IPTV providers check this header for stream access control
             // Signals that client can handle metadata insertion in streams
-            client.DefaultRequestHeaders.TryAddWithoutValidation("Icy-MetaData", "1");
+            _ = client.DefaultRequestHeaders.TryAddWithoutValidation("Icy-MetaData", "1");
 
             // Cache control: Live streams should not be cached
             // no-store prevents caching entirely (required for real-time streams)
@@ -441,17 +470,17 @@ public static class HttpClientConfiguration
             };
 
             // DNT (Do Not Track): Privacy-focused header
-            client.DefaultRequestHeaders.TryAddWithoutValidation("DNT", "1");
+            _ = client.DefaultRequestHeaders.TryAddWithoutValidation("DNT", "1");
 
             // Upgrade-Insecure-Requests: Signals preference for HTTPS
             // Note: Most Xtream providers use HTTP on non-standard ports (8080, 25461)
-            client.DefaultRequestHeaders.TryAddWithoutValidation("Upgrade-Insecure-Requests", "1");
+            _ = client.DefaultRequestHeaders.TryAddWithoutValidation("Upgrade-Insecure-Requests", "1");
 
             logger?.LogTrace("MPEG-TS streaming headers configured (RFC 3551, RFC 7231 compliant)");
         }
         catch (Exception ex)
         {
-            logger?.LogWarning(ex, "Failed to add some browser headers, continuing anyway");
+            logger?.PluginLogWarning(ex, "Failed to add some browser headers, continuing anyway");
         }
     }
 
@@ -466,7 +495,7 @@ public static class HttpClientConfiguration
 
         if (!TryBuildProxyUri(config, logger, out var proxyUri))
         {
-            logger?.LogWarning("Proxy is enabled but configuration is invalid - proxy will not be used");
+            logger?.PluginLogWarning("Proxy is enabled but configuration is invalid - proxy will not be used");
             return false;
         }
 
@@ -502,7 +531,7 @@ public static class HttpClientConfiguration
         var address = config.ProxyAddress?.Trim();
         if (string.IsNullOrWhiteSpace(address))
         {
-            logger?.LogWarning("Proxy is enabled but proxy address is empty");
+            logger?.PluginLogWarning("Proxy is enabled but proxy address is empty");
             return false;
         }
 
@@ -532,7 +561,7 @@ public static class HttpClientConfiguration
         }
         catch (UriFormatException ex)
         {
-            logger?.LogError(
+            logger?.PluginLogError(
                 ex,
                 "Invalid proxy URI format: type={ProxyType}, address='{Address}', port={Port}",
                 config.ProxyType,

@@ -69,12 +69,12 @@ public sealed class CopyChannelsResponse
     /// <summary>
     /// Gets or sets the matched channels with their details.
     /// </summary>
-    public List<MatchedChannelInfo> MatchedChannels { get; set; } = new();
+    public List<MatchedChannelInfo> MatchedChannels { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the unmatched source channel names (for debugging).
     /// </summary>
-    public List<string> UnmatchedChannels { get; set; } = new();
+    public List<string> UnmatchedChannels { get; set; } = [];
 }
 
 /// <summary>

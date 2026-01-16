@@ -57,12 +57,11 @@ public class CountryFilterStage(
 {
     private static readonly CountryDetectionNormalizer Normalizer = CountryDetectionNormalizer.Default;
     private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
-    private readonly CountryProfile _countryProfile = countryProfile;
 
     /// <summary>
     /// Gets the country profile used by this filter.
     /// </summary>
-    protected CountryProfile CountryProfile => _countryProfile;
+    protected CountryProfile CountryProfile { get; } = countryProfile;
 
     /// <inheritdoc />
     protected override async ValueTask<StageResult<PipelineItem>> ProcessAsync(
@@ -116,14 +115,14 @@ public class CountryFilterStage(
                 matchedChannels.Add(stream);
                 if (!string.IsNullOrEmpty(category))
                 {
-                    matchedCategories.Add(category);
+                    _ = matchedCategories.Add(category);
                 }
             }
         }
 
         if (matchedChannels.Count == 0)
         {
-            return StageResult.Fail<PipelineItem>($"No {_countryProfile.CountryCode} channels");
+            return StageResult.Fail<PipelineItem>($"No {CountryProfile.CountryCode} channels");
         }
 
         var enrichedItem = item.WithProperties(
@@ -132,7 +131,7 @@ public class CountryFilterStage(
             (PipelinePropertyKeys.FilteredChannels, matchedChannels),
             (PipelinePropertyKeys.FilteredChannelCount, matchedChannels.Count),
             (PipelinePropertyKeys.FilteredCategories, matchedCategories.Take(10).ToList()),
-            (PipelinePropertyKeys.FilterCountryCode, _countryProfile.CountryCode)
+            (PipelinePropertyKeys.FilterCountryCode, CountryProfile.CountryCode)
         );
 
         return StageResult.Pass(enrichedItem);
@@ -156,20 +155,20 @@ public class CountryFilterStage(
 
         // Tier 1: Check country code prefix using shared extraction (highest priority)
         var countryCode = NormalizationPatterns.ExtractCountryCode(name);
-        if (string.Equals(countryCode, _countryProfile.CountryCode, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(countryCode, CountryProfile.CountryCode, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
         // Tier 2: Exact broadcaster match
         var normalizedName = Normalizer.Normalize(name);
-        if (_countryProfile.BroadcasterSet.Contains(normalizedName))
+        if (CountryProfile.BroadcasterSet.Contains(normalizedName))
         {
             return true;
         }
 
         // Tier 3: Check if any broadcaster is contained in the name
-        foreach (var broadcaster in _countryProfile.Broadcasters)
+        foreach (var broadcaster in CountryProfile.Broadcasters)
         {
             if (ContainsWordBoundary(normalizedName, broadcaster))
             {
@@ -178,13 +177,13 @@ public class CountryFilterStage(
         }
 
         // Tier 4: Regex pattern match (if configured)
-        if (_countryProfile.BroadcasterRegex?.IsMatch(name) == true)
+        if (CountryProfile.BroadcasterRegex?.IsMatch(name) == true)
         {
             return true;
         }
 
         // Tier 5: Country name indicators in the channel name
-        foreach (var countryName in _countryProfile.CountryNames)
+        foreach (var countryName in CountryProfile.CountryNames)
         {
             if (name.Contains(countryName, StringComparison.OrdinalIgnoreCase))
             {

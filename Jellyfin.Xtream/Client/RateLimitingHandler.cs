@@ -27,21 +27,15 @@ namespace Jellyfin.Xtream.Client;
 /// HTTP message handler that implements rate limiting for outgoing requests.
 /// Retry logic is now handled by Polly policies in the HTTP client pipeline.
 /// </summary>
-public sealed class RateLimitingHandler : DelegatingHandler
+/// <remarks>
+/// Initializes a new instance of the <see cref="RateLimitingHandler"/> class.
+/// </remarks>
+/// <param name="rateLimiter">The rate limiter to use.</param>
+/// <param name="logger">Optional logger for diagnostics.</param>
+public sealed class RateLimitingHandler(RateLimiter rateLimiter, ILogger? logger = null) : DelegatingHandler
 {
-    private readonly RateLimiter _rateLimiter;
-    private readonly ILogger? _logger;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="RateLimitingHandler"/> class.
-    /// </summary>
-    /// <param name="rateLimiter">The rate limiter to use.</param>
-    /// <param name="logger">Optional logger for diagnostics.</param>
-    public RateLimitingHandler(RateLimiter rateLimiter, ILogger? logger = null)
-    {
-        _rateLimiter = rateLimiter ?? throw new ArgumentNullException(nameof(rateLimiter));
-        _logger = logger;
-    }
+    private readonly RateLimiter _rateLimiter = rateLimiter ?? throw new ArgumentNullException(nameof(rateLimiter));
+    private readonly ILogger? _logger = logger;
 
     /// <inheritdoc />
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -53,7 +47,7 @@ public sealed class RateLimitingHandler : DelegatingHandler
         // Live streams are long-lived connections that should not be rate-limited
         // Detect streaming by checking the URL path (contains stream ID format or /live/)
         var path = request.RequestUri?.PathAndQuery ?? string.Empty;
-        bool isStreamingRequest =
+        var isStreamingRequest =
             path.Contains("/live/", StringComparison.OrdinalIgnoreCase)
             || path.Contains(".ts", StringComparison.OrdinalIgnoreCase)
             || path.Contains(".m3u", StringComparison.OrdinalIgnoreCase)
@@ -77,10 +71,10 @@ public sealed class RateLimitingHandler : DelegatingHandler
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
 
         RateLimitLease? lease = null;
-        int waitAttempts = 0;
+        var waitAttempts = 0;
         const int maxWaitAttempts = 30; // 30 attempts * 200ms = 6 seconds max wait before first warning
 
-        while (lease == null || !lease.IsAcquired)
+        while (lease?.IsAcquired != true)
         {
             lease?.Dispose();
             lease = await _rateLimiter.AcquireAsync(permitCount: 1, timeoutCts.Token).ConfigureAwait(false);
@@ -98,7 +92,7 @@ public sealed class RateLimitingHandler : DelegatingHandler
                 }
                 else if (waitAttempts % 10 == 0)
                 {
-                    _logger?.LogWarning(
+                    _logger?.PluginLogWarning(
                         "Still waiting for rate limit permit ({Attempts} attempts) for {RequestUri}",
                         waitAttempts,
                         request.RequestUri

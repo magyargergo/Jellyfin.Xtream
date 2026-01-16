@@ -4,8 +4,11 @@
     <div class="content-primary">
       <div class="sectionTitleContainer flex align-items-center">
         <h2 class="sectionTitle">Plugin Logs</h2>
-        <button is="emby-button" id="RefreshBtn" type="button" class="fab mini autoSize" title="Refresh" style="margin-left: 1em;">
+        <button is="emby-button" id="RefreshBtn" type="button" class="fab mini autoSize" title="Refresh (F5)" style="margin-left: 1em;">
           <span class="material-icons refresh"></span>
+        </button>
+        <button is="emby-button" id="HelpBtn" type="button" class="fab mini autoSize" title="Keyboard Shortcuts" style="margin-left: 0.5em;">
+          <span class="material-icons">help_outline</span>
         </button>
       </div>
 
@@ -19,6 +22,50 @@
 
       <div id="LogStatus" class="log-status" style="display: none;"></div>
 
+      <!-- Help Panel -->
+      <div id="HelpPanel" class="help-panel" style="display: none;">
+        <div class="help-header">
+          <span class="material-icons">keyboard</span>
+          <strong>Keyboard Shortcuts</strong>
+          <button is="emby-button" id="CloseHelpBtn" class="help-close" title="Close">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
+        <div class="help-content">
+          <div class="shortcut"><kbd>Ctrl</kbd>+<kbd>F</kbd> Focus search</div>
+          <div class="shortcut"><kbd>Esc</kbd> Clear search / Close help</div>
+          <div class="shortcut"><kbd>F5</kbd> Refresh logs</div>
+          <div class="shortcut"><kbd>Home</kbd> Scroll to top</div>
+          <div class="shortcut"><kbd>End</kbd> Scroll to bottom</div>
+          <div class="shortcut"><kbd>E</kbd> Show errors only</div>
+          <div class="shortcut"><kbd>W</kbd> Show warnings+</div>
+          <div class="shortcut"><kbd>A</kbd> Show all levels</div>
+        </div>
+        <div class="help-tips">
+          <strong>Tips:</strong>
+          <ul>
+            <li>Click on a <span class="example-tag">Stream ID</span> or <span class="example-tag">Channel</span> to filter</li>
+            <li>Click on a <span class="example-category">Category</span> to filter by source</li>
+            <li>Use "Follow" mode to auto-scroll to new logs</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Quick Filters -->
+      <div class="quick-filters">
+        <span class="quick-filter-label">Quick:</span>
+        <button is="emby-button" id="FilterAll" class="quick-filter-btn active" title="Show all logs">All</button>
+        <button is="emby-button" id="FilterErrors" class="quick-filter-btn filter-errors" title="Show errors only (E)">Errors</button>
+        <button is="emby-button" id="FilterWarnings" class="quick-filter-btn filter-warnings" title="Show warnings and above (W)">Warnings+</button>
+        <button is="emby-button" id="FilterStreaming" class="quick-filter-btn" title="Show streaming-related logs">Streaming</button>
+        <span id="ActiveFilterTag" class="active-filter-tag" style="display: none;">
+          <span id="ActiveFilterText"></span>
+          <button is="emby-button" id="ClearFilterBtn" class="clear-filter-btn" title="Clear filter">
+            <span class="material-icons">close</span>
+          </button>
+        </span>
+      </div>
+
       <div class="log-controls">
         <div class="log-filters">
           <div class="filter-group">
@@ -31,42 +78,95 @@
             </select>
           </div>
           <div class="filter-group">
+            <label class="filter-label">Category</label>
+            <select is="emby-select" id="CategoryFilter" class="filter-select category-select">
+              <option value="">All Sources</option>
+            </select>
+          </div>
+          <div class="filter-group">
             <label class="filter-label">
               <input is="emby-checkbox" type="checkbox" id="IncludeDebug" checked />
-              <span>Include Debug</span>
+              <span>Debug</span>
             </label>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label">Max</label>
+            <select is="emby-select" id="MaxEntries" class="filter-select max-entries-select">
+              <option value="100">100</option>
+              <option value="250">250</option>
+              <option value="500" selected>500</option>
+              <option value="1000">1K</option>
+              <option value="2000">2K</option>
+            </select>
           </div>
           <div class="filter-group search-group">
             <span class="material-icons search-icon">search</span>
-            <input is="emby-input" type="text" id="SearchText" placeholder="Search logs..." class="search-input" />
+            <input is="emby-input" type="text" id="SearchText" placeholder="Search... (Ctrl+F)" class="search-input" />
+            <button is="emby-button" id="ClearSearchBtn" class="clear-search-btn" title="Clear search (Esc)" style="display: none;">
+              <span class="material-icons">close</span>
+            </button>
           </div>
         </div>
         <div class="log-actions">
-          <button is="emby-button" id="AutoRefreshBtn" type="button" class="raised emby-button">
-            <span class="material-icons">pause</span>
-            <span id="AutoRefreshLabel">Auto-refresh</span>
+          <button is="emby-button" id="FollowBtn" type="button" class="raised emby-button" title="Auto-scroll to new logs">
+            <span class="material-icons">vertical_align_bottom</span>
+            <span>Follow</span>
           </button>
-          <button is="emby-button" id="ClearLogsBtn" type="button" class="raised button-cancel emby-button">
+          <button is="emby-button" id="AutoRefreshBtn" type="button" class="raised emby-button auto-refresh-active">
+            <span class="material-icons">pause</span>
+            <span id="AutoRefreshLabel">Live</span>
+          </button>
+          <button is="emby-button" id="CopyLogsBtn" type="button" class="raised emby-button" title="Copy to clipboard">
+            <span class="material-icons">content_copy</span>
+            <span>Copy</span>
+          </button>
+          <button is="emby-button" id="ExportLogsBtn" type="button" class="raised emby-button" title="Download as file">
+            <span class="material-icons">download</span>
+            <span>Export</span>
+          </button>
+          <button is="emby-button" id="ClearLogsBtn" type="button" class="raised button-cancel emby-button" title="Clear all logs">
             <span class="material-icons delete"></span>
-            <span>Clear Logs</span>
           </button>
         </div>
       </div>
 
       <div id="LogStats" class="log-stats">
-        <span id="StatsInfo">Loading...</span>
+        <div class="stats-left">
+          <span id="LiveIndicator" class="live-indicator">
+            <span class="live-dot"></span>
+            <span>LIVE</span>
+          </span>
+          <span id="StatsInfo">Loading...</span>
+        </div>
+        <div class="stats-right">
+          <label class="timestamp-toggle" title="Toggle relative timestamps">
+            <input is="emby-checkbox" type="checkbox" id="RelativeTime" />
+            <span>Relative time</span>
+          </label>
+        </div>
       </div>
 
       <div id="LogsContainer" class="logs-container">
         <div class="log-loading" id="LogLoading">
-          <span class="material-icons">hourglass_empty</span>
+          <span class="material-icons spinning">sync</span>
           <p>Loading logs...</p>
         </div>
         <div class="no-logs" id="NoLogsMessage" style="display: none;">
           <span class="material-icons" style="font-size: 48px; opacity: 0.5;">article</span>
-          <p>No log entries</p>
+          <p>No log entries matching filters</p>
+          <button is="emby-button" id="ResetFiltersBtn" class="raised emby-button">Reset Filters</button>
         </div>
         <div id="LogEntries" class="log-entries"></div>
+      </div>
+
+      <!-- Scroll Controls -->
+      <div class="scroll-controls">
+        <button is="emby-button" id="ScrollTopBtn" class="scroll-btn" title="Scroll to top (Home)">
+          <span class="material-icons">keyboard_arrow_up</span>
+        </button>
+        <button is="emby-button" id="ScrollBottomBtn" class="scroll-btn" title="Scroll to bottom (End)">
+          <span class="material-icons">keyboard_arrow_down</span>
+        </button>
       </div>
 
       <div class="log-pagination">
@@ -77,11 +177,132 @@
       </div>
 
       <style>
-        .log-status {
-          padding: 15px;
-          margin: 15px 0;
+        /* Help Panel */
+        .help-panel {
+          background: rgba(0, 164, 220, 0.1);
+          border: 1px solid rgba(0, 164, 220, 0.3);
+          border-radius: 8px;
+          padding: 16px;
+          margin-bottom: 16px;
+        }
+        .help-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 12px;
+          color: #00a4dc;
+        }
+        .help-close {
+          margin-left: auto;
+          padding: 4px;
+          min-width: auto;
+        }
+        .help-content {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+          gap: 8px;
+          margin-bottom: 12px;
+        }
+        .shortcut {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 0.85em;
+        }
+        kbd {
+          background: rgba(255, 255, 255, 0.1);
+          border: 1px solid rgba(255, 255, 255, 0.2);
           border-radius: 4px;
-          font-weight: bold;
+          padding: 2px 6px;
+          font-family: monospace;
+          font-size: 0.9em;
+        }
+        .help-tips {
+          font-size: 0.85em;
+          color: #888;
+        }
+        .help-tips ul {
+          margin: 4px 0 0 16px;
+          padding: 0;
+        }
+        .example-tag {
+          background: rgba(0, 164, 220, 0.2);
+          padding: 1px 4px;
+          border-radius: 3px;
+          font-size: 0.9em;
+        }
+        .example-category {
+          color: #00a4dc;
+        }
+
+        /* Quick Filters */
+        .quick-filters {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 12px;
+          flex-wrap: wrap;
+        }
+        .quick-filter-label {
+          color: #888;
+          font-size: 0.85em;
+        }
+        .quick-filter-btn {
+          padding: 4px 12px;
+          min-width: auto;
+          font-size: 0.85em;
+          border-radius: 16px;
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .quick-filter-btn.active {
+          background: rgba(0, 164, 220, 0.2);
+          border-color: #00a4dc;
+          color: #00a4dc;
+        }
+        .quick-filter-btn.filter-errors {
+          color: #f44336;
+        }
+        .quick-filter-btn.filter-errors.active {
+          background: rgba(244, 67, 54, 0.2);
+          border-color: #f44336;
+        }
+        .quick-filter-btn.filter-warnings {
+          color: #ff9800;
+        }
+        .quick-filter-btn.filter-warnings.active {
+          background: rgba(255, 152, 0, 0.2);
+          border-color: #ff9800;
+        }
+        .active-filter-tag {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          background: rgba(156, 39, 176, 0.2);
+          border: 1px solid #9c27b0;
+          border-radius: 16px;
+          padding: 4px 8px 4px 12px;
+          font-size: 0.85em;
+          color: #ce93d8;
+        }
+        .clear-filter-btn {
+          padding: 2px;
+          min-width: auto;
+          font-size: 14px;
+        }
+        .clear-filter-btn .material-icons {
+          font-size: 14px;
+        }
+
+        /* Status */
+        .log-status {
+          padding: 12px 16px;
+          margin-bottom: 12px;
+          border-radius: 4px;
+          font-weight: 500;
+          display: flex;
+          align-items: center;
+          gap: 8px;
         }
         .log-status.success {
           background: rgba(76, 175, 80, 0.1);
@@ -93,13 +314,15 @@
           border-left: 4px solid #f44336;
           color: #f44336;
         }
+
+        /* Controls */
         .log-controls {
           display: flex;
           flex-wrap: wrap;
           justify-content: space-between;
           align-items: center;
-          gap: 16px;
-          margin-bottom: 16px;
+          gap: 12px;
+          margin-bottom: 12px;
           padding: 12px;
           background: rgba(255, 255, 255, 0.03);
           border-radius: 8px;
@@ -107,23 +330,29 @@
         .log-filters {
           display: flex;
           flex-wrap: wrap;
-          gap: 16px;
+          gap: 12px;
           align-items: center;
         }
         .filter-group {
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
         }
         .filter-label {
-          font-size: 0.9em;
+          font-size: 0.85em;
           color: #888;
           display: flex;
           align-items: center;
           gap: 4px;
         }
         .filter-select {
-          min-width: 100px;
+          min-width: 80px;
+        }
+        .category-select {
+          min-width: 120px;
+        }
+        .max-entries-select {
+          min-width: 60px;
         }
         .search-group {
           position: relative;
@@ -138,31 +367,109 @@
         }
         .search-group .search-input {
           padding-left: 32px;
-          min-width: 200px;
+          padding-right: 28px;
+          min-width: 180px;
+        }
+        .clear-search-btn {
+          position: absolute;
+          right: 4px;
+          top: 50%;
+          transform: translateY(-50%);
+          padding: 2px;
+          min-width: auto;
+          opacity: 0.6;
+        }
+        .clear-search-btn:hover {
+          opacity: 1;
+        }
+        .clear-search-btn .material-icons {
+          font-size: 16px;
         }
         .log-actions {
           display: flex;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+        .log-actions .emby-button {
+          padding: 6px 12px;
+        }
+
+        /* Stats Bar */
+        .log-stats {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 8px 12px;
+          background: rgba(0, 164, 220, 0.08);
+          border-radius: 4px;
+          margin-bottom: 12px;
+          font-size: 0.85em;
+        }
+        .stats-left {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .stats-right {
+          display: flex;
+          align-items: center;
           gap: 8px;
         }
-        .log-stats {
-          padding: 8px 12px;
-          background: rgba(0, 164, 220, 0.1);
-          border-radius: 4px;
-          margin-bottom: 16px;
-          font-size: 0.9em;
+        .live-indicator {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: #4caf50;
+          font-weight: 600;
+          font-size: 0.85em;
+        }
+        .live-indicator.paused {
           color: #888;
         }
+        .live-dot {
+          width: 8px;
+          height: 8px;
+          background: #4caf50;
+          border-radius: 50%;
+          animation: pulse 2s infinite;
+        }
+        .live-indicator.paused .live-dot {
+          background: #888;
+          animation: none;
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+        .timestamp-toggle {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          cursor: pointer;
+          color: #888;
+        }
+
+        /* Logs Container */
         .logs-container {
           border: 1px solid rgba(255, 255, 255, 0.1);
           border-radius: 8px;
           min-height: 400px;
           max-height: 600px;
           overflow-y: auto;
+          position: relative;
+          scroll-behavior: smooth;
         }
         .log-loading, .no-logs {
           text-align: center;
           padding: 60px 20px;
           color: #888;
+        }
+        .spinning {
+          animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
         }
         .log-entries {
           font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
@@ -171,85 +478,195 @@
         .log-entry {
           display: flex;
           flex-wrap: wrap;
-          padding: 8px 12px;
+          padding: 6px 12px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.05);
           gap: 8px;
+          transition: background 0.15s;
         }
         .log-entry:hover {
-          background: rgba(255, 255, 255, 0.03);
+          background: rgba(255, 255, 255, 0.05);
         }
         .log-entry.level-trace { border-left: 3px solid #666; }
         .log-entry.level-debug { border-left: 3px solid #2196F3; }
         .log-entry.level-info { border-left: 3px solid #4caf50; }
-        .log-entry.level-warning { border-left: 3px solid #ff9800; }
-        .log-entry.level-error { border-left: 3px solid #f44336; }
+        .log-entry.level-warning { border-left: 3px solid #ff9800; background: rgba(255, 152, 0, 0.03); }
+        .log-entry.level-error { border-left: 3px solid #f44336; background: rgba(244, 67, 54, 0.05); }
         .log-entry.level-critical { border-left: 3px solid #9c27b0; background: rgba(156, 39, 176, 0.1); }
         .log-entry.is-debug {
-          background: rgba(33, 150, 243, 0.05);
+          background: rgba(33, 150, 243, 0.03);
+        }
+        .log-entry.highlighted {
+          background: rgba(255, 235, 59, 0.15) !important;
         }
         .log-timestamp {
           color: #666;
           white-space: nowrap;
           flex-shrink: 0;
+          font-size: 11px;
+        }
+        .log-timestamp.relative {
+          min-width: 60px;
         }
         .log-level {
           font-weight: bold;
-          width: 60px;
+          min-width: 50px;
           text-align: center;
           flex-shrink: 0;
+          padding: 1px 6px;
+          border-radius: 3px;
+          font-size: 10px;
+          text-transform: uppercase;
         }
-        .log-level.trace { color: #666; }
-        .log-level.debug { color: #2196F3; }
-        .log-level.info { color: #4caf50; }
-        .log-level.warning { color: #ff9800; }
-        .log-level.error { color: #f44336; }
-        .log-level.critical { color: #9c27b0; }
+        .log-level.trace { color: #666; background: rgba(102, 102, 102, 0.1); }
+        .log-level.debug { color: #2196F3; background: rgba(33, 150, 243, 0.1); }
+        .log-level.info { color: #4caf50; background: rgba(76, 175, 80, 0.1); }
+        .log-level.warning { color: #ff9800; background: rgba(255, 152, 0, 0.15); }
+        .log-level.error { color: #f44336; background: rgba(244, 67, 54, 0.15); }
+        .log-level.critical { color: #fff; background: #9c27b0; }
         .log-category {
           color: #00a4dc;
-          width: 120px;
+          min-width: 100px;
+          max-width: 140px;
           flex-shrink: 0;
           overflow: hidden;
           text-overflow: ellipsis;
+          white-space: nowrap;
+          cursor: pointer;
+          transition: color 0.15s;
+        }
+        .log-category:hover {
+          color: #4fc3f7;
+          text-decoration: underline;
         }
         .log-message {
           flex: 1;
           word-break: break-word;
-          min-width: 200px;
+          min-width: 150px;
+        }
+        .log-message mark {
+          background: rgba(255, 235, 59, 0.4);
+          color: inherit;
+          padding: 0 2px;
+          border-radius: 2px;
         }
         .log-meta {
           display: flex;
-          gap: 8px;
+          gap: 6px;
           font-size: 0.9em;
-          color: #888;
         }
         .log-stream-id, .log-channel-name {
           background: rgba(0, 164, 220, 0.2);
-          padding: 2px 6px;
-          border-radius: 4px;
+          padding: 2px 8px;
+          border-radius: 10px;
+          cursor: pointer;
+          transition: background 0.15s;
+          font-size: 11px;
+        }
+        .log-stream-id:hover, .log-channel-name:hover {
+          background: rgba(0, 164, 220, 0.4);
         }
         .log-exception {
           width: 100%;
-          margin-top: 8px;
+          margin-top: 6px;
           padding: 8px;
-          background: rgba(244, 67, 54, 0.1);
+          background: rgba(244, 67, 54, 0.08);
           border-radius: 4px;
-          color: #f44336;
-          white-space: pre-wrap;
+          color: #ef9a9a;
           font-size: 11px;
+          cursor: pointer;
+          position: relative;
         }
+        .log-exception-header {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          color: #f44336;
+          font-weight: 500;
+        }
+        .log-exception-header .material-icons {
+          font-size: 16px;
+          transition: transform 0.2s;
+        }
+        .log-exception.expanded .log-exception-header .material-icons {
+          transform: rotate(90deg);
+        }
+        .log-exception-details {
+          display: none;
+          margin-top: 8px;
+          white-space: pre-wrap;
+          max-height: 200px;
+          overflow-y: auto;
+        }
+        .log-exception.expanded .log-exception-details {
+          display: block;
+        }
+
+        /* Scroll Controls */
+        .scroll-controls {
+          position: fixed;
+          right: 30px;
+          bottom: 100px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          z-index: 100;
+        }
+        .scroll-btn {
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          background: rgba(0, 164, 220, 0.9);
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+          transition: transform 0.15s, background 0.15s;
+        }
+        .scroll-btn:hover {
+          transform: scale(1.1);
+          background: #00a4dc;
+        }
+
+        /* Pagination */
         .log-pagination {
-          margin-top: 16px;
+          margin-top: 12px;
           text-align: center;
         }
+
+        /* Button States */
         .auto-refresh-active {
           background: #4caf50 !important;
         }
+        .follow-active {
+          background: #2196F3 !important;
+        }
+
+        /* New Entry Animation */
+        .log-entry.new-entry {
+          animation: highlight-new 2s ease-out;
+        }
+        @keyframes highlight-new {
+          0% {
+            background: rgba(0, 164, 220, 0.3);
+            transform: translateX(-5px);
+          }
+          50% {
+            background: rgba(0, 164, 220, 0.15);
+          }
+          100% {
+            background: transparent;
+            transform: translateX(0);
+          }
+        }
+
+        /* Debug Toggle */
         .debug-toggle-container {
           display: flex;
           align-items: center;
           gap: 16px;
-          padding: 12px 16px;
-          margin-bottom: 16px;
+          padding: 10px 16px;
+          margin-bottom: 12px;
           background: rgba(255, 152, 0, 0.1);
           border-left: 3px solid #ff9800;
           border-radius: 4px;
@@ -263,7 +680,28 @@
         }
         .debug-toggle-hint {
           color: #888;
-          font-size: 0.9em;
+          font-size: 0.85em;
+        }
+
+        /* Responsive */
+        @media (max-width: 800px) {
+          .log-controls {
+            flex-direction: column;
+            align-items: stretch;
+          }
+          .log-filters {
+            justify-content: flex-start;
+          }
+          .log-actions {
+            justify-content: flex-end;
+          }
+          .help-content {
+            grid-template-columns: 1fr;
+          }
+          .scroll-controls {
+            right: 15px;
+            bottom: 80px;
+          }
         }
       </style>
     </div>

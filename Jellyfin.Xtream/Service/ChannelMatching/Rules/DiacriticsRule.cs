@@ -42,7 +42,7 @@ public sealed class DiacriticsRule : INormalizationRule
             var category = CharUnicodeInfo.GetUnicodeCategory(c);
             if (category != UnicodeCategory.NonSpacingMark)
             {
-                sb.Append(c);
+                _ = sb.Append(c);
             }
         }
 

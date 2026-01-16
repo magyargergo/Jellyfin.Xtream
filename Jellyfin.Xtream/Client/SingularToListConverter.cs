@@ -26,10 +26,7 @@ namespace Jellyfin.Xtream.Client;
 public class SingularToListConverter<T> : JsonConverter
 {
     /// <inheritdoc/>
-    public override bool CanConvert(Type objectType)
-    {
-        return objectType == typeof(T);
-    }
+    public override bool CanConvert(Type objectType) => objectType == typeof(T);
 
     /// <inheritdoc/>
     public override ICollection<T>? ReadJson(
@@ -42,7 +39,7 @@ public class SingularToListConverter<T> : JsonConverter
         switch (reader.TokenType)
         {
             case JsonToken.StartObject:
-                T? result = serializer.Deserialize<T>(reader);
+                var result = serializer.Deserialize<T>(reader);
                 if (result is null)
                 {
                     return null;

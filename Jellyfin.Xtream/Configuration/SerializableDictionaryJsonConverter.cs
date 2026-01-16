@@ -59,10 +59,10 @@ public class SerializableDictionaryJsonConverter<TKey, TValue> : JsonConverter<S
             }
 
             var propertyName = reader.GetString()!;
-            TKey key = ConvertKey(propertyName);
+            var key = ConvertKey(propertyName);
 
-            reader.Read();
-            TValue value = JsonSerializer.Deserialize<TValue>(ref reader, options)!;
+            _ = reader.Read();
+            var value = JsonSerializer.Deserialize<TValue>(ref reader, options)!;
 
             dictionary[key] = value;
         }
@@ -103,16 +103,8 @@ public class SerializableDictionaryJsonConverter<TKey, TValue> : JsonConverter<S
             return (TKey)(object)long.Parse(keyString, System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        if (keyType == typeof(string))
-        {
-            return (TKey)(object)keyString;
-        }
-
-        if (keyType == typeof(Guid))
-        {
-            return (TKey)(object)Guid.Parse(keyString);
-        }
-
-        throw new JsonException($"Unsupported key type: {keyType}");
+        return keyType == typeof(string) ? (TKey)(object)keyString
+            : keyType == typeof(Guid) ? (TKey)(object)Guid.Parse(keyString)
+            : throw new JsonException($"Unsupported key type: {keyType}");
     }
 }

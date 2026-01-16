@@ -25,15 +25,8 @@ namespace Jellyfin.Xtream.Configuration;
 public class SerializableDictionaryJsonConverterFactory : JsonConverterFactory
 {
     /// <inheritdoc/>
-    public override bool CanConvert(Type typeToConvert)
-    {
-        if (!typeToConvert.IsGenericType)
-        {
-            return false;
-        }
-
-        return typeToConvert.GetGenericTypeDefinition() == typeof(SerializableDictionary<,>);
-    }
+    public override bool CanConvert(Type typeToConvert) =>
+        typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(SerializableDictionary<,>);
 
     /// <inheritdoc/>
     public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)

@@ -35,7 +35,17 @@ namespace Jellyfin.Xtream.Service.Epg;
 /// Supports configurable URL, channel ID mapping, and logo fallback.
 /// Maps channel names (not stream IDs) to EPG data using display-name variants.
 /// </summary>
-public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
+/// <remarks>
+/// Initializes a new instance of the <see cref="ExternalXmltvEpgProvider"/> class.
+/// </remarks>
+/// <param name="httpClientFactory">HTTP client factory.</param>
+/// <param name="memoryCache">Memory cache.</param>
+/// <param name="logger">Logger.</param>
+public sealed class ExternalXmltvEpgProvider(
+    IHttpClientFactory httpClientFactory,
+    IMemoryCache memoryCache,
+    ILogger<ExternalXmltvEpgProvider> logger
+) : IEpgProviderWithPrewarm, IDisposable
 {
     private const string CacheKeyPrefix = "external-xmltv-epg-";
     private const string ChannelMapCacheKeyPrefix = "external-xmltv-channels-";
@@ -49,30 +59,13 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
         "yyyyMMddHHmmss -HHmm",
     ];
 
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly IMemoryCache _memoryCache;
-    private readonly ILogger<ExternalXmltvEpgProvider> _logger;
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+    private readonly IMemoryCache _memoryCache = memoryCache;
+    private readonly ILogger<ExternalXmltvEpgProvider> _logger = logger;
     private readonly SemaphoreSlim _loadLock = new(1, 1);
 
     private bool _isAvailable = true;
     private DateTime _lastFailureTime = DateTime.MinValue;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ExternalXmltvEpgProvider"/> class.
-    /// </summary>
-    /// <param name="httpClientFactory">HTTP client factory.</param>
-    /// <param name="memoryCache">Memory cache.</param>
-    /// <param name="logger">Logger.</param>
-    public ExternalXmltvEpgProvider(
-        IHttpClientFactory httpClientFactory,
-        IMemoryCache memoryCache,
-        ILogger<ExternalXmltvEpgProvider> logger
-    )
-    {
-        _httpClientFactory = httpClientFactory;
-        _memoryCache = memoryCache;
-        _logger = logger;
-    }
 
     /// <inheritdoc />
     public string Name => "External XMLTV";
@@ -105,21 +98,21 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
     {
         if (!Plugin.Instance.Configuration.EnableExternalEpg)
         {
-            _logger.LogDebug("{Provider} is disabled, skipping pre-warm", Name);
+            _logger.LogDebugIfEnabled("{Provider} is disabled, skipping pre-warm", Name);
             return;
         }
 
         var urls = GetConfiguredUrls();
         if (urls.Count == 0)
         {
-            _logger.LogDebug("{Provider} has no configured URLs, skipping pre-warm", Name);
+            _logger.LogDebugIfEnabled("{Provider} has no configured URLs, skipping pre-warm", Name);
             return;
         }
 
         _logger.PluginLogInformation("{Provider} pre-warming cache for {Count} sources...", Name, urls.Count);
 
         var tasks = urls.Select(url => LoadXmltvDataAsync(url, cancellationToken));
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        _ = await Task.WhenAll(tasks).ConfigureAwait(false);
 
         _logger.PluginLogInformation("{Provider} cache pre-warmed", Name);
     }
@@ -130,13 +123,11 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
     /// like epg.ovh use channel names, not stream IDs. Use <see cref="GetProgramsByNameAsync"/>
     /// for better matching. This implementation returns empty results.
     /// </remarks>
-    public Task<IReadOnlyList<EpgProgram>> GetProgramsAsync(int streamId, CancellationToken cancellationToken)
-    {
+    public Task<IReadOnlyList<EpgProgram>> GetProgramsAsync(int streamId, CancellationToken cancellationToken) =>
         // External XMLTV sources use channel names, not stream IDs
         // This method can't match without knowing the channel name
         // The composite provider should call GetProgramsByNameAsync instead
-        return Task.FromResult<IReadOnlyList<EpgProgram>>(Array.Empty<EpgProgram>());
-    }
+        Task.FromResult<IReadOnlyList<EpgProgram>>([]);
 
     /// <summary>
     /// Gets EPG programs by channel name (the primary lookup method for external XMLTV).
@@ -151,13 +142,13 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
     {
         if (!Plugin.Instance.Configuration.EnableExternalEpg || string.IsNullOrWhiteSpace(channelName))
         {
-            return Array.Empty<EpgProgram>();
+            return [];
         }
 
         var urls = GetConfiguredUrls();
         if (urls.Count == 0)
         {
-            return Array.Empty<EpgProgram>();
+            return [];
         }
 
         // Normalize the channel name for matching
@@ -200,14 +191,11 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
             }
         }
 
-        return Array.Empty<EpgProgram>();
+        return [];
     }
 
     /// <inheritdoc />
-    public void Dispose()
-    {
-        _loadLock.Dispose();
-    }
+    public void Dispose() => _loadLock.Dispose();
 
     /// <summary>
     /// Gets the logo URL from external EPG source for a channel.
@@ -234,7 +222,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
         // Check cached logo mappings from parsed XMLTV
         foreach (var url in urls)
         {
-            string logoMapCacheKey = LogoMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
+            var logoMapCacheKey = LogoMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
             if (
                 _memoryCache.TryGetValue(logoMapCacheKey, out Dictionary<string, string>? logoMap)
                 && logoMap != null
@@ -290,32 +278,26 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
     /// Normalizes a channel name for matching against XMLTV display-names.
     /// Uses the shared ChannelNameNormalizer for consistent matching across the plugin.
     /// </summary>
-    private static string NormalizeChannelName(string name)
-    {
-        return ChannelNameNormalizer.Default.Normalize(name);
-    }
+    private static string NormalizeChannelName(string name) => ChannelNameNormalizer.Default.Normalize(name);
 
     private async Task<(
         Dictionary<string, List<EpgProgram>>? Programs,
         Dictionary<string, string>? ChannelMap
     )> GetOrLoadXmltvDataAsync(string url, CancellationToken cancellationToken)
     {
-        string programsCacheKey = CacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
-        string channelMapCacheKey = ChannelMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
-        string logoMapCacheKey = LogoMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
+        var programsCacheKey = CacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
+        var channelMapCacheKey = ChannelMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
+        var logoMapCacheKey = LogoMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
 
-        if (
+        return
             _memoryCache.TryGetValue(programsCacheKey, out Dictionary<string, List<EpgProgram>>? cachedPrograms)
             && _memoryCache.TryGetValue(channelMapCacheKey, out Dictionary<string, string>? cachedChannelMap)
             && _memoryCache.TryGetValue(logoMapCacheKey, out Dictionary<string, string>? _)
             && cachedPrograms != null
             && cachedChannelMap != null
-        )
-        {
-            return (cachedPrograms, cachedChannelMap);
-        }
-
-        return await LoadXmltvDataAsync(url, cancellationToken).ConfigureAwait(false);
+            ? ((Dictionary<string, List<EpgProgram>>? Programs, Dictionary<string, string>? ChannelMap))
+                (cachedPrograms, cachedChannelMap)
+            : await LoadXmltvDataAsync(url, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<(
@@ -323,9 +305,9 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
         Dictionary<string, string>? ChannelMap
     )> LoadXmltvDataAsync(string url, CancellationToken cancellationToken)
     {
-        string programsCacheKey = CacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
-        string channelMapCacheKey = ChannelMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
-        string logoMapCacheKey = LogoMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
+        var programsCacheKey = CacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
+        var channelMapCacheKey = ChannelMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
+        var logoMapCacheKey = LogoMapCacheKeyPrefix + url.GetHashCode(StringComparison.Ordinal);
 
         await _loadLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -349,7 +331,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
             using var response = await httpClient
                 .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
 
             var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             await using (stream.ConfigureAwait(false))
@@ -366,9 +348,9 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                     programs.Values.Sum(p => p.Count)
                 );
 
-                _memoryCache.Set(programsCacheKey, programs, CacheDuration);
-                _memoryCache.Set(channelMapCacheKey, channelMap, CacheDuration);
-                _memoryCache.Set(logoMapCacheKey, logoMap, CacheDuration);
+                _ = _memoryCache.Set(programsCacheKey, programs, CacheDuration);
+                _ = _memoryCache.Set(channelMapCacheKey, channelMap, CacheDuration);
+                _ = _memoryCache.Set(logoMapCacheKey, logoMap, CacheDuration);
                 return (programs, channelMap);
             }
         }
@@ -386,7 +368,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
         }
         finally
         {
-            _loadLock.Release();
+            _ = _loadLock.Release();
         }
     }
 
@@ -438,7 +420,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                         ParseChannelElement(reader, displayNameToChannelId, displayNameToLogoUrl);
                         break;
                     case "programme":
-                        string channelId = reader.GetAttribute("channel") ?? string.Empty;
+                        var channelId = reader.GetAttribute("channel") ?? string.Empty;
                         if (!string.IsNullOrEmpty(channelId))
                         {
                             var program = ParseProgramElement(reader);
@@ -472,7 +454,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
         Dictionary<string, string> displayNameToLogoUrl
     )
     {
-        string? channelId = reader.GetAttribute("id");
+        var channelId = reader.GetAttribute("id");
         if (string.IsNullOrEmpty(channelId))
         {
             return;
@@ -482,7 +464,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
         var normalizedId = NormalizeChannelName(channelId);
         if (!string.IsNullOrEmpty(normalizedId))
         {
-            displayNameToChannelId.TryAdd(normalizedId, channelId);
+            _ = displayNameToChannelId.TryAdd(normalizedId, channelId);
         }
 
         if (reader.IsEmptyElement)
@@ -503,7 +485,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                 switch (subtree.Name)
                 {
                     case "display-name":
-                        string displayName = subtree.ReadElementContentAsString();
+                        var displayName = subtree.ReadElementContentAsString();
                         if (!string.IsNullOrWhiteSpace(displayName))
                         {
                             displayNames.Add(displayName);
@@ -511,7 +493,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                             if (!string.IsNullOrEmpty(normalized))
                             {
                                 // TryAdd - first mapping wins (typically the canonical name)
-                                displayNameToChannelId.TryAdd(normalized, channelId);
+                                _ = displayNameToChannelId.TryAdd(normalized, channelId);
                             }
                         }
 
@@ -532,22 +514,22 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                 var normalized = NormalizeChannelName(displayName);
                 if (!string.IsNullOrEmpty(normalized))
                 {
-                    displayNameToLogoUrl.TryAdd(normalized, iconUrl);
+                    _ = displayNameToLogoUrl.TryAdd(normalized, iconUrl);
                 }
             }
 
             // Also map the normalized channel ID to the icon
             if (!string.IsNullOrEmpty(normalizedId))
             {
-                displayNameToLogoUrl.TryAdd(normalizedId, iconUrl);
+                _ = displayNameToLogoUrl.TryAdd(normalizedId, iconUrl);
             }
         }
     }
 
     private static EpgProgram? ParseProgramElement(XmlReader reader)
     {
-        string? startStr = reader.GetAttribute("start");
-        string? stopStr = reader.GetAttribute("stop");
+        var startStr = reader.GetAttribute("start");
+        var stopStr = reader.GetAttribute("stop");
 
         if (string.IsNullOrEmpty(startStr))
         {
@@ -558,7 +540,7 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
         var endUtc = ParseXmltvDateTime(stopStr);
 
         // Collect mutable data during parsing
-        string title = string.Empty;
+        var title = string.Empty;
         string? description = null;
         string? imageUrl = null;
         List<string>? categories = null;
@@ -630,8 +612,8 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                     return dto.UtcDateTime;
                 }
 
-                string datePart = dateStr[..14];
-                string tzPart = dateStr[15..].Trim();
+                var datePart = dateStr[..14];
+                var tzPart = dateStr[15..].Trim();
 
                 if (
                     DateTime.TryParseExact(
@@ -645,12 +627,12 @@ public sealed class ExternalXmltvEpgProvider : IEpgProviderWithPrewarm, IDisposa
                 {
                     if (tzPart.Length >= 4)
                     {
-                        int sign = tzPart[0] == '-' ? -1 : 1;
+                        var sign = tzPart[0] == '-' ? -1 : 1;
                         var offsetStr = tzPart.AsSpan().TrimStart(['+', '-']);
                         if (
                             offsetStr.Length >= 4
-                            && int.TryParse(offsetStr[..2], out int hours)
-                            && int.TryParse(offsetStr.Slice(2, 2), out int minutes)
+                            && int.TryParse(offsetStr[..2], out var hours)
+                            && int.TryParse(offsetStr.Slice(2, 2), out var minutes)
                         )
                         {
                             var offset = new TimeSpan(sign * hours, sign * minutes, 0);

@@ -92,7 +92,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
         {
             lock (_lock)
             {
-                return _currentCts != null && !_currentCts.IsCancellationRequested;
+                return _currentCts?.IsCancellationRequested == false;
             }
         }
     }
@@ -129,7 +129,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
     {
         lock (_lock)
         {
-            if (_currentCts != null && !_currentCts.IsCancellationRequested)
+            if (_currentCts?.IsCancellationRequested == false)
             {
                 return false; // Already running
             }
@@ -208,7 +208,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
                 _currentProgress = p;
             }
 
-            writer.TryWrite(p);
+            _ = writer.TryWrite(p);
         }
 
         try
@@ -313,19 +313,21 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
                 result.TestResults = testResults;
 
                 // Categorize results as a funnel
-                result.WorkingProviders = OrderByPreference(
-                        testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks)
-                    )
-                    .ToList();
+                result.WorkingProviders =
+                [
+                    .. OrderByPreference(testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks)),
+                ];
 
-                result.WorkingWithEpgProviders = OrderByPreference(
+                result.WorkingWithEpgProviders =
+                [
+                    .. OrderByPreference(
                         testResults.Where(r => r.Status == ProviderStatus.Active && r.StreamWorks && r.HasEpg)
-                    )
-                    .ToList();
+                    ),
+                ];
 
-                result.FullyWorkingProviders = OrderByPreference(testResults.Where(r => r.IsFullyWorking)).ToList();
+                result.FullyWorkingProviders = [.. OrderByPreference(testResults.Where(r => r.IsFullyWorking))];
 
-                result.ExcellentProviders = OrderByPreference(testResults.Where(r => r.IsExcellent)).ToList();
+                result.ExcellentProviders = [.. OrderByPreference(testResults.Where(r => r.IsExcellent))];
 
                 result.Success = true;
 
@@ -384,7 +386,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
         {
             if (ex is HttpRequestException httpEx && IsExpectedConnectionFailure(httpEx))
             {
-                _logger.LogDebug("Discovery pipeline failed: {Message}", ex.Message);
+                _logger.LogDebugIfEnabled("Discovery pipeline failed: {Message}", ex.Message);
             }
             else
             {
@@ -419,7 +421,7 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
             _currentCts?.Cancel();
             _currentCts?.Dispose();
             _currentCts = null;
-            _progressChannel?.Writer.TryComplete();
+            _ = (_progressChannel?.Writer.TryComplete());
             _progressChannel = null;
         }
     }
@@ -526,13 +528,13 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
             var directory = Path.GetDirectoryName(_cachePath);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
             {
-                Directory.CreateDirectory(directory);
+                _ = Directory.CreateDirectory(directory);
             }
 
             var json = JsonSerializer.Serialize(result, JsonOptions);
             File.WriteAllText(_cachePath, json);
 
-            _logger.LogDebug("Saved discovery results to cache: {Path}", _cachePath);
+            _logger.LogDebugIfEnabled("Saved discovery results to cache: {Path}", _cachePath);
         }
         catch (Exception ex)
         {

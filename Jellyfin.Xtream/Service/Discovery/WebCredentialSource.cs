@@ -51,7 +51,6 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
     private readonly HttpClient _httpClient;
     private readonly ICredentialParser _parser;
     private readonly ILogger<WebCredentialSource> _logger;
-    private readonly string _baseUrl;
     private readonly string _categoryPath;
     private readonly Random _random = new();
     private readonly IBrowsingContext _browsingContext;
@@ -76,7 +75,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
         _httpClient = httpClient;
         _parser = parser;
         _logger = logger;
-        _baseUrl = baseUrl.TrimEnd('/');
+        BaseUrl = baseUrl.TrimEnd('/');
         _categoryPath = categoryPath;
 
         // Configure AngleSharp for HTML parsing
@@ -102,7 +101,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
                     UseJitter = true,
                     OnRetry = args =>
                     {
-                        logger.LogDebug(
+                        logger.LogDebugIfEnabled(
                             "Retry {AttemptNumber} after {Delay}ms due to {Reason}",
                             args.AttemptNumber,
                             args.RetryDelay.TotalMilliseconds,
@@ -119,7 +118,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
     public string Name => "Web Credential Source";
 
     /// <inheritdoc />
-    public string BaseUrl => _baseUrl;
+    public string BaseUrl { get; }
 
     /// <inheritdoc />
     public async Task<DiscoveryResult> DiscoverAsync(
@@ -130,7 +129,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
         CancellationToken cancellationToken
     )
     {
-        var result = new DiscoveryResult { SourceUrl = _baseUrl + _categoryPath };
+        var result = new DiscoveryResult { SourceUrl = BaseUrl + _categoryPath };
 
         try
         {
@@ -188,12 +187,12 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
                 }
                 catch (Exception ex)
                 {
-                    Interlocked.Increment(ref pagesFailed);
+                    _ = Interlocked.Increment(ref pagesFailed);
                     _logger.PluginLogWarning(ex, "Failed to process page: {Url}", url);
                 }
                 finally
                 {
-                    semaphore.Release();
+                    _ = semaphore.Release();
                 }
             });
 
@@ -244,12 +243,12 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
 
             var dateUrl = string.Create(
                 CultureInfo.InvariantCulture,
-                $"{_baseUrl}/xtream-codes-daily-lists-{date:dd-MM-yyyy}/"
+                $"{BaseUrl}/xtream-codes-daily-lists-{date:dd-MM-yyyy}/"
             );
             urls.Add(dateUrl);
         }
 
-        _logger.LogDebug(
+        _logger.LogDebugIfEnabled(
             "Generated {Count} date-based URLs from {StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd}",
             urls.Count,
             startDate,
@@ -325,7 +324,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("HTTP {StatusCode} for {Url}", response.StatusCode, url);
+                _logger.LogDebugIfEnabled("HTTP {StatusCode} for {Url}", response.StatusCode, url);
                 return string.Empty;
             }
 
@@ -333,7 +332,7 @@ public sealed class WebCredentialSource : ICredentialSource, IDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to fetch page: {Url}", url);
+            _logger.LogDebugIfEnabled(ex, "Failed to fetch page: {Url}", url);
             return string.Empty;
         }
     }

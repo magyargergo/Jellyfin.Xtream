@@ -32,30 +32,25 @@ namespace Jellyfin.Xtream.Client;
 /// This class implements IDisposable to properly clean up the authentication lock semaphore.
 /// HttpClient instances from IHttpClientFactory are managed by the factory and should not be disposed manually.
 /// </remarks>
-public sealed class XtreamClient : IDisposable
+/// <remarks>
+/// Initializes a new instance of the <see cref="XtreamClient"/> class.
+/// </remarks>
+/// <param name="httpClientFactory">The HTTP client factory.</param>
+/// <param name="logger">Optional logger for diagnostics.</param>
+public sealed class XtreamClient(IHttpClientFactory httpClientFactory, ILogger<XtreamClient>? logger = null)
+    : IDisposable
 {
     private const int AuthValidityMinutes = 30;
 
-    private readonly HttpClient _client;
+    private readonly HttpClient _client = httpClientFactory.CreateClient("XtreamClient");
 
-    private readonly ILogger<XtreamClient>? _logger;
+    private readonly ILogger<XtreamClient>? _logger = logger;
 
-    private readonly SemaphoreSlim _authLock = new SemaphoreSlim(1, 1);
+    private readonly SemaphoreSlim _authLock = new(1, 1);
 
     private DateTime _lastAuthCheck = DateTime.MinValue;
 
     private bool _lastAuthSuccess;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="XtreamClient"/> class.
-    /// </summary>
-    /// <param name="httpClientFactory">The HTTP client factory.</param>
-    /// <param name="logger">Optional logger for diagnostics.</param>
-    public XtreamClient(IHttpClientFactory httpClientFactory, ILogger<XtreamClient>? logger = null)
-    {
-        _client = httpClientFactory.CreateClient("XtreamClient");
-        _logger = logger;
-    }
 
     /// <summary>
     /// Validates credentials are still working by checking authentication status.
@@ -66,7 +61,7 @@ public sealed class XtreamClient : IDisposable
         CancellationToken cancellationToken
     )
     {
-        DateTime now = DateTime.UtcNow;
+        var now = DateTime.UtcNow;
 
         if (_lastAuthSuccess && (now - _lastAuthCheck).TotalMinutes < AuthValidityMinutes)
         {
@@ -86,14 +81,13 @@ public sealed class XtreamClient : IDisposable
 
             try
             {
-                PlayerApi result = await GetUserAndServerInfoAsync(connectionInfo, cancellationToken)
-                    .ConfigureAwait(false);
+                var result = await GetUserAndServerInfoAsync(connectionInfo, cancellationToken).ConfigureAwait(false);
                 _lastAuthSuccess = result?.UserInfo?.Status == "Active";
                 _lastAuthCheck = now;
 
                 if (!_lastAuthSuccess)
                 {
-                    _logger?.LogWarning(
+                    _logger?.PluginLogWarning(
                         "Xtream authentication validation failed. User status: {Status}. This may cause 406 errors.",
                         result?.UserInfo?.Status ?? "null"
                     );
@@ -113,11 +107,11 @@ public sealed class XtreamClient : IDisposable
                 // Log without stack trace for expected connection failures
                 if (IsExpectedConnectionFailure(exception))
                 {
-                    _logger?.LogDebug("Failed to validate Xtream credentials: {Message}", exception.Message);
+                    _logger?.LogDebugIfEnabled("Failed to validate Xtream credentials: {Message}", exception.Message);
                 }
                 else
                 {
-                    _logger?.LogWarning(
+                    _logger?.PluginLogWarning(
                         exception,
                         "Failed to validate Xtream credentials. This will likely cause 406 errors."
                     );
@@ -130,7 +124,7 @@ public sealed class XtreamClient : IDisposable
         }
         finally
         {
-            _authLock.Release();
+            _ = _authLock.Release();
         }
     }
 
@@ -146,12 +140,12 @@ public sealed class XtreamClient : IDisposable
             && !await ValidateAuthenticationAsync(connectionInfo, cancellationToken).ConfigureAwait(false)
         )
         {
-            _logger?.LogWarning(
+            _logger?.PluginLogWarning(
                 "Proceeding with API call despite failed authentication. Expect possible 406 errors. Check credentials and provider status."
             );
         }
 
-        Uri uri = new Uri(connectionInfo.BaseUrl + urlPath);
+        var uri = new Uri(connectionInfo.BaseUrl + urlPath);
         return JsonConvert.DeserializeObject<T>(
             await _client.GetStringAsync(uri, cancellationToken).ConfigureAwait(false)
         )!;
@@ -402,10 +396,8 @@ public sealed class XtreamClient : IDisposable
     /// </summary>
     /// <param name="connectionInfo">Connection credentials.</param>
     /// <returns>The XMLTV endpoint URL.</returns>
-    public string GetXmltvUrl(ConnectionInfo connectionInfo)
-    {
-        return $"{connectionInfo.BaseUrl}/xmltv.php?username={connectionInfo.UserName}&password={connectionInfo.Password}";
-    }
+    public static string GetXmltvUrl(ConnectionInfo connectionInfo) =>
+        $"{connectionInfo.BaseUrl}/xmltv.php?username={connectionInfo.UserName}&password={connectionInfo.Password}";
 
     /// <summary>
     /// Disposes the authentication lock semaphore.

@@ -139,8 +139,7 @@ public sealed class StreamQualitySnapshot
     /// <summary>
     /// Gets a value indicating whether this stream passes quality thresholds.
     /// </summary>
-    public bool PassesQualityThreshold =>
-        QualityLevel == StreamQualityLevel.Excellent || QualityLevel == StreamQualityLevel.Good;
+    public bool PassesQualityThreshold => QualityLevel is StreamQualityLevel.Excellent or StreamQualityLevel.Good;
 
     /// <summary>
     /// Gets the total error count across all error types.
@@ -160,12 +159,12 @@ public sealed class StreamQualitySnapshot
         }
 
         // Calculate error rate per 1000 packets
-        double errorRate = (double)TotalErrors / PacketsParsed * 1000;
+        _ = (double)TotalErrors / PacketsParsed * 1000;
 
         var issues = new System.Collections.Generic.List<string>();
 
         // Score starts at 100 and decreases based on issues
-        int score = 100;
+        var score = 100;
 
         // Sync byte errors are serious
         if (SyncByteErrors > 0)

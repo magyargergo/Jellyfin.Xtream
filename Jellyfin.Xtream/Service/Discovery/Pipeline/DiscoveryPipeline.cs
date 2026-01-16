@@ -51,8 +51,8 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
         _stages = stages;
         _logger = logger;
         _stageStats = new ConcurrentDictionary<PipelineStage, StageStats>();
-        _completedResults = new ConcurrentBag<ProviderTestResult>();
-        _failedItems = new ConcurrentBag<PipelineItem>();
+        _completedResults = [];
+        _failedItems = [];
 
         // Create aggregated event channel for all stages
         _aggregatedEvents = Channel.CreateUnbounded<StageEvent>(
@@ -98,13 +98,13 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
     /// Gets all completed provider test results.
     /// </summary>
     /// <returns>Collection of completed results.</returns>
-    public IReadOnlyCollection<ProviderTestResult> GetCompletedResults() => _completedResults.ToArray();
+    public IReadOnlyCollection<ProviderTestResult> GetCompletedResults() => [.. _completedResults];
 
     /// <summary>
     /// Gets all failed pipeline items.
     /// </summary>
     /// <returns>Collection of failed items.</returns>
-    public IReadOnlyCollection<PipelineItem> GetFailedItems() => _failedItems.ToArray();
+    public IReadOnlyCollection<PipelineItem> GetFailedItems() => [.. _failedItems];
 
     /// <summary>
     /// Starts the pipeline with the given credentials.
@@ -128,13 +128,13 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
             })
             .ToList();
 
-        Interlocked.Exchange(ref _totalItems, items.Count);
+        _ = Interlocked.Exchange(ref _totalItems, items.Count);
 
         _logger.PluginLogInformation("Starting pipeline with {Count} credentials", items.Count);
 
         // Start all stages
         var stageTasks = new List<Task>();
-        for (int i = 0; i < _stages.Length; i++)
+        for (var i = 0; i < _stages.Length; i++)
         {
             var stage = _stages[i];
             var concurrency = GetStageConcurrency(stage.StageId);
@@ -148,7 +148,7 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
         }
 
         // Connect stages: output of stage N goes to input of stage N+1
-        for (int i = 0; i < _stages.Length - 1; i++)
+        for (var i = 0; i < _stages.Length - 1; i++)
         {
             _ = ForwardItemsAsync(_stages[i].Output, _stages[i + 1].Input, ct);
         }
@@ -180,7 +180,7 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
         }
         finally
         {
-            _aggregatedEvents.Writer.TryComplete();
+            _ = _aggregatedEvents.Writer.TryComplete();
         }
 
         _logger.PluginLogInformation(
@@ -224,10 +224,7 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
     /// <summary>
     /// Cancels the pipeline execution.
     /// </summary>
-    public void Cancel()
-    {
-        _cts?.Cancel();
-    }
+    public void Cancel() => _cts?.Cancel();
 
     private PipelineProgress CreateProgress(StageEvent evt)
     {
@@ -258,7 +255,7 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
         }
     }
 
-    private async Task ForwardItemsAsync(
+    private static async Task ForwardItemsAsync(
         ChannelReader<PipelineItem> source,
         ChannelWriter<PipelineItem> target,
         CancellationToken ct
@@ -277,7 +274,7 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
         }
         finally
         {
-            target.TryComplete();
+            _ = target.TryComplete();
         }
     }
 
@@ -359,10 +356,8 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
     /// <param name="httpClientFactory">HTTP client factory.</param>
     /// <param name="loggerFactory">Logger factory.</param>
     /// <returns>A configured discovery pipeline.</returns>
-    public static DiscoveryPipeline Create(IHttpClientFactory httpClientFactory, ILoggerFactory loggerFactory)
-    {
-        return new Builder(httpClientFactory, loggerFactory).Build();
-    }
+    public static DiscoveryPipeline Create(IHttpClientFactory httpClientFactory, ILoggerFactory loggerFactory) =>
+        new Builder(httpClientFactory, loggerFactory).Build();
 
     /// <summary>
     /// Creates a new discovery pipeline with all stages for a specific country.
@@ -375,30 +370,21 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
         IHttpClientFactory httpClientFactory,
         ILoggerFactory loggerFactory,
         string? countryCode
-    )
-    {
-        return new Builder(httpClientFactory, loggerFactory).WithCountry(countryCode).Build();
-    }
+    ) => new Builder(httpClientFactory, loggerFactory).WithCountry(countryCode).Build();
 
     /// <summary>
     /// Builder for creating discovery pipelines.
     /// </summary>
-    public sealed class Builder
+    /// <remarks>
+    /// Initializes a new instance of the <see cref="Builder"/> class.
+    /// </remarks>
+    /// <param name="httpClientFactory">HTTP client factory.</param>
+    /// <param name="loggerFactory">Logger factory.</param>
+    public sealed class Builder(IHttpClientFactory httpClientFactory, ILoggerFactory loggerFactory)
     {
-        private readonly IHttpClientFactory _httpClientFactory;
-        private readonly ILoggerFactory _loggerFactory;
+        private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+        private readonly ILoggerFactory _loggerFactory = loggerFactory;
         private CountryProfile? _countryProfile = CountryBroadcasters.Poland;
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="Builder"/> class.
-        /// </summary>
-        /// <param name="httpClientFactory">HTTP client factory.</param>
-        /// <param name="loggerFactory">Logger factory.</param>
-        public Builder(IHttpClientFactory httpClientFactory, ILoggerFactory loggerFactory)
-        {
-            _httpClientFactory = httpClientFactory;
-            _loggerFactory = loggerFactory;
-        }
 
         /// <summary>
         /// Sets the country profile for channel filtering.
@@ -450,7 +436,7 @@ public sealed class DiscoveryPipeline : IAsyncDisposable
             stages.Add(new StreamTestStage(_httpClientFactory, _loggerFactory.CreateLogger<StreamTestStage>()));
             stages.Add(new QualityScoringStage(_loggerFactory.CreateLogger<QualityScoringStage>()));
 
-            return new DiscoveryPipeline(stages.ToArray(), _loggerFactory.CreateLogger<DiscoveryPipeline>());
+            return new DiscoveryPipeline([.. stages], _loggerFactory.CreateLogger<DiscoveryPipeline>());
         }
 
         /// <summary>

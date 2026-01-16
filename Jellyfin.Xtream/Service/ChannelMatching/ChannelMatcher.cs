@@ -25,7 +25,11 @@ namespace Jellyfin.Xtream.Service.ChannelMatching;
 /// 1. Exact match on normalized names (O(1) lookup)
 /// 2. Fuzzy match using Levenshtein distance for near-matches.
 /// </summary>
-public sealed class ChannelMatcher : IChannelMatcher
+/// <remarks>
+/// Initializes a new instance of the <see cref="ChannelMatcher"/> class.
+/// </remarks>
+/// <param name="normalizer">The normalizer to use for channel names.</param>
+public sealed class ChannelMatcher(IChannelNameNormalizer normalizer) : IChannelMatcher
 {
     /// <summary>
     /// The similarity threshold (0-100) for fuzzy matching.
@@ -34,21 +38,12 @@ public sealed class ChannelMatcher : IChannelMatcher
     /// </summary>
     public const int SimilarityThreshold = 90;
 
-    private readonly IChannelNameNormalizer _normalizer;
+    private readonly IChannelNameNormalizer _normalizer = normalizer;
 
     /// <summary>
     /// Gets the default matcher instance with standard normalizer.
     /// </summary>
     public static ChannelMatcher Default { get; } = new(ChannelNameNormalizer.Default);
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ChannelMatcher"/> class.
-    /// </summary>
-    /// <param name="normalizer">The normalizer to use for channel names.</param>
-    public ChannelMatcher(IChannelNameNormalizer normalizer)
-    {
-        _normalizer = normalizer;
-    }
 
     /// <inheritdoc />
     public ChannelMatchIndex BuildIndex(IEnumerable<StreamInfo> streams)
@@ -68,7 +63,7 @@ public sealed class ChannelMatcher : IChannelMatcher
 
             if (!exactMatchLookup.TryGetValue(normalizedName, out var list))
             {
-                list = new List<StreamInfo>();
+                list = [];
                 exactMatchLookup[normalizedName] = list;
             }
 
@@ -86,7 +81,7 @@ public sealed class ChannelMatcher : IChannelMatcher
 
         if (string.IsNullOrEmpty(normalizedSource))
         {
-            return new ChannelMatchResult(null, 0, string.Empty);
+            return new ChannelMatchResult(MatchedStream: null, 0, string.Empty);
         }
 
         // Extract country code from source channel for country-aware matching
@@ -148,7 +143,7 @@ public sealed class ChannelMatcher : IChannelMatcher
         }
 
         // No match found
-        return new ChannelMatchResult(null, 0, normalizedSource);
+        return new ChannelMatchResult(MatchedStream: null, 0, normalizedSource);
     }
 
     private static (StreamInfo? Match, int Score, string Name) FindBestFuzzyMatch(

@@ -57,24 +57,24 @@ public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager prov
         CancellationToken cancellationToken
     )
     {
-        string? idStr = item.GetProviderId(ProviderName);
+        var idStr = item.GetProviderId(ProviderName);
         if (idStr is not null)
         {
             logger.LogDebugIfEnabled("Getting metadata for movie {Id}", idStr);
-            int id = int.Parse(idStr, CultureInfo.InvariantCulture);
+            var id = int.Parse(idStr, CultureInfo.InvariantCulture);
 
-            XtreamProvider? provider = Plugin.Instance.Configuration.GetEnabledProviders().FirstOrDefault();
+            var provider = Plugin.Instance.Configuration.GetEnabledProviders().FirstOrDefault();
             if (provider == null)
             {
-                logger.LogWarning("No enabled provider found for VOD metadata");
+                logger.PluginLogWarning("No enabled provider found for VOD metadata");
                 return ItemUpdateType.None;
             }
 
-            using XtreamClient client = Plugin.Instance.CreateXtreamClient();
-            VodStreamInfo vod = await client
+            using var client = Plugin.Instance.CreateXtreamClient();
+            var vod = await client
                 .GetVodInfoAsync(provider.ToConnectionInfo(), id, cancellationToken)
                 .ConfigureAwait(false);
-            VodInfo? i = vod.Info;
+            var i = vod.Info;
 
             if (i is null)
             {
@@ -88,7 +88,7 @@ public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager prov
 
             if (i.Genre is string genres)
             {
-                item.Genres ??= genres.Split(',').Select(genre => genre.Trim()).ToArray();
+                item.Genres ??= [.. genres.Split(',').Select(genre => genre.Trim())];
             }
 
             if (!item.HasProviderId(MetadataProvider.Tmdb))
@@ -109,15 +109,15 @@ public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager prov
                         },
                         SearchProviderName = "TheMovieDb",
                     };
-                    IEnumerable<RemoteSearchResult> results = await providerManager
+                    var results = await providerManager
                         .GetRemoteSearchResults<Movie, MovieInfo>(query, cancellationToken)
                         .ConfigureAwait(false);
                     if (results.Any())
                     {
-                        RemoteSearchResult tmdbMovie = results.First();
+                        var tmdbMovie = results.First();
                         if (tmdbMovie.HasProviderId(MetadataProvider.Tmdb))
                         {
-                            string? queryId = tmdbMovie.GetProviderId(MetadataProvider.Tmdb);
+                            var queryId = tmdbMovie.GetProviderId(MetadataProvider.Tmdb);
                             if (queryId is not null)
                             {
                                 options.ReplaceAllMetadata = true;

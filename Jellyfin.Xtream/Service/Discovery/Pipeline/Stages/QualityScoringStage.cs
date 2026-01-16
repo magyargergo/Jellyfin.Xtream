@@ -95,17 +95,16 @@ public sealed class QualityScoringStage(ILogger logger)
         // Set filtered channel names (for display)
         if (filteredChannels != null)
         {
-            result.CountryChannelNames = filteredChannels
-                .Take(50)
-                .Select(s => s.Name ?? string.Empty)
-                .Where(n => !string.IsNullOrEmpty(n))
-                .ToList();
+            result.CountryChannelNames =
+            [
+                .. filteredChannels.Take(50).Select(s => s.Name ?? string.Empty).Where(n => !string.IsNullOrEmpty(n)),
+            ];
         }
 
         // Set filtered categories
         if (filteredCategories != null)
         {
-            result.CountryCategories = filteredCategories.ToList();
+            result.CountryCategories = [.. filteredCategories];
         }
 
         return result;

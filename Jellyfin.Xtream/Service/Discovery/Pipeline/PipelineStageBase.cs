@@ -130,7 +130,11 @@ public abstract class PipelineStageBase : IPipelineStage
     {
         var effectiveConcurrency = concurrency > 0 ? concurrency : _config.Concurrency;
 
-        _logger.LogDebug("Stage {Stage} starting with concurrency {Concurrency}", StageId, effectiveConcurrency);
+        _logger.LogDebugIfEnabled(
+            "Stage {Stage} starting with concurrency {Concurrency}",
+            StageId,
+            effectiveConcurrency
+        );
 
         try
         {
@@ -142,13 +146,13 @@ public abstract class PipelineStageBase : IPipelineStage
                         MaxDegreeOfParallelism = effectiveConcurrency,
                         CancellationToken = cancellationToken,
                     },
-                    async (item, ct) => await ProcessItemAsync(item, ct).ConfigureAwait(false)
+                    ProcessItemAsync
                 )
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _logger.LogDebug("Stage {Stage} cancelled", StageId);
+            _logger.LogDebugIfEnabled("Stage {Stage} cancelled", StageId);
         }
         catch (Exception ex)
         {
@@ -158,8 +162,8 @@ public abstract class PipelineStageBase : IPipelineStage
         finally
         {
             // Signal completion to downstream
-            _outputChannel.Writer.TryComplete();
-            _failedChannel.Writer.TryComplete();
+            _ = _outputChannel.Writer.TryComplete();
+            _ = _failedChannel.Writer.TryComplete();
 
             // Emit stage completed event
             var stats = Stats;
@@ -170,9 +174,9 @@ public abstract class PipelineStageBase : IPipelineStage
                 )
                 .ConfigureAwait(false);
 
-            _eventChannel.Writer.TryComplete();
+            _ = _eventChannel.Writer.TryComplete();
 
-            _logger.LogDebug(
+            _logger.LogDebugIfEnabled(
                 "Stage {Stage} completed: {Passed} passed, {Failed} failed, avg {AvgMs:F1}ms",
                 StageId,
                 stats.Passed,
@@ -198,10 +202,7 @@ public abstract class PipelineStageBase : IPipelineStage
             using var timeoutCts =
                 _config.TimeoutMs > 0 ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken) : null;
 
-            if (timeoutCts != null)
-            {
-                timeoutCts.CancelAfter(_config.TimeoutMs);
-            }
+            timeoutCts?.CancelAfter(_config.TimeoutMs);
 
             var effectiveCt = timeoutCts?.Token ?? cancellationToken;
 
@@ -253,7 +254,7 @@ public abstract class PipelineStageBase : IPipelineStage
             var reason = $"Error: {ex.Message}";
             var failedItem = item.MarkFailed(reason);
 
-            _logger.LogDebug(ex, "Stage {Stage} item {Id} failed with exception", StageId, item.Id);
+            _logger.LogDebugIfEnabled(ex, "Stage {Stage} item {Id} failed with exception", StageId, item.Id);
 
             Stats.RecordFailed(durationMs);
             await _failedChannel.Writer.WriteAsync(failedItem, cancellationToken).ConfigureAwait(false);
@@ -275,10 +276,7 @@ public abstract class PipelineStageBase : IPipelineStage
         };
 
     /// <inheritdoc />
-    public void Complete()
-    {
-        _inputChannel.Writer.TryComplete();
-    }
+    public void Complete() => _inputChannel.Writer.TryComplete();
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()

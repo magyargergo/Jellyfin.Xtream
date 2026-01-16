@@ -12,7 +12,6 @@ export default function (view) {
 
     // DOM Elements
     const visible = view.querySelector("#Visible");
-    const mergeDuplicateChannels = view.querySelector("#MergeDuplicateChannels");
     const enableProviderFailover = view.querySelector("#EnableProviderFailover");
     const maxFailoverAttempts = view.querySelector("#MaxFailoverAttempts");
     const providerSelect = view.querySelector("#ProviderSelect");
@@ -45,7 +44,6 @@ export default function (view) {
     const loadProviders = async () => {
       const config = await ApiClient.getPluginConfiguration(pluginId);
       visible.checked = config.IsCatchupVisible;
-      mergeDuplicateChannels.checked = config.MergeDuplicateChannels;
       enableProviderFailover.checked = config.EnableProviderFailover;
       maxFailoverAttempts.value = config.MaxFailoverAttempts || 3;
       providers = config.Providers || [];
@@ -177,7 +175,6 @@ export default function (view) {
 
       ApiClient.getPluginConfiguration(pluginId).then((config) => {
         config.IsCatchupVisible = visible.checked;
-        config.MergeDuplicateChannels = mergeDuplicateChannels.checked;
         config.EnableProviderFailover = enableProviderFailover.checked;
         config.MaxFailoverAttempts = parseInt(maxFailoverAttempts.value, 10) || 3;
 

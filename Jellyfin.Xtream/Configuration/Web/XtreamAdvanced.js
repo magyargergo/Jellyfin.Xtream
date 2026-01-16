@@ -89,6 +89,9 @@ export default function (view) {
       ['#ExternalEpgLogoBaseUrl', 'ExternalEpgLogoBaseUrl', ''],
       ['#UseExternalLogoFallback', 'UseExternalLogoFallback', true, true],
 
+      // Stream processing fields
+      ['#ForceRemux', 'ForceRemux', true, true],
+
       // Streaming timeout fields (must match PluginConfiguration.cs defaults)
       ['#StreamConnectTimeoutSeconds', 'StreamConnectTimeoutSeconds', 5, false, (v) => parseInt(v) || 5],
       ['#StreamFirstByteTimeoutSeconds', 'StreamFirstByteTimeoutSeconds', 5, false, (v) => parseInt(v) || 5],

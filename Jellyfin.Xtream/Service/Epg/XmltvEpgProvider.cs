@@ -33,36 +33,29 @@ namespace Jellyfin.Xtream.Service.Epg;
 /// Used as fallback when standard Xtream API endpoints are unavailable.
 /// Supports pre-warming to load data in background on startup.
 /// </summary>
-public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
+/// <remarks>
+/// Initializes a new instance of the <see cref="XmltvEpgProvider"/> class.
+/// </remarks>
+/// <param name="httpClientFactory">HTTP client factory.</param>
+/// <param name="memoryCache">Memory cache.</param>
+/// <param name="logger">Logger.</param>
+public sealed class XmltvEpgProvider(
+    IHttpClientFactory httpClientFactory,
+    IMemoryCache memoryCache,
+    ILogger<XmltvEpgProvider> logger
+) : IEpgProviderWithPrewarm, IDisposable
 {
     private const string XmltvCacheKey = "xtream-xmltv-epg";
     private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(4);
     private static readonly TimeSpan _unavailableCooldown = TimeSpan.FromMinutes(10);
 
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly IMemoryCache _memoryCache;
-    private readonly ILogger<XmltvEpgProvider> _logger;
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+    private readonly IMemoryCache _memoryCache = memoryCache;
+    private readonly ILogger<XmltvEpgProvider> _logger = logger;
     private readonly SemaphoreSlim _loadLock = new(1, 1);
 
     private bool _isAvailable = true;
     private DateTime _lastFailureTime = DateTime.MinValue;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="XmltvEpgProvider"/> class.
-    /// </summary>
-    /// <param name="httpClientFactory">HTTP client factory.</param>
-    /// <param name="memoryCache">Memory cache.</param>
-    /// <param name="logger">Logger.</param>
-    public XmltvEpgProvider(
-        IHttpClientFactory httpClientFactory,
-        IMemoryCache memoryCache,
-        ILogger<XmltvEpgProvider> logger
-    )
-    {
-        _httpClientFactory = httpClientFactory;
-        _memoryCache = memoryCache;
-        _logger = logger;
-    }
 
     /// <inheritdoc />
     public string Name => "XMLTV";
@@ -92,7 +85,7 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
         _logger.PluginLogInformation("{Provider} pre-warming cache...", Name);
         try
         {
-            await GetOrLoadXmltvDataAsync(cancellationToken).ConfigureAwait(false);
+            _ = await GetOrLoadXmltvDataAsync(cancellationToken).ConfigureAwait(false);
             _logger.PluginLogInformation("{Provider} cache pre-warmed successfully", Name);
         }
         catch (Exception ex)
@@ -108,11 +101,11 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
 
         if (xmltvData == null)
         {
-            return Array.Empty<EpgProgram>();
+            return [];
         }
 
         // Try to find programs by stream ID (channel ID in XMLTV)
-        string streamIdStr = streamId.ToString(CultureInfo.InvariantCulture);
+        var streamIdStr = streamId.ToString(CultureInfo.InvariantCulture);
 
         if (xmltvData.TryGetValue(streamIdStr, out var programs))
         {
@@ -137,14 +130,11 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
             return programs;
         }
 
-        return Array.Empty<EpgProgram>();
+        return [];
     }
 
     /// <inheritdoc />
-    public void Dispose()
-    {
-        _loadLock.Dispose();
-    }
+    public void Dispose() => _loadLock.Dispose();
 
     /// <summary>
     /// Gets or loads the XMLTV data from cache or remote.
@@ -180,8 +170,7 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
                 return null;
             }
 
-            using var client = new XtreamClient(_httpClientFactory, _logger as ILogger<XtreamClient>);
-            string xmltvUrl = client.GetXmltvUrl(provider.ToConnectionInfo());
+            var xmltvUrl = XtreamClient.GetXmltvUrl(provider.ToConnectionInfo());
 
             _logger.PluginLogInformation("Loading XMLTV EPG data from provider...");
 
@@ -190,7 +179,7 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
             using var response = await httpClient
                 .GetAsync(xmltvUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
 
             var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             await using (stream.ConfigureAwait(false))
@@ -203,7 +192,7 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
                     data.Values.Sum(p => p.Count)
                 );
 
-                _memoryCache.Set(XmltvCacheKey, data, CacheDuration);
+                _ = _memoryCache.Set(XmltvCacheKey, data, CacheDuration);
                 return data;
             }
         }
@@ -222,7 +211,7 @@ public sealed class XmltvEpgProvider : IEpgProviderWithPrewarm, IDisposable
         }
         finally
         {
-            _loadLock.Release();
+            _ = _loadLock.Release();
         }
     }
 

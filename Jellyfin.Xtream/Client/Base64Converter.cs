@@ -25,10 +25,7 @@ namespace Jellyfin.Xtream.Client;
 public class Base64Converter : JsonConverter
 {
     /// <inheritdoc />
-    public override bool CanConvert(Type objectType)
-    {
-        return objectType == typeof(string);
-    }
+    public override bool CanConvert(Type objectType) => objectType == typeof(string);
 
     /// <inheritdoc />
     public override object ReadJson(
@@ -43,7 +40,7 @@ public class Base64Converter : JsonConverter
             return string.Empty;
         }
 
-        string value = (string)reader.Value;
+        var value = (string)reader.Value;
         if (string.IsNullOrWhiteSpace(value))
         {
             return string.Empty;
@@ -51,7 +48,7 @@ public class Base64Converter : JsonConverter
 
         try
         {
-            byte[] bytes = Convert.FromBase64String(value);
+            var bytes = Convert.FromBase64String(value);
             return Encoding.UTF8.GetString(bytes);
         }
         catch (FormatException)
@@ -69,7 +66,7 @@ public class Base64Converter : JsonConverter
             throw new ArgumentException("Value cannot be null.");
         }
 
-        byte[] bytes = Encoding.UTF8.GetBytes((string)value);
+        var bytes = Encoding.UTF8.GetBytes((string)value);
         writer.WriteValue(Convert.ToBase64String(bytes));
     }
 }

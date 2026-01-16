@@ -83,16 +83,8 @@ public static class CategoryInterner
     /// <returns>An interned or canonical category string.</returns>
     public static string Intern(string category)
     {
-        if (string.IsNullOrEmpty(category))
-        {
-            return string.Empty;
-        }
-
-        if (_canonicalCategories.TryGetValue(category, out var canonical))
-        {
-            return canonical;
-        }
-
-        return string.Intern(category);
+        return string.IsNullOrEmpty(category) ? string.Empty
+            : _canonicalCategories.TryGetValue(category, out var canonical) ? canonical
+            : string.Intern(category);
     }
 }

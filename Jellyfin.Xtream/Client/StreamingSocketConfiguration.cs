@@ -102,7 +102,7 @@ public static class StreamingSocketConfiguration
                 ConfigureWindowsSpecific(socket, logger);
             }
 
-            logger?.LogDebug(
+            logger?.LogDebugIfEnabled(
                 "Socket configured for streaming: RcvBuf={RcvBuf}KB, SndBuf={SndBuf}KB, KeepAlive=enabled, Nagle=disabled",
                 socket.ReceiveBufferSize / 1024,
                 socket.SendBufferSize / 1024
@@ -111,7 +111,7 @@ public static class StreamingSocketConfiguration
         catch (SocketException ex)
         {
             // Log but don't fail - some options may not be available on all platforms
-            logger?.LogWarning(
+            logger?.PluginLogWarning(
                 ex,
                 "Failed to apply some socket options. Streaming may still work but with suboptimal performance."
             );
@@ -133,7 +133,7 @@ public static class StreamingSocketConfiguration
         }
         catch (SocketException ex)
         {
-            logger?.LogDebug(
+            logger?.LogDebugIfEnabled(
                 ex,
                 "Could not set ReceiveBufferSize to {Size}. OS may limit maximum.",
                 StreamingReceiveBufferSize
@@ -148,7 +148,7 @@ public static class StreamingSocketConfiguration
         }
         catch (SocketException ex)
         {
-            logger?.LogDebug(
+            logger?.LogDebugIfEnabled(
                 ex,
                 "Could not set SendBufferSize to {Size}. OS may limit maximum.",
                 StreamingSendBufferSize
@@ -165,7 +165,7 @@ public static class StreamingSocketConfiguration
         try
         {
             // Enable keep-alive (RFC 1122)
-            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, optionValue: true);
 
             // .NET 5+ supports setting keep-alive parameters directly
             // Uses IOControl on Windows, setsockopt on Linux
@@ -202,18 +202,21 @@ public static class StreamingSocketConfiguration
                     );
                 }
                 catch (SocketException ex)
-                    when (ex.SocketErrorCode == SocketError.InvalidArgument
-                        || ex.SocketErrorCode == SocketError.ProtocolOption
-                    )
+                    when (ex.SocketErrorCode is SocketError.InvalidArgument or SocketError.ProtocolOption)
                 {
                     // Platform doesn't support fine-grained keep-alive settings
-                    logger?.LogDebug("Fine-grained TCP keep-alive not supported on this platform. Using OS defaults.");
+                    logger?.LogDebugIfEnabled(
+                        "Fine-grained TCP keep-alive not supported on this platform. Using OS defaults."
+                    );
                 }
             }
         }
         catch (SocketException ex)
         {
-            logger?.LogDebug(ex, "Could not configure TCP keep-alive. Connections may not detect failures quickly.");
+            logger?.LogDebugIfEnabled(
+                ex,
+                "Could not configure TCP keep-alive. Connections may not detect failures quickly."
+            );
         }
     }
 
@@ -236,7 +239,7 @@ public static class StreamingSocketConfiguration
         }
         catch (SocketException ex)
         {
-            logger?.LogDebug(ex, "Could not disable Nagle's algorithm. Latency may be slightly higher.");
+            logger?.LogDebugIfEnabled(ex, "Could not disable Nagle's algorithm. Latency may be slightly higher.");
         }
     }
 
@@ -297,8 +300,8 @@ public static class StreamingSocketConfiguration
         const int SIO_LOOPBACK_FAST_PATH = unchecked((int)0x98000010);
         try
         {
-            byte[] optionValue = BitConverter.GetBytes(1);
-            socket.IOControl(SIO_LOOPBACK_FAST_PATH, optionValue, null);
+            var optionValue = BitConverter.GetBytes(1);
+            _ = socket.IOControl(SIO_LOOPBACK_FAST_PATH, optionValue, optionOutValue: null);
             logger?.LogTrace("Windows: SIO_LOOPBACK_FAST_PATH enabled for localhost optimization");
         }
         catch (SocketException)
@@ -332,7 +335,7 @@ public static class StreamingSocketConfiguration
 
         try
         {
-            return $"Socket Diagnostics:\n"
+            return "Socket Diagnostics:\n"
                 + $"  Receive Buffer: {socket.ReceiveBufferSize / 1024}KB (requested: {StreamingReceiveBufferSize / 1024}KB)\n"
                 + $"  Send Buffer: {socket.SendBufferSize / 1024}KB (requested: {StreamingSendBufferSize / 1024}KB)\n"
                 + $"  Keep-Alive: {socket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive) ?? false}\n"

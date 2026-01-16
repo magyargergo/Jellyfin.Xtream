@@ -91,7 +91,7 @@ public class SeriesInfo
         "CA2227:Collection properties should be read only",
         Justification = "Required for JSON deserialization"
     )]
-    public ICollection<string> BackdropPaths { get; set; } = new List<string>();
+    public ICollection<string> BackdropPaths { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the YouTube trailer URL.

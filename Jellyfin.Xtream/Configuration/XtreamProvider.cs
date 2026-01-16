@@ -93,8 +93,8 @@ public class XtreamProvider
             const uint FnvPrime = 16777619;
             const uint FnvOffsetBasis = 2166136261;
 
-            uint hash = FnvOffsetBasis;
-            foreach (char c in Id)
+            var hash = FnvOffsetBasis;
+            foreach (var c in Id)
             {
                 hash ^= c;
                 hash *= FnvPrime;
@@ -108,8 +108,5 @@ public class XtreamProvider
     /// Creates a ConnectionInfo for this provider.
     /// </summary>
     /// <returns>A ConnectionInfo instance with this provider's credentials.</returns>
-    public Client.ConnectionInfo ToConnectionInfo()
-    {
-        return new Client.ConnectionInfo(BaseUrl, Username, Password);
-    }
+    public Client.ConnectionInfo ToConnectionInfo() => new(BaseUrl, Username, Password);
 }

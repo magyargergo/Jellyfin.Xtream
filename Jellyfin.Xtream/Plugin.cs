@@ -20,7 +20,6 @@ using System.Net.Http;
 using System.Reflection;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Configuration;
-using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
@@ -59,11 +58,6 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public static Plugin Instance => _instance ?? throw new InvalidOperationException("Plugin instance not available");
 
     /// <summary>
-    /// Gets the stream service instance.
-    /// </summary>
-    public StreamService StreamService { get; init; }
-
-    /// <summary>
     /// Initializes a new instance of the <see cref="Plugin"/> class.
     /// </summary>
     /// <param name="applicationPaths">Instance of the <see cref="IApplicationPaths"/> interface.</param>
@@ -81,7 +75,6 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         _instance = this;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
-        StreamService = new StreamService();
         LogConfigurationState();
         MigrateLegacyConfiguration();
     }
@@ -90,16 +83,13 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// Creates a new XtreamClient with proxy configuration via dependency injection.
     /// </summary>
     /// <returns>A configured XtreamClient instance.</returns>
-    public XtreamClient CreateXtreamClient()
-    {
-        return new XtreamClient(_httpClientFactory);
-    }
+    public XtreamClient CreateXtreamClient() => new(_httpClientFactory);
 
     /// <inheritdoc />
     public IEnumerable<PluginPageInfo> GetPages()
     {
-        return new PluginPageInfo[]
-        {
+        return
+        [
             CreateStatic("XtreamMigration.html"),
             CreateStatic("XtreamMigration.js"),
             CreateStatic("XtreamProviders.html"),
@@ -125,7 +115,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             CreateStatic("XtreamMonitor.js"),
             CreateStatic("XtreamLogs.html"),
             CreateStatic("XtreamLogs.js"),
-        };
+        ];
     }
 
     private static PluginPageInfo CreateStatic(string name) =>
@@ -142,7 +132,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     private void LogConfigurationState()
     {
-        PluginConfiguration config = Configuration;
+        var config = Configuration;
         _logger.PluginLogInformation(
             "Plugin startup - Configuration state: BaseUrl={BaseUrl}, Username={Username}, Providers={ProviderCount}, LiveTv={LiveTvCount}, EnableProxy={EnableProxy}, ProxyAddress={ProxyAddress}",
             config.BaseUrl,
@@ -153,14 +143,14 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             config.ProxyAddress
         );
 
-        List<XtreamProvider>? providers = config.Providers;
+        var providers = config.Providers;
 
-        if (providers == null || providers.Count <= 0)
+        if (providers == null || providers.Count == 0)
         {
             return;
         }
 
-        foreach (XtreamProvider provider in providers)
+        foreach (var provider in providers)
         {
             _logger.PluginLogInformation(
                 "Provider {ProviderId} ({ProviderName}): LiveTv={LiveTvCount}, Vod={VodCount}, Series={SeriesCount}, LiveTvOverrides={OverridesCount}",
@@ -182,11 +172,11 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     )
         where TKey : notnull
     {
-        SerializableDictionary<TKey, TValue> clone = new SerializableDictionary<TKey, TValue>();
+        SerializableDictionary<TKey, TValue> clone = [];
 
         if (source != null)
         {
-            foreach (KeyValuePair<TKey, TValue> kvp in source)
+            foreach (var kvp in source)
             {
                 clone[kvp.Key] = kvp.Value;
             }
@@ -200,7 +190,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// </summary>
     private void MigrateLegacyConfiguration()
     {
-        PluginConfiguration config = Configuration;
+        var config = Configuration;
 
         if (config.NeedsMigration)
         {
@@ -211,7 +201,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
                 config.Series?.Count ?? 0
             );
 
-            XtreamProvider migratedProvider = new XtreamProvider
+            var migratedProvider = new XtreamProvider
             {
                 Id = "migrated",
                 Name = "Migrated Provider",

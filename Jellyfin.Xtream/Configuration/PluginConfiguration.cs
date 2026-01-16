@@ -411,6 +411,17 @@ public class PluginConfiguration : BasePluginConfiguration
     public int StreamFirstByteTimeoutSeconds { get; set; } = 5;
 
     /// <summary>
+    /// Gets or sets the HTTP response headers timeout in seconds (5-30).
+    /// </summary>
+    /// <remarks>
+    /// Time to wait for HTTP response headers after TCP connection is established.
+    /// Detects "zombie backend" scenarios where the server accepts TCP connections
+    /// but never sends HTTP responses (common with load balancer routing to dead backends).
+    /// Default: 10 seconds.
+    /// </remarks>
+    public int StreamResponseHeadersTimeoutSeconds { get; set; } = 10;
+
+    /// <summary>
     /// Gets or sets the data stall timeout in seconds (5-60).
     /// </summary>
     /// <remarks>
@@ -503,6 +514,35 @@ public class PluginConfiguration : BasePluginConfiguration
     public int MaxHedgedAttempts { get; set; } = 2;
 
     // ============================================================================
+    // Stream Processing Configuration
+    // ============================================================================
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to force FFmpeg remuxing for live streams.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// When enabled, Jellyfin will always remux live TV streams through FFmpeg instead of
+    /// allowing direct playback. This fixes issues with:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>Audio/video desynchronization after stream reconnections</description></item>
+    /// <item><description>"non-existing PPS 0 referenced" errors in H.264 streams</description></item>
+    /// <item><description>Missing SPS/PPS parameter sets after provider switching</description></item>
+    /// <item><description>Discontinuity handling in MPEG-TS streams</description></item>
+    /// </list>
+    /// <para>
+    /// FFmpeg remuxing uses codec copy (no re-encoding), so CPU usage is minimal.
+    /// This is the recommended setting for problematic IPTV providers.
+    /// </para>
+    /// <para>
+    /// Default: true (enabled). Disable only if you experience issues with FFmpeg transcoding
+    /// or prefer direct playback for compatible clients.
+    /// </para>
+    /// </remarks>
+    public bool ForceRemux { get; set; } = true;
+
+    // ============================================================================
     // External EPG Configuration
     // ============================================================================
 
@@ -567,5 +607,5 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     /// <param name="providerId">The provider ID.</param>
     /// <returns>The provider, or null if not found.</returns>
-    public XtreamProvider? GetProvider(string providerId) => Providers.FirstOrDefault(p => p.Id == providerId);
+    public XtreamProvider? GetProvider(string providerId) => Providers.Find(p => p.Id == providerId);
 }

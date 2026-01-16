@@ -27,28 +27,21 @@ namespace Jellyfin.Xtream.Client;
 /// DelegatingHandler that adds a rotated User-Agent header to each request.
 /// This ensures User-Agent rotation happens per-request rather than per-client.
 /// </summary>
-public sealed class UserAgentHandler : DelegatingHandler
+/// <remarks>
+/// Initializes a new instance of the <see cref="UserAgentHandler"/> class.
+/// </remarks>
+/// <param name="userAgentProvider">The User-Agent provider.</param>
+/// <param name="configurationProvider">Provider for current configuration.</param>
+/// <param name="logger">Optional logger.</param>
+public sealed class UserAgentHandler(
+    IUserAgentProvider userAgentProvider,
+    IPluginConfigurationProvider configurationProvider,
+    ILogger? logger = null
+) : DelegatingHandler
 {
-    private readonly IUserAgentProvider _userAgentProvider;
-    private readonly IPluginConfigurationProvider _configurationProvider;
-    private readonly ILogger? _logger;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="UserAgentHandler"/> class.
-    /// </summary>
-    /// <param name="userAgentProvider">The User-Agent provider.</param>
-    /// <param name="configurationProvider">Provider for current configuration.</param>
-    /// <param name="logger">Optional logger.</param>
-    public UserAgentHandler(
-        IUserAgentProvider userAgentProvider,
-        IPluginConfigurationProvider configurationProvider,
-        ILogger? logger = null
-    )
-    {
-        _userAgentProvider = userAgentProvider;
-        _configurationProvider = configurationProvider;
-        _logger = logger;
-    }
+    private readonly IUserAgentProvider _userAgentProvider = userAgentProvider;
+    private readonly IPluginConfigurationProvider _configurationProvider = configurationProvider;
+    private readonly ILogger? _logger = logger;
 
     /// <inheritdoc />
     protected override Task<HttpResponseMessage> SendAsync(
@@ -62,11 +55,11 @@ public sealed class UserAgentHandler : DelegatingHandler
         if (config?.EnableUserAgentRotation == true)
         {
             // Remove any existing User-Agent header
-            request.Headers.Remove("User-Agent");
+            _ = request.Headers.Remove("User-Agent");
 
             // Get a fresh User-Agent for this request
             var userAgent = _userAgentProvider.GetUserAgent();
-            request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+            _ = request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
 
             _logger?.LogDebugIfEnabled(
                 "Request to {Host}: User-Agent rotated to {UserAgent}",

@@ -57,7 +57,7 @@ public sealed class UserAgentProvider(
     {
         get
         {
-            int count = 0;
+            var count = 0;
             foreach (var agents in UserAgentsByFamily.Values)
             {
                 count += agents.Length;
@@ -83,7 +83,7 @@ public sealed class UserAgentProvider(
             if (_cachedCustomUserAgent != customUserAgent)
             {
                 _cachedCustomUserAgent = customUserAgent;
-                _logger.LogDebug("Using custom User-Agent: {UserAgent}", TruncateForLogging(customUserAgent));
+                _logger.LogDebugIfEnabled("Using custom User-Agent: {UserAgent}", TruncateForLogging(customUserAgent));
             }
 
             return customUserAgent;
@@ -160,11 +160,11 @@ public sealed class UserAgentProvider(
         }.ToFrozenDictionary();
     }
 
-    private string GetRandomUserAgent()
+    private static string GetRandomUserAgent()
     {
         // Weighted random: Chrome has highest market share, so higher probability
         var familyRoll = Random.Shared.Next(100);
-        BrowserFamily family = familyRoll switch
+        var family = familyRoll switch
         {
             < 65 => BrowserFamily.Chrome,
             < 80 => BrowserFamily.Edge,
@@ -216,6 +216,6 @@ public sealed class UserAgentProvider(
     private static string TruncateForLogging(string value)
     {
         const int maxLength = 50;
-        return value.Length > maxLength ? string.Concat(value.AsSpan(0, maxLength), "...") : value;
+        return value.Length > maxLength ? $"{value.AsSpan(0, maxLength)}..." : value;
     }
 }

@@ -26,10 +26,7 @@ namespace Jellyfin.Xtream.Client;
 public class OnlyObjectConverter<T> : JsonConverter
 {
     /// <inheritdoc/>
-    public override bool CanConvert(Type objectType)
-    {
-        return objectType == typeof(T);
-    }
+    public override bool CanConvert(Type objectType) => objectType == typeof(T);
 
     /// <inheritdoc/>
     public override object? ReadJson(
@@ -39,18 +36,11 @@ public class OnlyObjectConverter<T> : JsonConverter
         JsonSerializer serializer
     )
     {
-        JToken token = JToken.Load(reader);
-        if (token.Type == JTokenType.Object)
-        {
-            return token.ToObject<T>();
-        }
-
-        return null;
+        var token = JToken.Load(reader);
+        return token.Type == JTokenType.Object ? token.ToObject<T>() : null;
     }
 
     /// <inheritdoc/>
-    public override void WriteJson(JsonWriter writer, object? value, JsonSerializer serializer)
-    {
+    public override void WriteJson(JsonWriter writer, object? value, JsonSerializer serializer) =>
         serializer.Serialize(writer, value);
-    }
 }

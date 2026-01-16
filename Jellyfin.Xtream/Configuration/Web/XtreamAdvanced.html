@@ -181,6 +181,46 @@
           </div>
         </div>
 
+        <!-- Stream Processing Section -->
+        <div class="settings-section">
+          <div class="settings-section-header" data-section="processing">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="material-icons" style="color: #9c27b0;">video_settings</span>
+              <h3 class="settings-section-title">Stream Processing</h3>
+            </div>
+            <span class="material-icons">expand_more</span>
+          </div>
+          <div class="settings-section-content" data-section="processing">
+            <div class="info-card" style="background: rgba(156, 39, 176, 0.1); border-left: 3px solid #9c27b0;">
+              <p style="margin: 0;">
+                Configure how live streams are processed by Jellyfin. FFmpeg remuxing fixes common IPTV issues
+                like audio desync and decoder errors after stream reconnections.
+              </p>
+            </div>
+
+            <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top: 16px;">
+              <label>
+                <input is="emby-checkbox" type="checkbox" id="ForceRemux" />
+                <span>Force FFmpeg Remuxing</span>
+              </label>
+              <div class="fieldDescription">
+                <strong>Recommended: ON</strong>. Forces Jellyfin to remux live streams through FFmpeg instead of direct playback.
+                This fixes:
+                <ul style="margin: 8px 0 0 20px; padding: 0;">
+                  <li>Audio/video desynchronization after stream reconnections</li>
+                  <li>"non-existing PPS 0 referenced" H.264 decoder errors</li>
+                  <li>Missing parameter sets after provider switching</li>
+                  <li>Discontinuity handling in MPEG-TS streams</li>
+                </ul>
+                <p style="margin-top: 8px; margin-bottom: 0;">
+                  FFmpeg uses codec copy (no re-encoding), so CPU usage is minimal.
+                  Disable only if you experience issues with FFmpeg transcoding.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Streaming Timeouts Section -->
         <div class="settings-section">
           <div class="settings-section-header" data-section="timeouts">

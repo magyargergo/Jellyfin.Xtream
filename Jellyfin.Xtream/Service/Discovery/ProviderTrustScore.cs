@@ -90,12 +90,12 @@ public sealed class ProviderTrustScore
     /// <summary>
     /// Gets the list of positive attributes found.
     /// </summary>
-    public IList<string> Strengths { get; } = new List<string>();
+    public IList<string> Strengths { get; } = [];
 
     /// <summary>
     /// Gets the list of concerns found.
     /// </summary>
-    public IList<string> Concerns { get; } = new List<string>();
+    public IList<string> Concerns { get; } = [];
 
     /// <summary>
     /// Calculates the trust score from a provider test result.
@@ -269,7 +269,7 @@ public sealed class ProviderTrustScore
         {
             Strengths.Add($"Long validity ({(int)daysUntilExpiry} days remaining)");
         }
-        else if (daysUntilExpiry < 7 && daysUntilExpiry >= 0)
+        else if (daysUntilExpiry is < 7 and >= 0)
         {
             Concerns.Add($"Expires soon ({(int)daysUntilExpiry} days remaining)");
         }

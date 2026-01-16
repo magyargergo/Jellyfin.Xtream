@@ -11,27 +11,17 @@
           </label>
         </div>
 
-        <!-- Multi-Provider Settings (Collapsible) -->
+        <!-- Failover Settings (Collapsible) -->
         <div class="settings-section">
           <div class="settings-section-header" id="MultiProviderSettingsHeader">
-            <h3 class="settings-section-title">Multi-Provider Settings</h3>
+            <h3 class="settings-section-title">Failover Settings</h3>
             <span class="material-icons">expand_more</span>
           </div>
           <div class="settings-section-content" id="MultiProviderSettingsContent">
             <p class="fieldDescription" style="margin-top: 0;">
-              Configure how channels from multiple providers are handled.
+              Channels with the same name from different providers are automatically merged.
+              Configure failover behavior when a stream fails.
             </p>
-
-            <div class="checkboxContainer checkboxContainer-withDescription">
-              <label>
-                <input is="emby-checkbox" id="MergeDuplicateChannels" name="MergeDuplicateChannels" type="checkbox" />
-                <span>Merge Duplicate Channels</span>
-              </label>
-              <div class="fieldDescription">
-                When enabled, channels with the same name from different providers are merged into one.
-                The best quality stream is shown, with automatic failover to other providers if it fails.
-              </div>
-            </div>
 
             <div class="checkboxContainer checkboxContainer-withDescription">
               <label>
@@ -40,7 +30,6 @@
               </label>
               <div class="fieldDescription">
                 Automatically switch to another provider if the current stream fails.
-                Requires "Merge Duplicate Channels" to be enabled.
               </div>
             </div>
 

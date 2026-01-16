@@ -58,7 +58,7 @@ public sealed class PerHostRateLimiter(ILogger<PerHostRateLimiter> logger) : IDi
         if (state.QuarantineUntilUtc is { } quarantineEnd && quarantineEnd > DateTimeOffset.UtcNow)
         {
             var remainingQuarantine = quarantineEnd - DateTimeOffset.UtcNow;
-            logger.LogWarning(
+            logger.PluginLogWarning(
                 "Host {Host} is quarantined for {Seconds:N0} seconds due to previous failures",
                 host,
                 remainingQuarantine.TotalSeconds
@@ -101,7 +101,7 @@ public sealed class PerHostRateLimiter(ILogger<PerHostRateLimiter> logger) : IDi
         var jitterMs = Random.Shared.Next(MinJitterMs, MaxJitterMs);
         state.NextAvailableUtc = DateTimeOffset.UtcNow.AddMilliseconds(jitterMs);
 
-        state.Concurrency.Release();
+        _ = state.Concurrency.Release();
 
         logger.LogDebugIfEnabled("Host {Host}: Success recorded. Next window in {Jitter:N0}ms", host, jitterMs);
     }
@@ -123,13 +123,13 @@ public sealed class PerHostRateLimiter(ILogger<PerHostRateLimiter> logger) : IDi
         state.ConsecutiveErrors++;
 
         // Circuit breaker: Immediate quarantine for auth/rate-limit failures
-        if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or (HttpStatusCode)429)
+        if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
         {
             var quarantineDuration = TimeSpan.FromHours(2);
             state.QuarantineUntilUtc = DateTimeOffset.UtcNow.Add(quarantineDuration);
             state.NextAvailableUtc = state.QuarantineUntilUtc.Value;
 
-            logger.LogError(
+            logger.PluginLogError(
                 "⛔ Host {Host}: Status {Code} ({Name}) → QUARANTINE for {Hours:N1} hours to prevent blacklisting",
                 host,
                 (int)statusCode,
@@ -143,7 +143,7 @@ public sealed class PerHostRateLimiter(ILogger<PerHostRateLimiter> logger) : IDi
             var backoffMs = CalculateExponentialBackoff(state.ConsecutiveErrors);
             state.NextAvailableUtc = DateTimeOffset.UtcNow.AddMilliseconds(backoffMs);
 
-            logger.LogWarning(
+            logger.PluginLogWarning(
                 "Host {Host}: Status {Code} ({Name}) → Exponential backoff {Ms:N0}ms (errors: {Count})",
                 host,
                 (int)statusCode,
@@ -155,10 +155,10 @@ public sealed class PerHostRateLimiter(ILogger<PerHostRateLimiter> logger) : IDi
         // Linear backoff for client errors
         else
         {
-            var backoffMs = 30000; // 30 seconds
+            const int backoffMs = 30000; // 30 seconds
             state.NextAvailableUtc = DateTimeOffset.UtcNow.AddMilliseconds(backoffMs);
 
-            logger.LogWarning(
+            logger.PluginLogWarning(
                 "Host {Host}: Status {Code} ({Name}) → Backoff {Ms:N0}ms",
                 host,
                 (int)statusCode,
@@ -167,7 +167,7 @@ public sealed class PerHostRateLimiter(ILogger<PerHostRateLimiter> logger) : IDi
             );
         }
 
-        state.Concurrency.Release();
+        _ = state.Concurrency.Release();
     }
 
     /// <summary>
@@ -189,9 +189,9 @@ public sealed class PerHostRateLimiter(ILogger<PerHostRateLimiter> logger) : IDi
         var backoffMs = Random.Shared.Next(20000, 45000);
         state.NextAvailableUtc = DateTimeOffset.UtcNow.AddMilliseconds(backoffMs);
 
-        state.Concurrency.Release();
+        _ = state.Concurrency.Release();
 
-        logger.LogWarning(
+        logger.PluginLogWarning(
             "Host {Host}: Non-HTTP failure → Backoff {Ms:N0}ms (errors: {Count})",
             host,
             backoffMs,

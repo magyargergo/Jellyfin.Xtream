@@ -22,28 +22,22 @@ namespace Jellyfin.Xtream.Service;
 /// <summary>
 /// A struct which holds information of parsed stream names.
 /// </summary>
-public readonly struct ParsedName : IEquatable<ParsedName>
+/// <remarks>
+/// Initializes a new instance of the <see cref="ParsedName"/> struct.
+/// </remarks>
+/// <param name="title">The parsed title.</param>
+/// <param name="tags">The parsed tags.</param>
+public readonly struct ParsedName(string title, IReadOnlyList<string> tags) : IEquatable<ParsedName>
 {
     /// <summary>
     /// Gets the parsed title.
     /// </summary>
-    public string Title { get; init; }
+    public string Title { get; init; } = title;
 
     /// <summary>
     /// Gets the parsed tags.
     /// </summary>
-    public IReadOnlyList<string> Tags { get; init; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ParsedName"/> struct.
-    /// </summary>
-    /// <param name="title">The parsed title.</param>
-    /// <param name="tags">The parsed tags.</param>
-    public ParsedName(string title, IReadOnlyList<string> tags)
-    {
-        Title = title;
-        Tags = tags;
-    }
+    public IReadOnlyList<string> Tags { get; init; } = tags;
 
     /// <summary>
     /// Determines whether two <see cref="ParsedName"/> instances are equal.
@@ -51,10 +45,7 @@ public readonly struct ParsedName : IEquatable<ParsedName>
     /// <param name="left">The first instance.</param>
     /// <param name="right">The second instance.</param>
     /// <returns>True if the instances are equal; otherwise, false.</returns>
-    public static bool operator ==(ParsedName left, ParsedName right)
-    {
-        return left.Equals(right);
-    }
+    public static bool operator ==(ParsedName left, ParsedName right) => left.Equals(right);
 
     /// <summary>
     /// Determines whether two <see cref="ParsedName"/> instances are not equal.
@@ -62,10 +53,7 @@ public readonly struct ParsedName : IEquatable<ParsedName>
     /// <param name="left">The first instance.</param>
     /// <param name="right">The second instance.</param>
     /// <returns>True if the instances are not equal; otherwise, false.</returns>
-    public static bool operator !=(ParsedName left, ParsedName right)
-    {
-        return !(left == right);
-    }
+    public static bool operator !=(ParsedName left, ParsedName right) => !(left == right);
 
     /// <inheritdoc />
     public bool Equals(ParsedName other)
@@ -75,17 +63,14 @@ public readonly struct ParsedName : IEquatable<ParsedName>
     }
 
     /// <inheritdoc />
-    public override bool Equals(object? obj)
-    {
-        return obj is ParsedName other && Equals(other);
-    }
+    public override bool Equals(object? obj) => obj is ParsedName other && Equals(other);
 
     /// <inheritdoc />
     public override int GetHashCode()
     {
         HashCode hash = default;
         hash.Add(Title);
-        foreach (string tag in Tags)
+        foreach (var tag in Tags)
         {
             hash.Add(tag);
         }

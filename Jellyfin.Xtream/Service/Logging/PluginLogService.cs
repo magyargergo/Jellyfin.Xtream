@@ -74,9 +74,9 @@ public sealed class PluginLogService : IPluginLogService
 
         lock (_lock)
         {
-            _entries.AddLast(entry);
+            _ = _entries.AddLast(entry);
 
-            int maxEntries = GetMaxEntries();
+            var maxEntries = GetMaxEntries();
             while (_entries.Count > maxEntries)
             {
                 _entries.RemoveFirst();
@@ -101,7 +101,7 @@ public sealed class PluginLogService : IPluginLogService
 
             query = ApplyFilters(query, minLevel, includeDebug, category, streamId, searchText);
 
-            return query.Skip(skip).Take(take).ToList();
+            return [.. query.Skip(skip).Take(take)];
         }
     }
 
@@ -126,7 +126,7 @@ public sealed class PluginLogService : IPluginLogService
                 query = query.Where(e => !e.IsDebug);
             }
 
-            return query.ToList();
+            return [.. query];
         }
     }
 
@@ -180,7 +180,7 @@ public sealed class PluginLogService : IPluginLogService
             return "Unknown";
         }
 
-        int lastDot = category.LastIndexOf('.');
+        var lastDot = category.LastIndexOf('.');
         return lastDot >= 0 ? category[(lastDot + 1)..] : category;
     }
 
@@ -210,9 +210,7 @@ public sealed class PluginLogService : IPluginLogService
 
         if (!string.IsNullOrEmpty(streamId))
         {
-            query = query.Where(e =>
-                e.StreamId != null && e.StreamId.Contains(streamId, StringComparison.OrdinalIgnoreCase)
-            );
+            query = query.Where(e => e.StreamId?.Contains(streamId, StringComparison.OrdinalIgnoreCase) == true);
         }
 
         if (!string.IsNullOrEmpty(searchText))

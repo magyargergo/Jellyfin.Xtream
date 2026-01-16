@@ -114,5 +114,5 @@ public sealed class DiscoveryProgress
     /// <summary>
     /// Gets the progress percentage (0-100).
     /// </summary>
-    public int ProgressPercent => TotalItems > 0 ? (CurrentItem * 100) / TotalItems : 0;
+    public int ProgressPercent => TotalItems > 0 ? CurrentItem * 100 / TotalItems : 0;
 }

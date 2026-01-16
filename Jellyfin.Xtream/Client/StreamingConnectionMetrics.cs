@@ -102,12 +102,7 @@ public sealed class StreamingConnectionMetrics
             }
 
             var duration = (DateTime.UtcNow - ConnectedAt.Value).TotalSeconds;
-            if (duration <= 0)
-            {
-                return 0;
-            }
-
-            return (TotalBytesReceived * 8.0 / 1_000_000) / duration;
+            return duration <= 0 ? 0 : TotalBytesReceived * 8.0 / 1_000_000 / duration;
         }
     }
 
@@ -128,7 +123,7 @@ public sealed class StreamingConnectionMetrics
     /// <param name="bytes">Number of bytes received.</param>
     public void AddBytesReceived(long bytes)
     {
-        Interlocked.Add(ref _totalBytesReceived, bytes);
+        _ = Interlocked.Add(ref _totalBytesReceived, bytes);
         LastDataReceivedAt = DateTime.UtcNow;
     }
 
@@ -136,36 +131,27 @@ public sealed class StreamingConnectionMetrics
     /// Atomically adds packets to the total received count.
     /// </summary>
     /// <param name="packets">Number of packets received.</param>
-    public void AddPacketsReceived(long packets)
-    {
-        Interlocked.Add(ref _totalPacketsReceived, packets);
-    }
+    public void AddPacketsReceived(long packets) => Interlocked.Add(ref _totalPacketsReceived, packets);
 
     /// <summary>
     /// Increments the reconnect counter.
     /// </summary>
-    public void IncrementReconnects()
-    {
-        Interlocked.Increment(ref _reconnectCount);
-    }
+    public void IncrementReconnects() => Interlocked.Increment(ref _reconnectCount);
 
     /// <summary>
     /// Increments the error counter.
     /// </summary>
-    public void IncrementErrors()
-    {
-        Interlocked.Increment(ref _errorCount);
-    }
+    public void IncrementErrors() => Interlocked.Increment(ref _errorCount);
 
     /// <summary>
     /// Resets all metrics for a new session.
     /// </summary>
     public void Reset()
     {
-        Interlocked.Exchange(ref _totalBytesReceived, 0);
-        Interlocked.Exchange(ref _totalPacketsReceived, 0);
-        Interlocked.Exchange(ref _reconnectCount, 0);
-        Interlocked.Exchange(ref _errorCount, 0);
+        _ = Interlocked.Exchange(ref _totalBytesReceived, 0);
+        _ = Interlocked.Exchange(ref _totalPacketsReceived, 0);
+        _ = Interlocked.Exchange(ref _reconnectCount, 0);
+        _ = Interlocked.Exchange(ref _errorCount, 0);
         State = ConnectionState.Disconnected;
         ConnectedAt = null;
         LastDataReceivedAt = null;

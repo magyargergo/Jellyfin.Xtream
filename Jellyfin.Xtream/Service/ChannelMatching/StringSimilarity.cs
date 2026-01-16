@@ -99,6 +99,6 @@ public static class StringSimilarity
         }
 
         var distance = LevenshteinDistance(s1, s2);
-        return (int)(((maxLen - distance) * 100.0) / maxLen);
+        return (int)((maxLen - distance) * 100.0 / maxLen);
     }
 }

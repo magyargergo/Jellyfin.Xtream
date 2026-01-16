@@ -117,9 +117,9 @@ public static class QualityScorer
             return ScoreUnknown;
         }
 
-        int bestScore = ScoreUnknown;
+        var bestScore = ScoreUnknown;
 
-        for (int i = 0; i < tags.Count; i++)
+        for (var i = 0; i < tags.Count; i++)
         {
             var tag = tags[i];
             if (string.IsNullOrEmpty(tag))
@@ -135,7 +135,7 @@ public static class QualityScorer
             }
 
             // Try direct lookup first (most common case)
-            if (QualityPatterns.TryGetValue(tag, out int score))
+            if (QualityPatterns.TryGetValue(tag, out var score))
             {
                 if (score == Score4K)
                 {
@@ -185,23 +185,23 @@ public static class QualityScorer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool ContainsWord(ReadOnlySpan<char> name, ReadOnlySpan<char> pattern)
     {
-        int index = 0;
+        var index = 0;
         while (index <= name.Length - pattern.Length)
         {
-            int found = name[index..].IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
+            var found = name[index..].IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
             if (found < 0)
             {
                 return false;
             }
 
-            int matchStart = index + found;
-            int matchEnd = matchStart + pattern.Length;
+            var matchStart = index + found;
+            var matchEnd = matchStart + pattern.Length;
 
             // Check word boundaries: character before must be non-alphanumeric or start of string
-            bool startOk = matchStart == 0 || !char.IsLetterOrDigit(name[matchStart - 1]);
+            var startOk = matchStart == 0 || !char.IsLetterOrDigit(name[matchStart - 1]);
 
             // Check word boundaries: character after must be non-alphanumeric or end of string
-            bool endOk = matchEnd >= name.Length || !char.IsLetterOrDigit(name[matchEnd]);
+            var endOk = matchEnd >= name.Length || !char.IsLetterOrDigit(name[matchEnd]);
 
             if (startOk && endOk)
             {
@@ -221,15 +221,8 @@ public static class QualityScorer
     /// <param name="name">The stream name to analyze.</param>
     /// <returns>The highest quality score found, or <see cref="ScoreUnknown"/> if none detected.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int ScoreFromName(string? name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return ScoreUnknown;
-        }
-
-        return ScoreFromName(name.AsSpan());
-    }
+    public static int ScoreFromName(string? name) =>
+        string.IsNullOrWhiteSpace(name) ? ScoreUnknown : ScoreFromName(name.AsSpan());
 
     /// <summary>
     /// Calculates a combined quality score using both tags and name analysis.
@@ -242,7 +235,7 @@ public static class QualityScorer
     public static int Score(string name, IReadOnlyList<string> tags)
     {
         // Check tags first - usually fewer items and direct lookup
-        int tagScore = ScoreFromTags(tags);
+        var tagScore = ScoreFromTags(tags);
 
         // Early exit if we found the best possible score
         if (tagScore == Score4K)
@@ -251,7 +244,7 @@ public static class QualityScorer
         }
 
         // Check name only if tags didn't give us max score
-        int nameScore = ScoreFromName(name);
+        var nameScore = ScoreFromName(name);
 
         return tagScore > nameScore ? tagScore : nameScore;
     }
@@ -265,7 +258,7 @@ public static class QualityScorer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int ScoreStream(StreamInfo stream)
     {
-        int qualityScore = ScoreFromName(stream.Name);
+        var qualityScore = ScoreFromName(stream.Name);
 
         // Add bonus for having an image
         if (!string.IsNullOrEmpty(stream.StreamIcon))

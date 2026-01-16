@@ -127,20 +127,11 @@ public class EpgInfo
     {
         get
         {
-            if (StartTimestamp.HasValue && StartTimestamp.Value > DateTime.MinValue)
-            {
-                return StartTimestamp.Value;
-            }
-
-            if (
-                !string.IsNullOrEmpty(StartString)
+            return StartTimestamp > DateTime.MinValue ? StartTimestamp.Value
+                : !string.IsNullOrEmpty(StartString)
                 && DateTime.TryParse(StartString, CultureInfo.InvariantCulture, out var parsed)
-            )
-            {
-                return parsed;
-            }
-
-            return DateTime.MinValue;
+                    ? parsed
+                : DateTime.MinValue;
         }
     }
 
@@ -158,20 +149,16 @@ public class EpgInfo
     {
         get
         {
-            if (StopTimestamp.HasValue && StopTimestamp.Value > DateTime.MinValue)
+            if (StopTimestamp > DateTime.MinValue)
             {
                 return StopTimestamp.Value;
             }
 
-            string? endStr = EndString ?? StopString;
-            if (
+            var endStr = EndString ?? StopString;
+            return
                 !string.IsNullOrEmpty(endStr) && DateTime.TryParse(endStr, CultureInfo.InvariantCulture, out var parsed)
-            )
-            {
-                return parsed;
-            }
-
-            return DateTime.MinValue;
+                ? parsed
+                : DateTime.MinValue;
         }
     }
 

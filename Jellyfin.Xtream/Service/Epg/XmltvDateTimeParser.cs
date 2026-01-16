@@ -47,18 +47,10 @@ public static class XmltvDateTimeParser
             return dt.ToUniversalTime();
         }
 
-        var tzPart = dateStr.Slice(TimezoneStartIndex).Trim();
-        if (tzPart.IsEmpty)
-        {
-            return dt.ToUniversalTime();
-        }
-
-        if (!TryParseTimezoneOffset(tzPart, out var offset))
-        {
-            return dt.ToUniversalTime();
-        }
-
-        return dt.Add(-offset);
+        var tzPart = dateStr[TimezoneStartIndex..].Trim();
+        return tzPart.IsEmpty ? dt.ToUniversalTime()
+            : !TryParseTimezoneOffset(tzPart, out var offset) ? dt.ToUniversalTime()
+            : dt.Add(-offset);
     }
 
     private static bool TryParseDateTimeParts(ReadOnlySpan<char> dateStr, out DateTime result)
@@ -66,12 +58,12 @@ public static class XmltvDateTimeParser
         result = DateTime.MinValue;
 
         if (
-            !int.TryParse(dateStr.Slice(0, 4), out int year)
-            || !int.TryParse(dateStr.Slice(4, 2), out int month)
-            || !int.TryParse(dateStr.Slice(6, 2), out int day)
-            || !int.TryParse(dateStr.Slice(8, 2), out int hour)
-            || !int.TryParse(dateStr.Slice(10, 2), out int minute)
-            || !int.TryParse(dateStr.Slice(12, 2), out int second)
+            !int.TryParse(dateStr[..4], out var year)
+            || !int.TryParse(dateStr.Slice(4, 2), out var month)
+            || !int.TryParse(dateStr.Slice(6, 2), out var day)
+            || !int.TryParse(dateStr.Slice(8, 2), out var hour)
+            || !int.TryParse(dateStr.Slice(10, 2), out var minute)
+            || !int.TryParse(dateStr.Slice(12, 2), out var second)
         )
         {
             return false;
@@ -97,10 +89,10 @@ public static class XmltvDateTimeParser
             return false;
         }
 
-        int sign = tzPart[0] == '-' ? -1 : 1;
+        var sign = tzPart[0] == '-' ? -1 : 1;
         var offsetStr = tzPart.TrimStart(['+', '-']);
 
-        int colonIdx = offsetStr.IndexOf(':');
+        var colonIdx = offsetStr.IndexOf(':');
 
         int offsetHours;
         int offsetMinutes;
@@ -108,7 +100,7 @@ public static class XmltvDateTimeParser
         if (colonIdx > 0)
         {
             if (
-                !int.TryParse(offsetStr.Slice(0, colonIdx), out offsetHours)
+                !int.TryParse(offsetStr[..colonIdx], out offsetHours)
                 || !int.TryParse(offsetStr.Slice(colonIdx + 1, 2), out offsetMinutes)
             )
             {
@@ -118,7 +110,7 @@ public static class XmltvDateTimeParser
         else if (offsetStr.Length >= 4)
         {
             if (
-                !int.TryParse(offsetStr.Slice(0, 2), out offsetHours)
+                !int.TryParse(offsetStr[..2], out offsetHours)
                 || !int.TryParse(offsetStr.Slice(2, 2), out offsetMinutes)
             )
             {

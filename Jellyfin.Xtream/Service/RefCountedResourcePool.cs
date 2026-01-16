@@ -76,7 +76,7 @@ public sealed class RefCountedResourcePool<T>(Func<T> streamFactory, Action<int>
         }
 
         var stream = _streamFactory();
-        int newCount = Interlocked.Increment(ref _consumerCount);
+        var newCount = Interlocked.Increment(ref _consumerCount);
         _onConsumerCountChanged?.Invoke(newCount);
 
         var wrapper = new RefCountedReaderStream<T>(stream, Release);
@@ -98,7 +98,7 @@ public sealed class RefCountedResourcePool<T>(Func<T> streamFactory, Action<int>
             return;
         }
 
-        Volatile.Write(ref _isDisposed, true);
+        Volatile.Write(ref _isDisposed, value: true);
 
         // Attempt to dispose any streams that are still alive
         // This is a safety net - consumers should dispose their own streams
@@ -120,7 +120,7 @@ public sealed class RefCountedResourcePool<T>(Func<T> streamFactory, Action<int>
 
     private void Release()
     {
-        int newCount = Interlocked.Decrement(ref _consumerCount);
+        var newCount = Interlocked.Decrement(ref _consumerCount);
         _onConsumerCountChanged?.Invoke(newCount);
     }
 }

@@ -41,7 +41,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
     public CompositeEpgProvider(IEnumerable<IEpgProvider> providers, ILogger<CompositeEpgProvider> logger)
     {
         // Sort by priority (lower = higher priority)
-        _providers = providers.OrderBy(p => p.Priority).ToList();
+        _providers = [.. providers.OrderBy(p => p.Priority)];
         _logger = logger;
 
         _logger.PluginLogInformation(
@@ -58,7 +58,7 @@ public class CompositeEpgProvider : IEpgProviderWithPrewarm
     public int Priority => 0; // Composite is the primary entry point
 
     /// <inheritdoc />
-    public bool IsAvailable => _providers.Any(p => p.IsAvailable);
+    public bool IsAvailable => _providers.Exists(p => p.IsAvailable);
 
     /// <inheritdoc />
     public async Task PrewarmAsync(CancellationToken cancellationToken)

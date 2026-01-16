@@ -26,7 +26,7 @@ namespace Jellyfin.Xtream.Client;
 /// </summary>
 public class FlexibleDateTimeConverter : JsonConverter<DateTime?>
 {
-    private static readonly DateTime _unixEpoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime _unixEpoch = DateTime.UnixEpoch;
 
     /// <inheritdoc />
     public override DateTime? ReadJson(
@@ -45,33 +45,23 @@ public class FlexibleDateTimeConverter : JsonConverter<DateTime?>
         // Handle integer Unix timestamp
         if (reader.TokenType == JsonToken.Integer)
         {
-            long unixSeconds = Convert.ToInt64(reader.Value, CultureInfo.InvariantCulture);
-            if (unixSeconds <= 0)
-            {
-                return null;
-            }
-
-            return _unixEpoch.AddSeconds(unixSeconds);
+            var unixSeconds = Convert.ToInt64(reader.Value, CultureInfo.InvariantCulture);
+            return unixSeconds <= 0 ? null : _unixEpoch.AddSeconds(unixSeconds);
         }
 
         // Handle string value (could be Unix timestamp as string, or date string)
         if (reader.TokenType == JsonToken.String)
         {
-            string? stringValue = reader.Value?.ToString();
+            var stringValue = reader.Value?.ToString();
             if (string.IsNullOrWhiteSpace(stringValue))
             {
                 return null;
             }
 
             // Try parsing as Unix timestamp first
-            if (long.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out long unixSeconds))
+            if (long.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unixSeconds))
             {
-                if (unixSeconds <= 0)
-                {
-                    return null;
-                }
-
-                return _unixEpoch.AddSeconds(unixSeconds);
+                return unixSeconds <= 0 ? null : _unixEpoch.AddSeconds(unixSeconds);
             }
 
             // Try parsing as date string (format: "Y-m-d H:i:s" or various other formats)
@@ -80,7 +70,7 @@ public class FlexibleDateTimeConverter : JsonConverter<DateTime?>
                     stringValue,
                     CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeUniversal,
-                    out DateTime dateResult
+                    out var dateResult
                 )
             )
             {
@@ -88,32 +78,22 @@ public class FlexibleDateTimeConverter : JsonConverter<DateTime?>
             }
 
             // Try specific format used by Xtream: "2024-01-15 20:00:00"
-            if (
-                DateTime.TryParseExact(
-                    stringValue,
-                    "yyyy-MM-dd HH:mm:ss",
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.AssumeUniversal,
-                    out dateResult
-                )
+            return DateTime.TryParseExact(
+                stringValue,
+                "yyyy-MM-dd HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal,
+                out dateResult
             )
-            {
-                return dateResult.ToUniversalTime();
-            }
-
-            return null;
+                ? dateResult.ToUniversalTime()
+                : null;
         }
 
         // Handle float (some providers return as decimal)
         if (reader.TokenType == JsonToken.Float)
         {
-            double unixSeconds = Convert.ToDouble(reader.Value, CultureInfo.InvariantCulture);
-            if (unixSeconds <= 0)
-            {
-                return null;
-            }
-
-            return _unixEpoch.AddSeconds(unixSeconds);
+            var unixSeconds = Convert.ToDouble(reader.Value, CultureInfo.InvariantCulture);
+            return unixSeconds <= 0 ? null : _unixEpoch.AddSeconds(unixSeconds);
         }
 
         return null;
@@ -124,7 +104,7 @@ public class FlexibleDateTimeConverter : JsonConverter<DateTime?>
     {
         if (value.HasValue)
         {
-            long unixSeconds = (long)(value.Value.ToUniversalTime() - _unixEpoch).TotalSeconds;
+            var unixSeconds = (long)(value.Value.ToUniversalTime() - _unixEpoch).TotalSeconds;
             writer.WriteValue(unixSeconds);
         }
         else

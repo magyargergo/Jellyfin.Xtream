@@ -74,7 +74,7 @@ public sealed partial class CredentialParser : ICredentialParser
         var lines = content.Split('\n');
 
         string? currentServer = null;
-        int currentPort = 8080;
+        var currentPort = 8080;
 
         foreach (var rawLine in lines)
         {
@@ -207,7 +207,7 @@ public sealed partial class CredentialParser : ICredentialParser
             var parts = urlPart.Split(':');
             var server = parts[0];
             var portPart = parts[1].Split('/')[0];
-            if (int.TryParse(portPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out int port))
+            if (int.TryParse(portPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out var port))
             {
                 return (server, port);
             }
@@ -273,18 +273,15 @@ public sealed partial class CredentialParser : ICredentialParser
         var username = match.Groups[3].Value;
         var password = match.Groups[4].Value;
 
-        if (username.Length >= 50 || password.Length >= 50 || username.Contains('(', StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        return new DiscoveredCredential
-        {
-            Server = server,
-            Port = port,
-            Username = username,
-            Password = password,
-        };
+        return username.Length >= 50 || password.Length >= 50 || username.Contains('(', StringComparison.Ordinal)
+            ? null
+            : new DiscoveredCredential
+            {
+                Server = server,
+                Port = port,
+                Username = username,
+                Password = password,
+            };
     }
 
     private static bool IsPortalLine(string line)
@@ -294,10 +291,8 @@ public sealed partial class CredentialParser : ICredentialParser
             || line.StartsWith("http", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsCodeLine(string line)
-    {
-        return CodePatterns.Any(pattern => line.Contains(pattern, StringComparison.Ordinal));
-    }
+    private static bool IsCodeLine(string line) =>
+        CodePatterns.Any(pattern => line.Contains(pattern, StringComparison.Ordinal));
 
     private static (string? Server, int Port) ParsePortalLine(string line)
     {
@@ -363,25 +358,21 @@ public sealed partial class CredentialParser : ICredentialParser
         }
 
         // Validate credentials
-        if (
+        return
             string.IsNullOrEmpty(username)
             || string.IsNullOrEmpty(password)
             || username.Length >= 40
             || password.Length >= 40
             || username.Any(c => "(){}=;<>".Contains(c, StringComparison.Ordinal))
             || password.Any(c => "(){}<>;".Contains(c, StringComparison.Ordinal))
-        )
-        {
-            return null;
-        }
-
-        return new DiscoveredCredential
-        {
-            Server = currentServer,
-            Port = currentPort,
-            Username = username,
-            Password = password,
-        };
+            ? null
+            : new DiscoveredCredential
+            {
+                Server = currentServer,
+                Port = currentPort,
+                Username = username,
+                Password = password,
+            };
     }
 
     private static string DecodeCloudflareEmails(string html)
@@ -395,12 +386,7 @@ public sealed partial class CredentialParser : ICredentialParser
                     var decoded = DecodeCloudflareString(encoded);
 
                     // Extract domain from email format
-                    if (decoded.Contains('@', StringComparison.Ordinal))
-                    {
-                        return decoded.Split('@').Last();
-                    }
-
-                    return decoded;
+                    return decoded.Contains('@', StringComparison.Ordinal) ? decoded.Split('@')[^1] : decoded;
                 }
             );
     }
@@ -412,13 +398,13 @@ public sealed partial class CredentialParser : ICredentialParser
             var decoded = new List<char>();
             var key = Convert.ToInt32(encoded[..2], 16);
 
-            for (int i = 2; i < encoded.Length; i += 2)
+            for (var i = 2; i < encoded.Length; i += 2)
             {
                 var charCode = Convert.ToInt32(encoded.Substring(i, 2), 16) ^ key;
                 decoded.Add((char)charCode);
             }
 
-            return new string(decoded.ToArray());
+            return new string([.. decoded]);
         }
         catch
         {
@@ -509,7 +495,7 @@ public sealed partial class CredentialParser : ICredentialParser
     private static IEnumerable<DiscoveredCredential> ParseEmojiFormatFromHtml(string html)
     {
         string? currentServer = null;
-        int currentPort = 8080;
+        var currentPort = 8080;
 
         foreach (var rawLine in html.Split('\n'))
         {

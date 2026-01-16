@@ -33,7 +33,7 @@ public class SeriesStreamInfo
         "CA2227:Collection properties should be read only",
         Justification = "Required for JSON deserialization"
     )]
-    public ICollection<Season> Seasons { get; set; } = new List<Season>();
+    public ICollection<Season> Seasons { get; set; } = [];
 
     /// <summary>
     /// Gets or sets the series information.
@@ -50,5 +50,5 @@ public class SeriesStreamInfo
         "CA2227:Collection properties should be read only",
         Justification = "Required for JSON deserialization"
     )]
-    public Dictionary<int, ICollection<Episode>> Episodes { get; set; } = new Dictionary<int, ICollection<Episode>>();
+    public Dictionary<int, ICollection<Episode>> Episodes { get; set; } = [];
 }

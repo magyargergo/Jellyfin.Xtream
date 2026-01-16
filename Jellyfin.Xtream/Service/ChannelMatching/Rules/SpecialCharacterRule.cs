@@ -46,7 +46,7 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case '/':
                 case '\\':
                 case '|':
-                    sb.Append(' ');
+                    _ = sb.Append(' ');
                     break;
 
                 // Keep alphanumeric and spaces
@@ -55,17 +55,17 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case >= 'a' and <= 'z':
                 case >= '0' and <= '9':
                 case ' ':
-                    sb.Append(c);
+                    _ = sb.Append(c);
                     break;
 
                 // Preserve plus sign (Canal+, Disney+, etc.)
                 case '+':
-                    sb.Append('+');
+                    _ = sb.Append('+');
                     break;
 
                 // Ampersand -> "and"
                 case '&':
-                    sb.Append(" and ");
+                    _ = sb.Append(" and ");
                     break;
 
                 // Diacritics - lowercase and uppercase variants
@@ -85,7 +85,7 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Å':
                 case 'æ':
                 case 'Æ':
-                    sb.Append('a');
+                    _ = sb.Append('a');
                     break;
 
                 case 'ć':
@@ -94,7 +94,7 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Ç':
                 case 'č':
                 case 'Č':
-                    sb.Append('c');
+                    _ = sb.Append('c');
                     break;
 
                 case 'ę':
@@ -107,7 +107,7 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Ê':
                 case 'ë':
                 case 'Ë':
-                    sb.Append('e');
+                    _ = sb.Append('e');
                     break;
 
                 case 'ì':
@@ -118,12 +118,12 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Î':
                 case 'ï':
                 case 'Ï':
-                    sb.Append('i');
+                    _ = sb.Append('i');
                     break;
 
                 case 'ł':
                 case 'Ł':
-                    sb.Append('l');
+                    _ = sb.Append('l');
                     break;
 
                 case 'ń':
@@ -132,7 +132,7 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Ñ':
                 case 'ň':
                 case 'Ň':
-                    sb.Append('n');
+                    _ = sb.Append('n');
                     break;
 
                 case 'ó':
@@ -147,7 +147,7 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Ö':
                 case 'ø':
                 case 'Ø':
-                    sb.Append('o');
+                    _ = sb.Append('o');
                     break;
 
                 case 'ś':
@@ -156,7 +156,7 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Š':
                 case 'ş':
                 case 'Ş':
-                    sb.Append('s');
+                    _ = sb.Append('s');
                     break;
 
                 case 'ù':
@@ -167,14 +167,14 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Û':
                 case 'ü':
                 case 'Ü':
-                    sb.Append('u');
+                    _ = sb.Append('u');
                     break;
 
                 case 'ý':
                 case 'Ý':
                 case 'ÿ':
                 case 'Ÿ':
-                    sb.Append('y');
+                    _ = sb.Append('y');
                     break;
 
                 case 'ź':
@@ -183,28 +183,28 @@ public sealed class SpecialCharacterRule : INormalizationRule
                 case 'Ż':
                 case 'ž':
                 case 'Ž':
-                    sb.Append('z');
+                    _ = sb.Append('z');
                     break;
 
                 case 'ß':
-                    sb.Append("ss");
+                    _ = sb.Append("ss");
                     break;
 
                 case 'đ':
                 case 'Đ':
-                    sb.Append('d');
+                    _ = sb.Append('d');
                     break;
 
                 case 'þ':
                 case 'Þ':
-                    sb.Append("th");
+                    _ = sb.Append("th");
                     break;
 
                 default:
                     // For any other letter, keep it for RemoveDiacritics to handle
                     if (char.IsLetter(c))
                     {
-                        sb.Append(c);
+                        _ = sb.Append(c);
                     }
                     // Skip non-letter, non-handled characters
                     break;

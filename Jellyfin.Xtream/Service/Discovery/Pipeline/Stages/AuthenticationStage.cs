@@ -26,29 +26,24 @@ namespace Jellyfin.Xtream.Service.Discovery.Pipeline.Stages;
 /// Second pipeline stage: API authentication validation.
 /// Verifies credentials work and account is active.
 /// </summary>
-public sealed class AuthenticationStage : PipelineStageBase
+/// <remarks>
+/// Initializes a new instance of the <see cref="AuthenticationStage"/> class.
+/// </remarks>
+/// <param name="httpClientFactory">HTTP client factory.</param>
+/// <param name="logger">The logger.</param>
+public sealed class AuthenticationStage(IHttpClientFactory httpClientFactory, ILogger logger)
+    : PipelineStageBase(
+        PipelineStage.Authentication,
+        logger,
+        new StageConfiguration
+        {
+            Concurrency = 20,
+            TimeoutMs = 10000,
+            ContinueOnError = true,
+        }
+    )
 {
-    private readonly IHttpClientFactory _httpClientFactory;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="AuthenticationStage"/> class.
-    /// </summary>
-    /// <param name="httpClientFactory">HTTP client factory.</param>
-    /// <param name="logger">The logger.</param>
-    public AuthenticationStage(IHttpClientFactory httpClientFactory, ILogger logger)
-        : base(
-            PipelineStage.Authentication,
-            logger,
-            new StageConfiguration
-            {
-                Concurrency = 20,
-                TimeoutMs = 10000,
-                ContinueOnError = true,
-            }
-        )
-    {
-        _httpClientFactory = httpClientFactory;
-    }
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
 
     /// <inheritdoc />
     protected override async ValueTask<StageResult<PipelineItem>> ProcessAsync(

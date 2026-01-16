@@ -32,28 +32,22 @@ namespace Jellyfin.Xtream.Service.Epg;
 /// Tries get_short_epg first, falls back to get_simple_data_table.
 /// Implements circuit breaker pattern to avoid repeated failures.
 /// </summary>
-public class XtreamEpgProvider : IEpgProvider
+/// <remarks>
+/// Initializes a new instance of the <see cref="XtreamEpgProvider"/> class.
+/// </remarks>
+/// <param name="httpClientFactory">HTTP client factory.</param>
+/// <param name="logger">Logger.</param>
+public class XtreamEpgProvider(IHttpClientFactory httpClientFactory, ILogger<XtreamEpgProvider> logger) : IEpgProvider
 {
     private const int MaxConsecutiveFailures = 3;
     private static readonly TimeSpan CircuitBreakerResetTime = TimeSpan.FromMinutes(5);
 
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly ILogger<XtreamEpgProvider> _logger;
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+    private readonly ILogger<XtreamEpgProvider> _logger = logger;
 
     private int _consecutiveFailures;
     private DateTime _lastFailureTime = DateTime.MinValue;
     private bool _isAvailable = true;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="XtreamEpgProvider"/> class.
-    /// </summary>
-    /// <param name="httpClientFactory">HTTP client factory.</param>
-    /// <param name="logger">Logger.</param>
-    public XtreamEpgProvider(IHttpClientFactory httpClientFactory, ILogger<XtreamEpgProvider> logger)
-    {
-        _httpClientFactory = httpClientFactory;
-        _logger = logger;
-    }
 
     /// <inheritdoc />
     public string Name => "Xtream API";
@@ -85,14 +79,14 @@ public class XtreamEpgProvider : IEpgProvider
         if (provider == null)
         {
             _logger.PluginLogWarning("No enabled provider found for EPG data");
-            return Array.Empty<EpgProgram>();
+            return [];
         }
 
         using var client = new XtreamClient(_httpClientFactory, _logger as ILogger<XtreamClient>);
 
         EpgListings? epgs = null;
 
-        bool hadHttpError = false;
+        var hadHttpError = false;
 
         // Try get_short_epg first (more reliable with many providers)
         try
@@ -167,7 +161,7 @@ public class XtreamEpgProvider : IEpgProvider
             // No EPG data for this channel is normal - don't count as failure
             // Only actual HTTP/JSON errors should trigger the circuit breaker
             _logger.PluginLogInformation("No EPG data available from Xtream API for stream {StreamId}", streamId);
-            return Array.Empty<EpgProgram>();
+            return [];
         }
 
         // Success - reset failure counter (only on actual successful data retrieval)

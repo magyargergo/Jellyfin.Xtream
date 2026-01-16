@@ -234,8 +234,8 @@ public sealed class StageStats
     /// <param name="durationMs">Processing duration.</param>
     public void RecordPassed(int durationMs)
     {
-        Interlocked.Increment(ref _passed);
-        Interlocked.Add(ref _totalDurationMs, durationMs);
+        _ = Interlocked.Increment(ref _passed);
+        _ = Interlocked.Add(ref _totalDurationMs, durationMs);
     }
 
     /// <summary>
@@ -244,8 +244,8 @@ public sealed class StageStats
     /// <param name="durationMs">Processing duration.</param>
     public void RecordFailed(int durationMs)
     {
-        Interlocked.Increment(ref _failed);
-        Interlocked.Add(ref _totalDurationMs, durationMs);
+        _ = Interlocked.Increment(ref _failed);
+        _ = Interlocked.Add(ref _totalDurationMs, durationMs);
     }
 
     /// <summary>
