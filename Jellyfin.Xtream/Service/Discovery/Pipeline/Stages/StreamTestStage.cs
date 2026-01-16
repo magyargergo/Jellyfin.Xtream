@@ -23,6 +23,7 @@ using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.Discovery.Pipeline.Stages;
@@ -31,7 +32,22 @@ namespace Jellyfin.Xtream.Service.Discovery.Pipeline.Stages;
 /// Fifth pipeline stage: Stream playback validation.
 /// Tests that Polish streams actually work and captures quality metrics.
 /// </summary>
-public sealed class StreamTestStage : PipelineStageBase
+/// <remarks>
+/// Initializes a new instance of the <see cref="StreamTestStage"/> class.
+/// </remarks>
+/// <param name="httpClientFactory">HTTP client factory.</param>
+/// <param name="logger">The logger.</param>
+public sealed class StreamTestStage(IHttpClientFactory httpClientFactory, ILogger logger)
+    : PipelineStageBase(
+        PipelineStage.StreamTest,
+        logger,
+        new StageConfiguration
+        {
+            Concurrency = 10,
+            TimeoutMs = 15000,
+            ContinueOnError = true,
+        }
+    )
 {
     private const int StreamTestBytes = 16384;
     private const byte TsSyncByte = 0x47;
@@ -47,29 +63,8 @@ public sealed class StreamTestStage : PipelineStageBase
         "audio/x-mpegurl",
     ];
 
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly ILogger _logger;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="StreamTestStage"/> class.
-    /// </summary>
-    /// <param name="httpClientFactory">HTTP client factory.</param>
-    /// <param name="logger">The logger.</param>
-    public StreamTestStage(IHttpClientFactory httpClientFactory, ILogger logger)
-        : base(
-            PipelineStage.StreamTest,
-            logger,
-            new StageConfiguration
-            {
-                Concurrency = 10,
-                TimeoutMs = 15000,
-                ContinueOnError = true,
-            }
-        )
-    {
-        _httpClientFactory = httpClientFactory;
-        _logger = logger;
-    }
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+    private readonly ILogger _logger = logger;
 
     /// <inheritdoc />
     protected override async ValueTask<StageResult<PipelineItem>> ProcessAsync(
@@ -100,7 +95,7 @@ public sealed class StreamTestStage : PipelineStageBase
             var streamUrl =
                 $"{credential.BaseUrl}/{credential.Username}/{credential.Password}/{testStream.StreamId}.ts";
 
-            using var httpClient = _httpClientFactory.CreateClient("XtreamDiscovery");
+            using var httpClient = _httpClientFactory.CreateClient(HttpClientConfiguration.XtreamClientName);
             var (works, status, quality) = await TestStreamUrlAsync(httpClient, streamUrl, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -239,7 +234,7 @@ public sealed class StreamTestStage : PipelineStageBase
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Stream test failed for {Url}", url);
+            _logger.LogDebugIfEnabled(ex, "Stream test failed for {Url}", url);
             return (false, "Error", null);
         }
     }
@@ -259,12 +254,7 @@ public sealed class StreamTestStage : PipelineStageBase
         }
 
         // Verify at least one valid packet boundary
-        if (syncIndex + TsPacketSize < data.Length)
-        {
-            return data[syncIndex + TsPacketSize] == TsSyncByte;
-        }
-
-        return true;
+        return syncIndex + TsPacketSize >= data.Length || data[syncIndex + TsPacketSize] == TsSyncByte;
     }
 
     private StreamQualitySnapshot? AnalyzeStreamQuality(byte[] data)
@@ -292,7 +282,7 @@ public sealed class StreamTestStage : PipelineStageBase
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Quality analysis failed");
+            _logger.LogDebugIfEnabled(ex, "Quality analysis failed");
             return null;
         }
     }

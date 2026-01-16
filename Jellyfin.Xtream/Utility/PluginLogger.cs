@@ -16,6 +16,7 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
+using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service.Logging;
 using Microsoft.Extensions.Logging;
 
@@ -29,8 +30,8 @@ namespace Jellyfin.Xtream.Utility;
 public static partial class PluginLogger
 {
     private static IPluginLogService? _logService;
+    private static IPluginConfigurationProvider? _configProvider;
     private static volatile bool _isCapturing;
-    private static Func<bool>? _debugEnabledProvider;
 
     /// <summary>
     /// Gets whether log capture is currently active.
@@ -41,19 +42,12 @@ public static partial class PluginLogger
     /// Initializes the plugin logger with the log service instance.
     /// </summary>
     /// <param name="logService">The log service to use.</param>
-    public static void Initialize(IPluginLogService logService)
+    /// <param name="configProvider">Optional configuration provider for debug logging state.</param>
+    public static void Initialize(IPluginLogService? logService, IPluginConfigurationProvider? configProvider = null)
     {
         _logService = logService;
+        _configProvider = configProvider;
         _isCapturing = logService != null;
-    }
-
-    /// <summary>
-    /// Sets a custom provider for debug enabled state (used for testing).
-    /// </summary>
-    /// <param name="provider">Function that returns whether debug is enabled.</param>
-    public static void SetDebugEnabledProvider(Func<bool>? provider)
-    {
-        _debugEnabledProvider = provider;
     }
 
     /// <summary>
@@ -417,25 +411,14 @@ public static partial class PluginLogger
 
     private static bool IsDebugEnabled()
     {
-        // Use custom provider if set (for testing or when Plugin is not available)
-        if (_debugEnabledProvider != null)
+        // Use injected configuration provider
+        if (_configProvider != null)
         {
-            return _debugEnabledProvider();
+            return _configProvider.GetConfiguration()?.EnableDebugLogging ?? false;
         }
 
-        return GetDebugEnabledFromPlugin();
-    }
-
-    private static bool GetDebugEnabledFromPlugin()
-    {
-        try
-        {
-            return Plugin.Instance?.Configuration?.EnableDebugLogging ?? false;
-        }
-        catch
-        {
-            return false;
-        }
+        // No configuration provider available (e.g., in test environment without initialization)
+        return false;
     }
 
     private static void CaptureLog(
@@ -450,9 +433,9 @@ public static partial class PluginLogger
         // Caller ensures _isCapturing is true, so _logService is non-null
         try
         {
-            string formattedMessage = FormatMessage(messageTemplate, args);
-            string? streamId = ExtractStreamId(args);
-            string? channelName = ExtractChannelName(args);
+            var formattedMessage = FormatMessage(messageTemplate, args);
+            var streamId = ExtractStreamId(args);
+            var channelName = ExtractChannelName(args);
 
             _logService!.Log(level, category, formattedMessage, exception, isDebug, streamId, channelName);
         }
@@ -471,19 +454,11 @@ public static partial class PluginLogger
 
         try
         {
-            int argIndex = 0;
+            var argIndex = 0;
             return PlaceholderRegex()
                 .Replace(
                     template,
-                    match =>
-                    {
-                        if (argIndex < args.Length)
-                        {
-                            return args[argIndex++]?.ToString() ?? "null";
-                        }
-
-                        return match.Value;
-                    }
+                    match => argIndex < args.Length ? args[argIndex++]?.ToString() ?? "null" : match.Value
                 );
         }
         catch

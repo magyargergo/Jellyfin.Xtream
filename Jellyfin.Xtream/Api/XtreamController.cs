@@ -43,69 +43,46 @@ namespace Jellyfin.Xtream.Api;
 /// <summary>
 /// The Jellyfin Xtream configuration API.
 /// </summary>
+/// <remarks>
+/// Initializes a new instance of the <see cref="XtreamController"/> class.
+/// </remarks>
+/// <param name="logger">The logger instance.</param>
+/// <param name="loggerFactory">The logger factory instance.</param>
+/// <param name="cache">The memory cache instance.</param>
+/// <param name="httpClientFactory">The HTTP client factory.</param>
+/// <param name="monitoringService">The provider monitoring service.</param>
+/// <param name="failoverService">The automatic failover service.</param>
 [ApiController]
 [Route("[controller]")]
 [Produces("application/json")]
-public class XtreamController : ControllerBase
+public class XtreamController(
+    ILogger<XtreamController> logger,
+    ILoggerFactory loggerFactory,
+    IMemoryCache cache,
+    IHttpClientFactory httpClientFactory,
+    IProviderMonitoringService monitoringService,
+    IAutomaticFailoverService failoverService
+) : ControllerBase
 {
     private const int CacheMinutes = 5;
 
-    private readonly ILogger<XtreamController> _logger;
-    private readonly ILoggerFactory _loggerFactory;
-    private readonly IMemoryCache _cache;
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly IProviderAvailabilityService _resilienceService;
-    private readonly IProviderMonitoringService _monitoringService;
-    private readonly IProviderMetricsTracker _metricsTracker;
-    private readonly IAutomaticFailoverService _failoverService;
+    private readonly ILogger<XtreamController> _logger = logger;
+    private readonly ILoggerFactory _loggerFactory = loggerFactory;
+    private readonly IMemoryCache _cache = cache;
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+    private readonly IProviderMonitoringService _monitoringService = monitoringService;
+    private readonly IAutomaticFailoverService _failoverService = failoverService;
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="XtreamController"/> class.
-    /// </summary>
-    /// <param name="logger">The logger instance.</param>
-    /// <param name="loggerFactory">The logger factory instance.</param>
-    /// <param name="cache">The memory cache instance.</param>
-    /// <param name="httpClientFactory">The HTTP client factory.</param>
-    /// <param name="resilienceService">The provider resilience service.</param>
-    /// <param name="monitoringService">The provider monitoring service.</param>
-    /// <param name="metricsTracker">The provider metrics tracker.</param>
-    /// <param name="failoverService">The automatic failover service.</param>
-    public XtreamController(
-        ILogger<XtreamController> logger,
-        ILoggerFactory loggerFactory,
-        IMemoryCache cache,
-        IHttpClientFactory httpClientFactory,
-        IProviderAvailabilityService resilienceService,
-        IProviderMonitoringService monitoringService,
-        IProviderMetricsTracker metricsTracker,
-        IAutomaticFailoverService failoverService
-    )
+    private static XtreamProvider? GetProvider(string? providerId)
     {
-        _logger = logger;
-        _loggerFactory = loggerFactory;
-        _cache = cache;
-        _httpClientFactory = httpClientFactory;
-        _resilienceService = resilienceService;
-        _monitoringService = monitoringService;
-        _metricsTracker = metricsTracker;
-        _failoverService = failoverService;
+        var config = Plugin.Instance.Configuration;
+        return string.IsNullOrEmpty(providerId)
+            ? config.GetEnabledProviders().FirstOrDefault()
+            : config.GetProvider(providerId);
     }
 
-    private XtreamProvider? GetProvider(string? providerId)
-    {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        if (string.IsNullOrEmpty(providerId))
-        {
-            return config.GetEnabledProviders().FirstOrDefault();
-        }
-
-        return config.GetProvider(providerId);
-    }
-
-    private static CategoryResponse CreateCategoryResponse(Category category)
-    {
-        return new CategoryResponse { Id = category.CategoryId, Name = category.CategoryName };
-    }
+    private static CategoryResponse CreateCategoryResponse(Category category) =>
+        new() { Id = category.CategoryId, Name = category.CategoryName };
 
     private static ItemResponse CreateItemResponse(StreamInfo stream)
     {
@@ -153,26 +130,27 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        XtreamProvider? provider = GetProvider(providerId);
+        var provider = GetProvider(providerId);
         if (provider == null)
         {
             return BadRequest(new { message = "No provider configured" });
         }
 
-        string cacheKey = "xtream-api-live-categories-" + provider.Id;
-        if (_cache.TryGetValue<List<CategoryResponse>>(cacheKey, out List<CategoryResponse>? cached) && cached != null)
+        var cacheKey = "xtream-api-live-categories-" + provider.Id;
+        if (_cache.TryGetValue<List<CategoryResponse>>(cacheKey, out var cached) && cached != null)
         {
             return Ok(cached);
         }
 
-        using XtreamClient client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<CategoryResponse> result = (
-            await client.GetLiveCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
-        )
-            .Select(CreateCategoryResponse)
-            .ToList();
+        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+        List<CategoryResponse> result =
+        [
+            .. (
+                await client.GetLiveCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
+            ).Select(CreateCategoryResponse),
+        ];
 
-        _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
         return Ok(result);
     }
 
@@ -191,28 +169,29 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        XtreamProvider? provider = GetProvider(providerId);
+        var provider = GetProvider(providerId);
         if (provider == null)
         {
             return BadRequest(new { message = "No provider configured" });
         }
 
-        string cacheKey = $"xtream-api-live-streams-{provider.Id}-{categoryId}";
-        if (_cache.TryGetValue<List<ItemResponse>>(cacheKey, out List<ItemResponse>? cached) && cached != null)
+        var cacheKey = $"xtream-api-live-streams-{provider.Id}-{categoryId}";
+        if (_cache.TryGetValue<List<ItemResponse>>(cacheKey, out var cached) && cached != null)
         {
             return Ok(cached);
         }
 
-        using XtreamClient client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<ItemResponse> result = (
-            await client
-                .GetLiveStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
-                .ConfigureAwait(false)
-        )
-            .Select(CreateItemResponse)
-            .ToList();
+        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+        List<ItemResponse> result =
+        [
+            .. (
+                await client
+                    .GetLiveStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
+                    .ConfigureAwait(false)
+            ).Select(CreateItemResponse),
+        ];
 
-        _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
         return Ok(result);
     }
 
@@ -229,26 +208,27 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        XtreamProvider? provider = GetProvider(providerId);
+        var provider = GetProvider(providerId);
         if (provider == null)
         {
             return BadRequest(new { message = "No provider configured" });
         }
 
-        string cacheKey = "xtream-api-vod-categories-" + provider.Id;
-        if (_cache.TryGetValue<List<CategoryResponse>>(cacheKey, out List<CategoryResponse>? cached) && cached != null)
+        var cacheKey = "xtream-api-vod-categories-" + provider.Id;
+        if (_cache.TryGetValue<List<CategoryResponse>>(cacheKey, out var cached) && cached != null)
         {
             return Ok(cached);
         }
 
-        using XtreamClient client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<CategoryResponse> result = (
-            await client.GetVodCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
-        )
-            .Select(CreateCategoryResponse)
-            .ToList();
+        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+        List<CategoryResponse> result =
+        [
+            .. (
+                await client.GetVodCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
+            ).Select(CreateCategoryResponse),
+        ];
 
-        _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
         return Ok(result);
     }
 
@@ -267,28 +247,29 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        XtreamProvider? provider = GetProvider(providerId);
+        var provider = GetProvider(providerId);
         if (provider == null)
         {
             return BadRequest(new { message = "No provider configured" });
         }
 
-        string cacheKey = $"xtream-api-vod-streams-{provider.Id}-{categoryId}";
-        if (_cache.TryGetValue<List<ItemResponse>>(cacheKey, out List<ItemResponse>? cached) && cached != null)
+        var cacheKey = $"xtream-api-vod-streams-{provider.Id}-{categoryId}";
+        if (_cache.TryGetValue<List<ItemResponse>>(cacheKey, out var cached) && cached != null)
         {
             return Ok(cached);
         }
 
-        using XtreamClient client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<ItemResponse> result = (
-            await client
-                .GetVodStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
-                .ConfigureAwait(false)
-        )
-            .Select(CreateItemResponse)
-            .ToList();
+        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+        List<ItemResponse> result =
+        [
+            .. (
+                await client
+                    .GetVodStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
+                    .ConfigureAwait(false)
+            ).Select(CreateItemResponse),
+        ];
 
-        _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
         return Ok(result);
     }
 
@@ -305,26 +286,29 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        XtreamProvider? provider = GetProvider(providerId);
+        var provider = GetProvider(providerId);
         if (provider == null)
         {
             return BadRequest(new { message = "No provider configured" });
         }
 
-        string cacheKey = "xtream-api-series-categories-" + provider.Id;
-        if (_cache.TryGetValue<List<CategoryResponse>>(cacheKey, out List<CategoryResponse>? cached) && cached != null)
+        var cacheKey = "xtream-api-series-categories-" + provider.Id;
+        if (_cache.TryGetValue<List<CategoryResponse>>(cacheKey, out var cached) && cached != null)
         {
             return Ok(cached);
         }
 
-        using XtreamClient client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<CategoryResponse> result = (
-            await client.GetSeriesCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
-        )
-            .Select(CreateCategoryResponse)
-            .ToList();
+        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+        List<CategoryResponse> result =
+        [
+            .. (
+                await client
+                    .GetSeriesCategoryAsync(provider.ToConnectionInfo(), cancellationToken)
+                    .ConfigureAwait(false)
+            ).Select(CreateCategoryResponse),
+        ];
 
-        _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
         return Ok(result);
     }
 
@@ -343,28 +327,29 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        XtreamProvider? provider = GetProvider(providerId);
+        var provider = GetProvider(providerId);
         if (provider == null)
         {
             return BadRequest(new { message = "No provider configured" });
         }
 
-        string cacheKey = $"xtream-api-series-streams-{provider.Id}-{categoryId}";
-        if (_cache.TryGetValue<List<ItemResponse>>(cacheKey, out List<ItemResponse>? cached) && cached != null)
+        var cacheKey = $"xtream-api-series-streams-{provider.Id}-{categoryId}";
+        if (_cache.TryGetValue<List<ItemResponse>>(cacheKey, out var cached) && cached != null)
         {
             return Ok(cached);
         }
 
-        using XtreamClient client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<ItemResponse> result = (
-            await client
-                .GetSeriesByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
-                .ConfigureAwait(false)
-        )
-            .Select(CreateItemResponse)
-            .ToList();
+        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+        List<ItemResponse> result =
+        [
+            .. (
+                await client
+                    .GetSeriesByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
+                    .ConfigureAwait(false)
+            ).Select(CreateItemResponse),
+        ];
 
-        _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
         return Ok(result);
     }
 
@@ -381,19 +366,20 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        XtreamProvider? provider = GetProvider(providerId);
+        var provider = GetProvider(providerId);
         if (provider == null)
         {
             return BadRequest(new { message = "No provider configured" });
         }
 
-        List<ChannelResponse> channels = (
-            await StreamService
-                .GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
-                .ConfigureAwait(false)
-        )
-            .Select(CreateChannelResponse)
-            .ToList();
+        List<ChannelResponse> channels =
+        [
+            .. (
+                await StreamService
+                    .GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
+                    .ConfigureAwait(false)
+            ).Select(CreateChannelResponse),
+        ];
 
         return Ok(channels);
     }
@@ -408,7 +394,7 @@ public class XtreamController : ControllerBase
     [HttpGet("TestProvider/{providerId}")]
     public async Task<ActionResult<object>> TestProvider(string providerId, CancellationToken cancellationToken)
     {
-        XtreamProvider? provider = GetProvider(providerId);
+        var provider = GetProvider(providerId);
         if (provider == null)
         {
             return NotFound(new { success = false, message = "Provider not found" });
@@ -416,11 +402,8 @@ public class XtreamController : ControllerBase
 
         try
         {
-            using XtreamClient client = new XtreamClient(
-                _httpClientFactory,
-                _loggerFactory.CreateLogger<XtreamClient>()
-            );
-            PlayerApi? playerApi = await client
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            var playerApi = await client
                 .GetUserAndServerInfoAsync(provider.ToConnectionInfo(), cancellationToken)
                 .ConfigureAwait(false);
 
@@ -429,7 +412,7 @@ public class XtreamController : ControllerBase
                 return Ok(new { success = false, message = "Failed to get user info from provider" });
             }
 
-            UserInfo userInfo = playerApi.UserInfo;
+            var userInfo = playerApi.UserInfo;
             return Ok(
                 new
                 {
@@ -466,9 +449,9 @@ public class XtreamController : ControllerBase
         var providers = Plugin
             .Instance.Configuration.Providers.Select(p => new
             {
-                Id = p.Id,
-                Name = p.Name,
-                Enabled = p.Enabled,
+                p.Id,
+                p.Name,
+                p.Enabled,
                 HasCredentials = !string.IsNullOrEmpty(p.BaseUrl) && !string.IsNullOrEmpty(p.Username),
             })
             .ToList();
@@ -484,10 +467,10 @@ public class XtreamController : ControllerBase
     [HttpGet("LegacyConfig")]
     public ActionResult<object> GetLegacyConfigStatus()
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        bool hasLegacyCredentials = !string.IsNullOrEmpty(config.BaseUrl) && config.BaseUrl != "https://example.com";
-        bool hasLegacyChannels = config.LiveTv.Count > 0 || config.Vod.Count > 0 || config.Series.Count > 0;
-        bool hasLegacyConfig = hasLegacyCredentials || hasLegacyChannels;
+        var config = Plugin.Instance.Configuration;
+        var hasLegacyCredentials = !string.IsNullOrEmpty(config.BaseUrl) && config.BaseUrl != "https://example.com";
+        var hasLegacyChannels = config.LiveTv.Count > 0 || config.Vod.Count > 0 || config.Series.Count > 0;
+        var hasLegacyConfig = hasLegacyCredentials || hasLegacyChannels;
 
         _logger.PluginLogInformation(
             "Legacy config check: BaseUrl={BaseUrl}, Username={Username}, LiveTv={LiveTvCount}, Vod={VodCount}, Series={SeriesCount}",
@@ -524,16 +507,16 @@ public class XtreamController : ControllerBase
     [HttpPost("MigrateLegacy")]
     public ActionResult<object> MigrateLegacyConfig()
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
+        var config = Plugin.Instance.Configuration;
 
         if (string.IsNullOrEmpty(config.BaseUrl) || config.BaseUrl == "https://example.com")
         {
             return Ok(new { success = false, message = "No legacy configuration found to migrate" });
         }
 
-        XtreamProvider migratedProvider = new XtreamProvider
+        var migratedProvider = new XtreamProvider
         {
-            Id = "migrated-" + DateTime.UtcNow.Ticks.ToString("x", CultureInfo.InvariantCulture).Substring(0, 8),
+            Id = "migrated-" + DateTime.UtcNow.Ticks.ToString("x", CultureInfo.InvariantCulture)[..8],
             Name = "Migrated Provider",
             BaseUrl = config.BaseUrl,
             Username = config.Username,
@@ -590,7 +573,7 @@ public class XtreamController : ControllerBase
             return BadRequest(new { success = false, message = "Webhook URL is required" });
         }
 
-        bool success = await discordService.TestWebhookAsync(webhookUrl, cancellationToken).ConfigureAwait(false);
+        var success = await discordService.TestWebhookAsync(webhookUrl, cancellationToken).ConfigureAwait(false);
         return Ok(
             new
             {
@@ -615,7 +598,7 @@ public class XtreamController : ControllerBase
     {
         try
         {
-            int count = await CircularBufferReadStream
+            var count = await CircularBufferReadStream
                 .SendAllDiagnosticsToDiscordAsync(discordService, _logger)
                 .ConfigureAwait(false);
             return Ok(
@@ -656,7 +639,7 @@ public class XtreamController : ControllerBase
         CancellationToken cancellationToken
     )
     {
-        EpgTestResponse response = new EpgTestResponse { StreamId = streamId, Provider = epgProvider.Name };
+        var response = new EpgTestResponse { StreamId = streamId, Provider = epgProvider.Name };
 
         try
         {
@@ -666,17 +649,20 @@ public class XtreamController : ControllerBase
                     ?.Stream.Name
                 ?? $"Stream {streamId}";
 
-            response.Programs = (await epgProvider.GetProgramsAsync(streamId, cancellationToken).ConfigureAwait(false))
-                .Select(p => new EpgProgramResponse
-                {
-                    Id = p.Id,
-                    Title = p.Title,
-                    Description = p.Description,
-                    StartUtc = p.StartUtc,
-                    EndUtc = p.EndUtc,
-                    ImageUrl = p.ImageUrl,
-                })
-                .ToList();
+            response.Programs =
+            [
+                .. (await epgProvider.GetProgramsAsync(streamId, cancellationToken).ConfigureAwait(false)).Select(
+                    p => new EpgProgramResponse
+                    {
+                        Id = p.Id,
+                        Title = p.Title,
+                        Description = p.Description,
+                        StartUtc = p.StartUtc,
+                        EndUtc = p.EndUtc,
+                        ImageUrl = p.ImageUrl,
+                    }
+                ),
+            ];
 
             response.Success = true;
             _logger.PluginLogInformation(
@@ -781,7 +767,7 @@ public class XtreamController : ControllerBase
     [HttpGet("ActiveStreams")]
     public ActionResult<IReadOnlyList<StreamInfoSnapshot>> GetActiveStreams()
     {
-        IReadOnlyList<StreamInfoSnapshot> streams = Restream.GetActiveStreamSnapshots();
+        var streams = Restream.GetActiveStreamSnapshots();
         _logger.PluginLogInformation("Retrieved {Count} active stream(s)", streams.Count);
         return Ok(streams);
     }
@@ -816,7 +802,7 @@ public class XtreamController : ControllerBase
     public ActionResult<object> KillAllStreams()
     {
         _logger.PluginLogWarning("Killing all active streams via API");
-        int count = Restream.KillAllStreams();
+        var count = Restream.KillAllStreams();
         _logger.PluginLogInformation("Killed {Count} active stream(s)", count);
         return Ok(
             new
@@ -843,17 +829,14 @@ public class XtreamController : ControllerBase
     {
         try
         {
-            XtreamProvider? provider = GetProvider(providerId);
+            var provider = GetProvider(providerId);
             if (provider == null)
             {
                 return Ok(new { success = false, message = "No provider configured" });
             }
 
-            using XtreamClient client = new XtreamClient(
-                _httpClientFactory,
-                _loggerFactory.CreateLogger<XtreamClient>()
-            );
-            PlayerApi? playerApi = await client
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            var playerApi = await client
                 .GetUserAndServerInfoAsync(provider.ToConnectionInfo(), cancellationToken)
                 .ConfigureAwait(false);
 
@@ -862,8 +845,8 @@ public class XtreamController : ControllerBase
                 return Ok(new { success = false, message = "Failed to get user info from provider" });
             }
 
-            UserInfo userInfo = playerApi.UserInfo;
-            int pluginActiveStreams = Restream.GetActiveStreamCount();
+            var userInfo = playerApi.UserInfo;
+            var pluginActiveStreams = Restream.GetActiveStreamCount();
 
             return Ok(
                 new
@@ -1003,7 +986,7 @@ public class XtreamController : ControllerBase
     )
     {
         Response.ContentType = "text/event-stream";
-        Response.Headers["Cache-Control"] = "no-cache";
+        Response.Headers.CacheControl = "no-cache";
         Response.Headers["Connection"] = "keep-alive";
 
         await foreach (
@@ -1060,7 +1043,7 @@ public class XtreamController : ControllerBase
         // Configure WebSocket with keep-alive
         var wsOptions = new WebSocketAcceptContext { KeepAliveInterval = TimeSpan.FromSeconds(30) };
         using var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync(wsOptions).ConfigureAwait(false);
-        _logger.LogDebug("WebSocket connection established for discovery progress");
+        _logger.LogDebugIfEnabled("WebSocket connection established for discovery progress");
 
         try
         {
@@ -1115,14 +1098,14 @@ public class XtreamController : ControllerBase
                 }
                 catch (WebSocketException)
                 {
-                    _logger.LogDebug("WebSocket send failed, connection may be closed");
+                    _logger.LogDebugIfEnabled("WebSocket send failed, connection may be closed");
                     break;
                 }
 
                 // Send heartbeat if no progress update for a while
                 if ((DateTime.UtcNow - lastProgressTime).TotalSeconds > HeartbeatIntervalSeconds)
                 {
-                    var heartbeat = "{\"type\":\"heartbeat\"}";
+                    const string heartbeat = "{\"type\":\"heartbeat\"}";
                     var heartbeatBytes = Encoding.UTF8.GetBytes(heartbeat);
                     try
                     {
@@ -1145,7 +1128,7 @@ public class XtreamController : ControllerBase
             // Send completion message
             if (webSocket.State == WebSocketState.Open && !cts.Token.IsCancellationRequested)
             {
-                var completeJson = "{\"Phase\":\"Complete\",\"Message\":\"Operation finished\"}";
+                const string completeJson = "{\"Phase\":\"Complete\",\"Message\":\"Operation finished\"}";
                 var completeBytes = Encoding.UTF8.GetBytes(completeJson);
                 try
                 {
@@ -1172,11 +1155,11 @@ public class XtreamController : ControllerBase
         }
         catch (OperationCanceledException)
         {
-            _logger.LogDebug("WebSocket connection cancelled");
+            _logger.LogDebugIfEnabled("WebSocket connection cancelled");
         }
         catch (WebSocketException ex)
         {
-            _logger.LogDebug(ex, "WebSocket error during discovery progress");
+            _logger.LogDebugIfEnabled(ex, "WebSocket error during discovery progress");
         }
     }
 
@@ -1243,35 +1226,34 @@ public class XtreamController : ControllerBase
     {
         var result = discoveryService.GetLastResult();
 
-        if (result == null)
-        {
-            return Ok(
-                new DiscoveryResponse
-                {
-                    Success = false,
-                    ErrorMessage = "No cached results available. Run a discovery first.",
-                }
-            );
-        }
-
-        return Ok(
-            new DiscoveryResponse
-            {
-                Success = result.Success,
-                ErrorMessage = result.ErrorMessage,
-                PagesProcessed = result.DiscoveryResult?.PagesProcessed ?? 0,
-                TotalCredentialsFound = result.DiscoveryResult?.Credentials.Count ?? 0,
-                TotalCredentialsTested = result.TestResults.Count,
-                WorkingProviderCount = result.WorkingProviders.Count,
-                WorkingWithEpgCount = result.WorkingWithEpgProviders.Count,
-                FullyWorkingCount = result.FullyWorkingProviders.Count,
-                ExcellentCount = result.ExcellentProviders.Count,
-                CountryCode = result.TestResults.FirstOrDefault()?.CountryCode,
-                WorkingProviders = result.WorkingProviders.Select(MapToDiscoveryResponse).ToList(),
-                FullyWorkingProviders = result.FullyWorkingProviders.Select(MapToDiscoveryResponse).ToList(),
-                ExcellentProviders = result.ExcellentProviders.Select(MapToDiscoveryResponse).ToList(),
-            }
-        );
+        return result == null
+            ? (ActionResult<DiscoveryResponse>)
+                Ok(
+                    new DiscoveryResponse
+                    {
+                        Success = false,
+                        ErrorMessage = "No cached results available. Run a discovery first.",
+                    }
+                )
+            : (ActionResult<DiscoveryResponse>)
+                Ok(
+                    new DiscoveryResponse
+                    {
+                        Success = result.Success,
+                        ErrorMessage = result.ErrorMessage,
+                        PagesProcessed = result.DiscoveryResult?.PagesProcessed ?? 0,
+                        TotalCredentialsFound = result.DiscoveryResult?.Credentials.Count ?? 0,
+                        TotalCredentialsTested = result.TestResults.Count,
+                        WorkingProviderCount = result.WorkingProviders.Count,
+                        WorkingWithEpgCount = result.WorkingWithEpgProviders.Count,
+                        FullyWorkingCount = result.FullyWorkingProviders.Count,
+                        ExcellentCount = result.ExcellentProviders.Count,
+                        CountryCode = result.TestResults.FirstOrDefault()?.CountryCode,
+                        WorkingProviders = [.. result.WorkingProviders.Select(MapToDiscoveryResponse)],
+                        FullyWorkingProviders = [.. result.FullyWorkingProviders.Select(MapToDiscoveryResponse)],
+                        ExcellentProviders = [.. result.ExcellentProviders.Select(MapToDiscoveryResponse)],
+                    }
+                );
     }
 
     /// <summary>
@@ -1326,7 +1308,7 @@ public class XtreamController : ControllerBase
         var config = Plugin.Instance.Configuration;
 
         // Check for duplicate
-        var existingProvider = config.Providers.FirstOrDefault(p =>
+        var existingProvider = config.Providers.Find(p =>
             p.BaseUrl.Contains(provider.Server, StringComparison.OrdinalIgnoreCase)
             && p.Username.Equals(provider.Username, StringComparison.OrdinalIgnoreCase)
         );
@@ -1485,8 +1467,8 @@ public class XtreamController : ControllerBase
         var response = new CopyChannelsResponse();
 
         // Validate providers
-        var sourceProvider = config.Providers.FirstOrDefault(p => p.Id == request.SourceProviderId);
-        var targetProvider = config.Providers.FirstOrDefault(p => p.Id == request.TargetProviderId);
+        var sourceProvider = config.Providers.Find(p => p.Id == request.SourceProviderId);
+        var targetProvider = config.Providers.Find(p => p.Id == request.TargetProviderId);
 
         if (sourceProvider == null)
         {
@@ -1507,7 +1489,7 @@ public class XtreamController : ControllerBase
         }
 
         // Get source provider's selected streams
-        var sourceSelections = sourceProvider.LiveTv ?? new SerializableDictionary<int, HashSet<int>>();
+        var sourceSelections = sourceProvider.LiveTv ?? [];
         if (sourceSelections.Count == 0)
         {
             response.Message = "Source provider has no channel selections";
@@ -1552,11 +1534,11 @@ public class XtreamController : ControllerBase
                     // Add to target selections (modify existing dictionary)
                     if (!targetSelections.TryGetValue(categoryId, out var categoryStreams))
                     {
-                        categoryStreams = new HashSet<int>();
+                        categoryStreams = [];
                         targetSelections[categoryId] = categoryStreams;
                     }
 
-                    categoryStreams.Add(targetStream.StreamId);
+                    _ = categoryStreams.Add(targetStream.StreamId);
 
                     matchedChannels.Add(
                         new MatchedChannelInfo
@@ -1574,7 +1556,7 @@ public class XtreamController : ControllerBase
                     // Track unmatched channels
                     var sourceName = sourceStream.Name ?? string.Empty;
                     unmatchedChannels.Add($"{sourceName} -> {matchResult.NormalizedName}");
-                    _logger.LogDebug(
+                    _logger.LogDebugIfEnabled(
                         "Channel copy: No match for '{SourceName}' (normalized: '{NormalizedName}')",
                         sourceName,
                         matchResult.NormalizedName
@@ -1684,10 +1666,8 @@ public class XtreamController : ControllerBase
     /// <returns>Log statistics.</returns>
     [Authorize(Policy = "RequiresElevation")]
     [HttpGet("Logs/Stats")]
-    public ActionResult<PluginLogStats> GetLogStats([FromServices] IPluginLogService logService)
-    {
-        return Ok(logService.GetStats());
-    }
+    public ActionResult<PluginLogStats> GetLogStats([FromServices] IPluginLogService logService) =>
+        Ok(logService.GetStats());
 
     /// <summary>
     /// Clear all log entries.
@@ -1711,7 +1691,7 @@ public class XtreamController : ControllerBase
     [HttpGet("ResilienceMetrics")]
     public ActionResult<object> GetResilienceMetrics()
     {
-        var states = _resilienceService.GetSnapshot();
+        var states = _failoverService.GetProviderStates();
         var config = Plugin.Instance.Configuration;
         var enabledProviders = config.GetEnabledProviders().ToList();
         var healthSummaries = _failoverService.GetHealthSummaries(enabledProviders);
@@ -1720,7 +1700,7 @@ public class XtreamController : ControllerBase
             .Select(kvp =>
             {
                 var provider = config.GetProvider(kvp.Key);
-                var perfMetrics = _metricsTracker.GetSnapshot(kvp.Key);
+                var perfMetrics = _failoverService.GetMetricsSnapshot(kvp.Key);
                 var healthSummary = healthSummaries.FirstOrDefault(h => h.ProviderId == kvp.Key);
 
                 return new
@@ -1782,7 +1762,7 @@ public class XtreamController : ControllerBase
                 {
                     totalProviders = providerMetrics.Count,
                     availableProviders = providerMetrics.Count(p => p.isAvailable),
-                    openCircuits = providerMetrics.Count(p => p.circuitState == "Open" || p.circuitState == "Isolated"),
+                    openCircuits = providerMetrics.Count(p => p.circuitState is "Open" or "Isolated"),
                     halfOpenCircuits = providerMetrics.Count(p => p.circuitState == "HalfOpen"),
                     healthyProviders = providerMetrics.Count(p => p.healthStatus == "Healthy"),
                     degradedProviders = providerMetrics.Count(p => p.healthStatus == "Degraded"),
@@ -1794,7 +1774,7 @@ public class XtreamController : ControllerBase
                     // Trend analysis summary
                     improvingProviders = providerMetrics.Count(p => p.trend.direction == "Improving"),
                     degradingProviders = providerMetrics.Count(p =>
-                        p.trend.direction == "Degrading" || p.trend.direction == "RapidlyDegrading"
+                        p.trend.direction is "Degrading" or "RapidlyDegrading"
                     ),
                     imminentFailures = providerMetrics.Count(p => p.trend.suggestsImminentFailure),
                 },
@@ -1826,7 +1806,7 @@ public class XtreamController : ControllerBase
             return NotFound(new { success = false, message = "Provider not found" });
         }
 
-        await _resilienceService.ResetCircuitAsync(providerId).ConfigureAwait(false);
+        await _failoverService.ResetCircuitAsync(providerId).ConfigureAwait(false);
         _logger.PluginLogInformation("Circuit breaker reset for provider {ProviderId}", providerId);
 
         return Ok(
@@ -1835,7 +1815,7 @@ public class XtreamController : ControllerBase
                 success = true,
                 message = $"Circuit breaker reset for provider {provider.Name}",
                 providerId,
-                newState = _resilienceService.GetCircuitState(providerId).ToString(),
+                newState = _failoverService.GetCircuitState(providerId).ToString(),
             }
         );
     }

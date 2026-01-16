@@ -36,7 +36,7 @@ namespace Jellyfin.Xtream.Service;
 /// <summary>
 /// A service for dealing with stream information.
 /// </summary>
-public partial class StreamService
+public static partial class StreamService
 {
     /// <summary>
     /// The id prefix for VOD category channel items.
@@ -110,13 +110,13 @@ public partial class StreamService
     public static ParsedName ParseName(string name)
     {
         List<string> tags = [];
-        string title = _tagRegex.Replace(
+        var title = _tagRegex.Replace(
             name,
             (match) =>
             {
-                for (int i = 1; i < match.Groups.Count; ++i)
+                for (var i = 1; i < match.Groups.Count; ++i)
                 {
-                    Group g = match.Groups[i];
+                    var g = match.Groups[i];
                     if (g.Success)
                     {
                         tags.Add(g.Value);
@@ -128,11 +128,11 @@ public partial class StreamService
         );
 
         // Tag prefixes separated by the a character in the unicode Block Elements range
-        int stripLength = 0;
-        for (int i = 0; i < title.Length; i++)
+        var stripLength = 0;
+        for (var i = 0; i < title.Length; i++)
         {
-            char c = title[i];
-            if (c >= '\u2580' && c <= '\u259F')
+            var c = title[i];
+            if (c is >= '\u2580' and <= '\u259F')
             {
                 tags.Add(title[stripLength..i].Trim());
                 stripLength = i + 1;
@@ -142,10 +142,8 @@ public partial class StreamService
         return new ParsedName { Title = title[stripLength..].Trim(), Tags = [.. tags] };
     }
 
-    private static bool IsConfigured(SerializableDictionary<int, HashSet<int>> config, int category, int id)
-    {
-        return config.TryGetValue(category, out var values) && (values.Count == 0 || values.Contains(id));
-    }
+    private static bool IsConfigured(SerializableDictionary<int, HashSet<int>> config, int category, int id) =>
+        config.TryGetValue(category, out var values) && (values.Count == 0 || values.Contains(id));
 
     /// <summary>
     /// Gets live streams for a specific provider.
@@ -158,12 +156,11 @@ public partial class StreamService
         CancellationToken cancellationToken
     )
     {
-        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        using var client = Plugin.Instance.CreateXtreamClient();
         return (
             await client.GetLiveStreamsAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
-        ).Where(
-            (StreamInfo channel) =>
-                channel.CategoryId.HasValue && IsConfigured(provider.LiveTv, channel.CategoryId.Value, channel.StreamId)
+        ).Where(channel =>
+            channel.CategoryId.HasValue && IsConfigured(provider.LiveTv, channel.CategoryId.Value, channel.StreamId)
         );
     }
 
@@ -180,7 +177,7 @@ public partial class StreamService
     {
         return (await GetLiveStreamsForProvider(provider, cancellationToken).ConfigureAwait(false)).Select(stream =>
         {
-            if (provider.LiveTvOverrides.TryGetValue(stream.StreamId, out ChannelOverrides? value))
+            if (provider.LiveTvOverrides.TryGetValue(stream.StreamId, out var value))
             {
                 stream.Num = value.Number ?? stream.Num;
                 stream.Name = value.Name ?? stream.Name;
@@ -199,23 +196,23 @@ public partial class StreamService
     /// <returns>All streams from all enabled providers with provider info.</returns>
     public static async Task<IEnumerable<ProviderStreamInfo>> GetAllLiveStreams(CancellationToken cancellationToken)
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        List<XtreamProvider> providers = config.GetEnabledProviders().ToList();
+        var config = Plugin.Instance.Configuration;
+        List<XtreamProvider> providers = [.. config.GetEnabledProviders()];
 
         if (providers.Count == 0)
         {
-            return Array.Empty<ProviderStreamInfo>();
+            return [];
         }
 
         if (providers.Count == 1)
         {
-            XtreamProvider provider = providers[0];
-            IEnumerable<StreamInfo> streams = await GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
+            var provider = providers[0];
+            var streams = await GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
                 .ConfigureAwait(false);
-            IList<StreamInfo> streamList = streams as IList<StreamInfo> ?? streams.ToList();
-            List<ProviderStreamInfo> result = new List<ProviderStreamInfo>(streamList.Count);
+            var streamList = streams as IList<StreamInfo> ?? [.. streams];
+            var result = new List<ProviderStreamInfo>(streamList.Count);
 
-            foreach (StreamInfo s in streamList)
+            foreach (var s in streamList)
             {
                 result.Add(new ProviderStreamInfo(provider, s));
             }
@@ -223,25 +220,25 @@ public partial class StreamService
             return result;
         }
 
-        Task<List<ProviderStreamInfo>>[] tasks = new Task<List<ProviderStreamInfo>>[providers.Count];
+        var tasks = new Task<List<ProviderStreamInfo>>[providers.Count];
 
-        for (int i = 0; i < providers.Count; i++)
+        for (var i = 0; i < providers.Count; i++)
         {
-            XtreamProvider provider = providers[i];
+            var provider = providers[i];
             tasks[i] = FetchProviderStreamsAsync(provider, cancellationToken);
         }
 
-        List<ProviderStreamInfo>[] results = await Task.WhenAll(tasks).ConfigureAwait(false);
-        int totalCount = 0;
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        var totalCount = 0;
 
-        foreach (List<ProviderStreamInfo> result in results)
+        foreach (var result in results)
         {
             totalCount += result.Count;
         }
 
-        List<ProviderStreamInfo> combined = new List<ProviderStreamInfo>(totalCount);
+        var combined = new List<ProviderStreamInfo>(totalCount);
 
-        foreach (List<ProviderStreamInfo> result in results)
+        foreach (var result in results)
         {
             combined.AddRange(result);
         }
@@ -256,12 +253,12 @@ public partial class StreamService
     {
         try
         {
-            IEnumerable<StreamInfo> streams = await GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
+            var streams = await GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
                 .ConfigureAwait(false);
-            IList<StreamInfo> streamList = streams as IList<StreamInfo> ?? streams.ToList();
-            List<ProviderStreamInfo> result = new List<ProviderStreamInfo>(streamList.Count);
+            var streamList = streams as IList<StreamInfo> ?? [.. streams];
+            var result = new List<ProviderStreamInfo>(streamList.Count);
 
-            foreach (StreamInfo s in streamList)
+            foreach (var s in streamList)
             {
                 result.Add(new ProviderStreamInfo(provider, s));
             }
@@ -291,12 +288,12 @@ public partial class StreamService
     /// <returns>A channel item representing the category.</returns>
     public static ChannelItemInfo CreateChannelItemInfo(int prefix, Category category)
     {
-        ParsedName parsedName = ParseName(category.CategoryName);
+        var parsedName = ParseName(category.CategoryName);
         return new ChannelItemInfo()
         {
             Id = ToGuid(prefix, category.CategoryId, 0, 0).ToString(),
             Name = category.CategoryName,
-            Tags = new List<string>(parsedName.Tags),
+            Tags = [.. parsedName.Tags],
             Type = ChannelItemType.Folder,
         };
     }
@@ -312,10 +309,10 @@ public partial class StreamService
         CancellationToken cancellationToken
     )
     {
-        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        using var client = Plugin.Instance.CreateXtreamClient();
         return (
             await client.GetVodCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
-        ).Where((Category category) => provider.Vod.ContainsKey(category.CategoryId));
+        ).Where(category => provider.Vod.ContainsKey(category.CategoryId));
     }
 
     /// <summary>
@@ -326,13 +323,13 @@ public partial class StreamService
     public static async Task<IEnumerable<ProviderCategory>> GetAllVodCategories(CancellationToken cancellationToken)
     {
         List<ProviderCategory> results = [];
-        PluginConfiguration config = Plugin.Instance.Configuration;
+        var config = Plugin.Instance.Configuration;
 
-        foreach (XtreamProvider provider in config.GetEnabledProviders())
+        foreach (var provider in config.GetEnabledProviders())
         {
             results.AddRange(
                 (await GetVodCategoriesForProvider(provider, cancellationToken).ConfigureAwait(false)).Select(
-                    (Category c) => new ProviderCategory(provider, c)
+                    c => new ProviderCategory(provider, c)
                 )
             );
         }
@@ -358,12 +355,12 @@ public partial class StreamService
             return [];
         }
 
-        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        using var client = Plugin.Instance.CreateXtreamClient();
         return (
             await client
                 .GetVodStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
                 .ConfigureAwait(false)
-        ).Where((StreamInfo stream) => IsConfigured(provider.Vod, categoryId, stream.StreamId));
+        ).Where(stream => IsConfigured(provider.Vod, categoryId, stream.StreamId));
     }
 
     /// <summary>
@@ -377,10 +374,10 @@ public partial class StreamService
         CancellationToken cancellationToken
     )
     {
-        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        using var client = Plugin.Instance.CreateXtreamClient();
         return (
             await client.GetSeriesCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
-        ).Where((Category category) => provider.Series.ContainsKey(category.CategoryId));
+        ).Where(category => provider.Series.ContainsKey(category.CategoryId));
     }
 
     /// <summary>
@@ -391,13 +388,13 @@ public partial class StreamService
     public static async Task<IEnumerable<ProviderCategory>> GetAllSeriesCategories(CancellationToken cancellationToken)
     {
         List<ProviderCategory> results = [];
-        PluginConfiguration config = Plugin.Instance.Configuration;
+        var config = Plugin.Instance.Configuration;
 
-        foreach (XtreamProvider provider in config.GetEnabledProviders())
+        foreach (var provider in config.GetEnabledProviders())
         {
             results.AddRange(
                 (await GetSeriesCategoriesForProvider(provider, cancellationToken).ConfigureAwait(false)).Select(
-                    (Category c) => new ProviderCategory(provider, c)
+                    c => new ProviderCategory(provider, c)
                 )
             );
         }
@@ -423,12 +420,12 @@ public partial class StreamService
             return [];
         }
 
-        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
+        using var client = Plugin.Instance.CreateXtreamClient();
         return (
             await client
                 .GetSeriesByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
                 .ConfigureAwait(false)
-        ).Where((Series s) => IsConfigured(provider.Series, s.CategoryId, s.SeriesId));
+        ).Where(s => IsConfigured(provider.Series, s.CategoryId, s.SeriesId));
     }
 
     /// <summary>
@@ -444,17 +441,14 @@ public partial class StreamService
         CancellationToken cancellationToken
     )
     {
-        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
-        SeriesStreamInfo series = await client
+        using var client = Plugin.Instance.CreateXtreamClient();
+        var series = await client
             .GetSeriesStreamsBySeriesAsync(provider.ToConnectionInfo(), seriesId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (!IsConfigured(provider.Series, series.Info.CategoryId, seriesId))
-        {
-            return [];
-        }
-
-        return series.Episodes.Keys.Select((int seasonId) => new Tuple<SeriesStreamInfo, int>(series, seasonId));
+        return !IsConfigured(provider.Series, series.Info.CategoryId, seriesId)
+            ? []
+            : series.Episodes.Keys.Select(seasonId => new Tuple<SeriesStreamInfo, int>(series, seasonId));
     }
 
     /// <summary>
@@ -472,14 +466,14 @@ public partial class StreamService
         CancellationToken cancellationToken
     )
     {
-        using XtreamClient client = Plugin.Instance.CreateXtreamClient();
-        SeriesStreamInfo series = await client
+        using var client = Plugin.Instance.CreateXtreamClient();
+        var series = await client
             .GetSeriesStreamsBySeriesAsync(provider.ToConnectionInfo(), seriesId, cancellationToken)
             .ConfigureAwait(false);
-        Season? season = series.Seasons.FirstOrDefault((Season s) => s.SeasonId == seasonId);
+        var season = series.Seasons.FirstOrDefault(s => s.SeasonId == seasonId);
         return series
             .Episodes[seasonId]
-            .Select((Episode episode) => new Tuple<SeriesStreamInfo, Season?, Episode>(series, season, episode));
+            .Select(episode => new Tuple<SeriesStreamInfo, Season?, Episode>(series, season, episode));
     }
 
     /// <summary>
@@ -495,9 +489,9 @@ public partial class StreamService
     {
         Span<byte> guidBytes = stackalloc byte[16];
         BinaryPrimitives.WriteInt32BigEndian(guidBytes, i0);
-        BinaryPrimitives.WriteInt32BigEndian(guidBytes.Slice(4), i1);
-        BinaryPrimitives.WriteInt32BigEndian(guidBytes.Slice(8), i2);
-        BinaryPrimitives.WriteInt32BigEndian(guidBytes.Slice(12), i3);
+        BinaryPrimitives.WriteInt32BigEndian(guidBytes[4..], i1);
+        BinaryPrimitives.WriteInt32BigEndian(guidBytes[8..], i2);
+        BinaryPrimitives.WriteInt32BigEndian(guidBytes[12..], i3);
         return new Guid(guidBytes);
     }
 
@@ -509,10 +503,8 @@ public partial class StreamService
     /// <param name="provider">The provider this stream belongs to.</param>
     /// <param name="streamId">The stream ID from the provider.</param>
     /// <returns>A unique GUID combining provider and stream information.</returns>
-    public static Guid ToProviderGuid(int prefix, XtreamProvider provider, int streamId)
-    {
-        return ToGuid(prefix, streamId, provider.GetIdHash(), 0);
-    }
+    public static Guid ToProviderGuid(int prefix, XtreamProvider provider, int streamId) =>
+        ToGuid(prefix, streamId, provider.GetIdHash(), 0);
 
     /// <summary>
     /// Gets the four 32-bit integers represented in the GUID.
@@ -535,17 +527,17 @@ public partial class StreamService
         if (BitConverter.IsLittleEndian)
         {
             guidBytes.Reverse();
-            i0 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes.Slice(12));
-            i1 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes.Slice(8));
-            i2 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes.Slice(4));
+            i0 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes[12..]);
+            i1 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes[8..]);
+            i2 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes[4..]);
             i3 = BinaryPrimitives.ReadInt32LittleEndian(guidBytes);
         }
         else
         {
             i0 = BinaryPrimitives.ReadInt32BigEndian(guidBytes);
-            i1 = BinaryPrimitives.ReadInt32BigEndian(guidBytes.Slice(4));
-            i2 = BinaryPrimitives.ReadInt32BigEndian(guidBytes.Slice(8));
-            i3 = BinaryPrimitives.ReadInt32BigEndian(guidBytes.Slice(12));
+            i1 = BinaryPrimitives.ReadInt32BigEndian(guidBytes[4..]);
+            i2 = BinaryPrimitives.ReadInt32BigEndian(guidBytes[8..]);
+            i3 = BinaryPrimitives.ReadInt32BigEndian(guidBytes[12..]);
         }
     }
 
@@ -557,12 +549,12 @@ public partial class StreamService
     public static ParsedStreamId ParseProviderGuid(Guid id)
     {
         FromGuid(id, out var prefix, out var streamId, out var providerHash, out _);
-        PluginConfiguration? config = Plugin.Instance?.Configuration;
-        string providerId = string.Empty;
+        var config = Plugin.Instance?.Configuration;
+        var providerId = string.Empty;
 
         if (config != null)
         {
-            foreach (XtreamProvider provider in config.Providers)
+            foreach (var provider in config.Providers)
             {
                 if (provider.GetIdHash() == providerHash)
                 {
@@ -583,14 +575,14 @@ public partial class StreamService
     public static XtreamProvider? FindProviderForGuid(Guid id)
     {
         FromGuid(id, out _, out _, out var providerHash, out _);
-        PluginConfiguration? config = Plugin.Instance?.Configuration;
+        var config = Plugin.Instance?.Configuration;
 
         if (config == null)
         {
             return null;
         }
 
-        foreach (XtreamProvider provider in config.Providers)
+        foreach (var provider in config.Providers)
         {
             if (provider.GetIdHash() == providerHash)
             {
@@ -606,15 +598,8 @@ public partial class StreamService
     /// </summary>
     /// <param name="guidString">The GUID string to parse.</param>
     /// <returns>The matching provider, or null if not found or invalid GUID.</returns>
-    public static XtreamProvider? FindProviderForGuid(string guidString)
-    {
-        if (Guid.TryParse(guidString, out var guid))
-        {
-            return FindProviderForGuid(guid);
-        }
-
-        return null;
-    }
+    public static XtreamProvider? FindProviderForGuid(string guidString) =>
+        Guid.TryParse(guidString, out var guid) ? FindProviderForGuid(guid) : null;
 
     /// <summary>
     /// Gets the media source information for the given Xtream stream.
@@ -630,7 +615,7 @@ public partial class StreamService
     /// <param name="videoInfo">The Xtream video info if known.</param>
     /// <param name="audioInfo">The Xtream audio info if known.</param>
     /// <returns>The media source info as <see cref="MediaSourceInfo"/> class.</returns>
-    public MediaSourceInfo GetMediaSourceInfo(
+    public static MediaSourceInfo GetMediaSourceInfo(
         XtreamProvider provider,
         StreamType type,
         int id,
@@ -643,7 +628,7 @@ public partial class StreamService
         AudioInfo? audioInfo = null
     )
     {
-        string pathPrefix = string.Empty;
+        var pathPrefix = string.Empty;
 
         switch (type)
         {
@@ -658,7 +643,7 @@ public partial class StreamService
                 break;
         }
 
-        string uri = $"{provider.BaseUrl}{pathPrefix}/{provider.Username}/{provider.Password}/{id}";
+        var uri = $"{provider.BaseUrl}{pathPrefix}/{provider.Username}/{provider.Password}/{id}";
 
         if (!string.IsNullOrEmpty(extension))
         {
@@ -667,12 +652,18 @@ public partial class StreamService
 
         if (type == StreamType.CatchUp)
         {
-            string? startString = start?.ToString("yyyy'-'MM'-'dd':'HH'-'mm", CultureInfo.InvariantCulture);
+            var startString = start?.ToString("yyyy'-'MM'-'dd':'HH'-'mm", CultureInfo.InvariantCulture);
             uri =
                 $"{provider.BaseUrl}/streaming/timeshift.php?username={provider.Username}&password={provider.Password}&stream={id}&start={startString}&duration={durationMinutes}";
         }
 
-        bool isLive = type == StreamType.Live;
+        var isLive = type == StreamType.Live;
+
+        // Check if ForceRemux is enabled for live streams
+        // When enabled, disable direct play/stream to force Jellyfin to use FFmpeg remuxing
+        // This fixes audio desync, SPS/PPS issues, and discontinuity handling
+        var config = Plugin.Instance.Configuration;
+        var forceRemux = isLive && config.ForceRemux;
 
         return new MediaSourceInfo()
         {
@@ -719,14 +710,48 @@ public partial class StreamService
             Protocol = MediaProtocol.Http,
             RequiresClosing = restream,
             RequiresOpening = restream,
-            SupportsDirectPlay = true,
-            SupportsDirectStream = true,
+
+            // When ForceRemux is enabled, disable direct play/stream to force FFmpeg remuxing
+            // FFmpeg will properly handle SPS/PPS injection and audio sync after discontinuities
+            SupportsDirectPlay = !forceRemux,
+            SupportsDirectStream = !forceRemux,
             SupportsProbing = true,
             SupportsTranscoding = true,
             TranscodingContainer = extension,
             TranscodingUrl = uri,
-            AnalyzeDurationMs = 0,
             ReadAtNativeFramerate = false,
+
+            // === IPTV Stream Timestamp & Discontinuity Handling ===
+            // These settings configure FFmpeg to properly handle the timestamp discontinuities
+            // that occur frequently in IPTV streams due to:
+            // - Provider connection drops/reconnections (every ~10-30 seconds for some providers)
+            // - Provider switching during failover
+            // - Source stream discontinuities
+            //
+            // Without these, symptoms include:
+            // - Playback jumping/skipping after reconnections
+            // - Audio desync accumulating over time
+            // - "Non-monotonic DTS" warnings in FFmpeg logs
+            // - HLS segment timing issues
+
+            // GenPtsInput (-fflags +genpts): Generate missing PTS from DTS.
+            // Essential for codec copy mode where FFmpeg decoder is bypassed.
+            // Without this, streams lacking proper PTS data won't play.
+            // See: https://github.com/jellyfin/jellyfin/pull/977
+            GenPtsInput = isLive,
+
+            // IgnoreDts (-fflags +igndts): Ignore DTS when PTS is available.
+            // IPTV streams often have inconsistent DTS after reconnections that can
+            // cause "Non-monotonic DTS" errors. When PTS is available (which genpts
+            // ensures), we can safely ignore the potentially corrupted DTS.
+            // See: https://github.com/jellyfin/jellyfin/issues/13301
+            IgnoreDts = isLive,
+
+            // AnalyzeDurationMs: Time FFmpeg spends analyzing the stream format.
+            // For live IPTV, we want quick startup but enough analysis to detect
+            // all streams. 3000ms matches Jellyfin's default for live TV probing.
+            // Setting to 0 uses FFmpeg default which can cause slow startup.
+            AnalyzeDurationMs = isLive ? 3000 : 0,
         };
     }
 
@@ -736,29 +761,27 @@ public partial class StreamService
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A map of channels to their providers, supporting failover.</returns>
-    public static async Task<ChannelProviderMap> GetDeduplicatedChannelMap(CancellationToken cancellationToken)
-    {
-        return ChannelProviderMap.Build(await GetAllLiveStreams(cancellationToken).ConfigureAwait(false));
-    }
+    public static async Task<ChannelProviderMap> GetDeduplicatedChannelMap(CancellationToken cancellationToken) =>
+        ChannelProviderMap.Build(await GetAllLiveStreams(cancellationToken).ConfigureAwait(false));
 
     /// <summary>
     /// Gets all live streams with channel deduplication and health-aware provider ordering.
     /// Channels with the same name are merged. Providers are sorted by a combination of
     /// stream quality and provider health (success rate, capacity, circuit state).
     /// </summary>
-    /// <param name="resilienceService">Resilience service for health-aware sorting and filtering.</param>
+    /// <param name="failoverService">Failover service for health-aware sorting and filtering.</param>
     /// <param name="filterByCapacity">When true, channels with no providers having capacity are filtered out.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A map of channels to their providers, supporting failover.</returns>
     public static async Task<ChannelProviderMap> GetDeduplicatedChannelMap(
-        IProviderAvailabilityService? resilienceService,
+        IAutomaticFailoverService? failoverService,
         bool filterByCapacity,
         CancellationToken cancellationToken
     )
     {
         return ChannelProviderMap.Build(
             await GetAllLiveStreams(cancellationToken).ConfigureAwait(false),
-            resilienceService,
+            failoverService,
             filterByCapacity
         );
     }

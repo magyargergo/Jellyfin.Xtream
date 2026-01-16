@@ -38,10 +38,11 @@ public static partial class NormalizationPatterns
     /// Matches video quality and resolution indicators.
     /// Examples: "HD", "FHD", "4K", "4K+", "UHD", "1080p", "720i", "H.264", "HEVC".
     /// Also matches multi-language indicators like "MULTI" and quality variations.
+    /// Uses NonBacktracking mode to prevent catastrophic backtracking with Unicode characters.
     /// </summary>
     [GeneratedRegex(
         @"\b(HD|FHD|SD|4K\+?|8K|UHD|HEVC|H\.?265|H\.?264|1080[PI]?|720[PI]?|480[PI]?|576[PI]?|2160[PI]?|MULTI|DUAL|AAC|AC3|DTS|DOLBY|ATMOS)\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
         matchTimeoutMilliseconds: 100
     )]
     public static partial Regex QualityIndicatorPattern();
@@ -79,10 +80,11 @@ public static partial class NormalizationPatterns
     /// Matches additional noise patterns commonly found in IPTV channel names.
     /// Includes: NEW, VIP, PREMIUM, MULTI, AUDIO, DUBBED, SUBBED, ORIGINAL, OV, VO, VOST, PPV, EVENT, SPECIAL, PROMO, TEST, DEMO, SAMPLE.
     /// Also matches bracketed content [text], parenthesized content (text), hash numbers #123, and trailing colons.
+    /// Uses NonBacktracking mode to prevent catastrophic backtracking with Unicode characters.
     /// </summary>
     [GeneratedRegex(
-        @"\b(NEW|VIP|PREMIUM|MULTI|AUDIO|DUBBED|SUBBED|ORIGINAL|OV|VO|VOST|PPV|EVENT|SPECIAL|PROMO|TEST|DEMO|SAMPLE)\b|\[.*?\]|\(.*?\)|#\d+|:\s*$",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        @"\b(NEW|VIP|PREMIUM|MULTI|AUDIO|DUBBED|SUBBED|ORIGINAL|OV|VO|VOST|PPV|EVENT|SPECIAL|PROMO|TEST|DEMO|SAMPLE)\b|\[[^\]]*\]|\([^)]*\)|#\d+|:\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
         matchTimeoutMilliseconds: 100
     )]
     public static partial Regex AdditionalNoisePattern();
@@ -118,7 +120,7 @@ public static partial class NormalizationPatterns
         }
 
         // Find which capture group matched (groups 1-5 for different formats)
-        for (int i = 1; i <= 5; i++)
+        for (var i = 1; i <= 5; i++)
         {
             if (match.Groups[i].Success)
             {

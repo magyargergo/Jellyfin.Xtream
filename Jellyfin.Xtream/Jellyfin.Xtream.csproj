@@ -12,6 +12,13 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <!-- Expose internals to test and benchmark projects -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Jellyfin.Xtream.Tests" />
+    <InternalsVisibleTo Include="Jellyfin.Xtream.Benchmarks" />
+    <InternalsVisibleTo Include="TestStreamAnalyzer" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Jellyfin references - these are provided by the host, do not copy -->
     <PackageReference Include="AngleSharp" Version="1.4.0" />
@@ -25,6 +32,8 @@
     </PackageReference>
 
     <!-- Dependencies that must be copied with the plugin -->
+    <PackageReference Include="FFmpeg.AutoGen.Abstractions" Version="7.0.0" />
+    <PackageReference Include="FFmpeg.AutoGen.Bindings.DynamicallyLoaded" Version="7.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Polly" Version="8.5.2" />
     <PackageReference Include="Polly.Core" Version="8.5.2" />
