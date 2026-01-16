@@ -127,6 +127,17 @@ public static class Program
         Console.WriteLine("    - GetSnapshot and GetAllSnapshots");
         Console.WriteLine("    - Combined health analysis");
         Console.WriteLine();
+        Console.WriteLine("12. FFmpegPipelineBenchmarks");
+        Console.WriteLine("    - Output callback allocation (new vs ArrayPool)");
+        Console.WriteLine("    - Output queue operations and collection");
+        Console.WriteLine("    - Timestamp conversion throughput");
+        Console.WriteLine("    - Simulated pipeline hot path (100/500 packets)");
+        Console.WriteLine();
+        Console.WriteLine("13. NativeInteropBenchmarks");
+        Console.WriteLine("    - Marshal.Copy vs Unsafe.CopyBlockUnaligned");
+        Console.WriteLine("    - Wrap-around copy patterns");
+        Console.WriteLine("    - Various buffer sizes (64B to 256KB)");
+        Console.WriteLine();
         Console.WriteLine("Usage Examples:");
         Console.WriteLine("---------------");
         Console.WriteLine("  dotnet run -c Release                              # Run all benchmarks");
@@ -138,6 +149,8 @@ public static class Program
         Console.WriteLine("  dotnet run -c Release -- --filter *TR101290*       # Run TR 101 290 benchmarks");
         Console.WriteLine("  dotnet run -c Release -- --filter *Provider*       # Run provider selection benchmarks");
         Console.WriteLine("  dotnet run -c Release -- --filter *Health*         # Run health tracking benchmarks");
+        Console.WriteLine("  dotnet run -c Release -- --filter *FFmpeg*         # Run FFmpeg pipeline benchmarks");
+        Console.WriteLine("  dotnet run -c Release -- --filter *NativeInterop*  # Run native interop benchmarks");
         Console.WriteLine("  dotnet run -c Release -- --quick                   # Quick smoke test");
         Console.WriteLine("  dotnet run -c Release -- --quick Circular          # Quick test specific category");
     }

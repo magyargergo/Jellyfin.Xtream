@@ -16,7 +16,9 @@
 using System;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
-using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.MpegTs.Core;
+using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
+using Jellyfin.Xtream.Service.MpegTs.Models;
 
 namespace Jellyfin.Xtream.Benchmarks;
 
@@ -144,17 +146,6 @@ public class TsIndexerBenchmarks
     {
         _ = _indexer!.GetFirstProgramWithVideo();
         return _indexer.GetFirstProgramWithVideo();
-    }
-
-    /// <summary>
-    /// Benchmark: GetDiagnostics (optimized - no LINQ allocations).
-    /// Tests string building performance for monitoring/logging.
-    /// </summary>
-    /// <returns></returns>
-    [Benchmark]
-    public string GetDiagnostics()
-    {
-        return _indexer!.GetDiagnostics();
     }
 
     /// <summary>
@@ -289,18 +280,6 @@ public class TsIndexerBenchmarks
     // ========================================
 
     /// <summary>
-    /// Benchmark: Stream diagnostics generation (TR 101 290 metrics).
-    /// Tests formatted output for monitoring dashboards.
-    /// </summary>
-    [Benchmark]
-    public string TR101290_GetDiagnostics_AfterProcessing()
-    {
-        var indexer = new TsIndexer(BufferSize);
-        indexer.ProcessChunk(_mediumChunk!, 0);
-        return indexer.GetDiagnostics();
-    }
-
-    /// <summary>
     /// Benchmark: Access quality monitoring properties.
     /// Tests the overhead of ITsQualityMonitor interface.
     /// </summary>
@@ -428,7 +407,7 @@ public class TsIndexerBenchmarks
         return (
             indexer.TotalPacketsParsed,
             indexer.TotalContinuityErrors + indexer.TotalPacketErrors,
-            indexer.GetDiagnostics()
+            indexer.SyncRecoveries.ToString()
         );
     }
 

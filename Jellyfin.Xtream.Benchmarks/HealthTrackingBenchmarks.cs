@@ -17,7 +17,7 @@ using System;
 using System.Collections.Generic;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
-using Jellyfin.Xtream.Service;
+using Jellyfin.Xtream.Service.ProviderManagement;
 
 namespace Jellyfin.Xtream.Benchmarks;
 

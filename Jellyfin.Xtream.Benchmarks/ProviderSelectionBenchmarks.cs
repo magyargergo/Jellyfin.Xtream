@@ -16,11 +16,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
+using Jellyfin.Xtream.Service.ProviderManagement;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Jellyfin.Xtream.Benchmarks;
@@ -33,8 +36,9 @@ namespace Jellyfin.Xtream.Benchmarks;
 [MemoryDiagnoser]
 public class ProviderSelectionBenchmarks
 {
-    private ProviderResilienceService _resilienceService = null!;
+    private ProviderAvailabilityService _availabilityService = null!;
     private ProviderMetricsTracker _metricsTracker = null!;
+    private HealthTrendTracker _trendTracker = null!;
     private AutomaticFailoverService _failoverService = null!;
     private List<ProviderStreamInfo> _providers5 = null!;
     private List<ProviderStreamInfo> _providers10 = null!;
@@ -47,17 +51,19 @@ public class ProviderSelectionBenchmarks
     [GlobalSetup]
     public void Setup()
     {
-        _resilienceService = new ProviderResilienceService(
-            NullLogger<ProviderResilienceService>.Instance,
-            null,
-            () => null
-        );
+        var httpClientFactory = new NullHttpClientFactory();
+        var loggerFactory = NullLoggerFactory.Instance;
+        var configProvider = new PluginConfigurationProvider();
+
+        _availabilityService = new ProviderAvailabilityService(httpClientFactory, loggerFactory, null, configProvider);
         _metricsTracker = new ProviderMetricsTracker();
+        _trendTracker = new HealthTrendTracker();
         _failoverService = new AutomaticFailoverService(
-            _resilienceService,
+            _availabilityService,
             _metricsTracker,
+            _trendTracker,
             NullLogger<AutomaticFailoverService>.Instance,
-            () => null
+            configProvider
         );
 
         _providers5 = CreateProviders(5);
@@ -73,7 +79,7 @@ public class ProviderSelectionBenchmarks
             // Record some successes and failures to create realistic state
             for (int i = 0; i < 5; i++)
             {
-                _resilienceService.RecordSuccess(id);
+                _availabilityService.RecordSuccess(id);
             }
 
             // Record some metrics
@@ -81,7 +87,7 @@ public class ProviderSelectionBenchmarks
             _metricsTracker.RecordThroughput(id, 1024 * 1024, 1000);
 
             // Update capacity
-            _resilienceService.UpdateCapacity(id, Random.Shared.Next(1, 5), 5);
+            _availabilityService.UpdateCapacity(id, Random.Shared.Next(1, 5), 5);
         }
     }
 
@@ -115,12 +121,20 @@ public class ProviderSelectionBenchmarks
     }
 
     /// <summary>
+    /// Null HTTP client factory for benchmarks.
+    /// </summary>
+    private sealed class NullHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
+    }
+
+    /// <summary>
     /// Benchmark: Get selection score for a single provider.
     /// </summary>
     [Benchmark(Baseline = true)]
     public int GetSelectionScore_Single()
     {
-        return _resilienceService.GetSelectionScore(_providerIds[0]);
+        return _availabilityService.GetSelectionScore(_providerIds[0]);
     }
 
     /// <summary>
@@ -132,7 +146,7 @@ public class ProviderSelectionBenchmarks
         int total = 0;
         for (int i = 0; i < 5; i++)
         {
-            total += _resilienceService.GetSelectionScore(_providerIds[i]);
+            total += _availabilityService.GetSelectionScore(_providerIds[i]);
         }
 
         return total;
@@ -147,7 +161,7 @@ public class ProviderSelectionBenchmarks
         int total = 0;
         for (int i = 0; i < 20; i++)
         {
-            total += _resilienceService.GetSelectionScore(_providerIds[i]);
+            total += _availabilityService.GetSelectionScore(_providerIds[i]);
         }
 
         return total;
@@ -159,7 +173,7 @@ public class ProviderSelectionBenchmarks
     [Benchmark]
     public IReadOnlyList<ProviderStreamInfo> GetSortedProviders_5()
     {
-        return _resilienceService.GetSortedProviders(_providers5);
+        return _availabilityService.GetSortedProviders(_providers5);
     }
 
     /// <summary>
@@ -168,7 +182,7 @@ public class ProviderSelectionBenchmarks
     [Benchmark]
     public IReadOnlyList<ProviderStreamInfo> GetSortedProviders_10()
     {
-        return _resilienceService.GetSortedProviders(_providers10);
+        return _availabilityService.GetSortedProviders(_providers10);
     }
 
     /// <summary>
@@ -177,7 +191,7 @@ public class ProviderSelectionBenchmarks
     [Benchmark]
     public IReadOnlyList<ProviderStreamInfo> GetSortedProviders_20()
     {
-        return _resilienceService.GetSortedProviders(_providers20);
+        return _availabilityService.GetSortedProviders(_providers20);
     }
 
     /// <summary>
@@ -213,7 +227,7 @@ public class ProviderSelectionBenchmarks
     [Benchmark]
     public bool IsAvailable_Single()
     {
-        return _resilienceService.IsAvailable(_providerIds[0]);
+        return _availabilityService.IsAvailable(_providerIds[0]);
     }
 
     /// <summary>
@@ -225,7 +239,7 @@ public class ProviderSelectionBenchmarks
         int available = 0;
         for (int i = 0; i < 20; i++)
         {
-            if (_resilienceService.IsAvailable(_providerIds[i]))
+            if (_availabilityService.IsAvailable(_providerIds[i]))
             {
                 available++;
             }
@@ -265,24 +279,6 @@ public class ProviderSelectionBenchmarks
     }
 
     /// <summary>
-    /// Benchmark: Should switch provider decision for 5 providers.
-    /// </summary>
-    [Benchmark]
-    public ProviderStreamInfo? ShouldSwitch_5Providers()
-    {
-        return _failoverService.ShouldSwitchProvider(_providerIds[0], _providers5);
-    }
-
-    /// <summary>
-    /// Benchmark: Should switch provider decision for 20 providers.
-    /// </summary>
-    [Benchmark]
-    public ProviderStreamInfo? ShouldSwitch_20Providers()
-    {
-        return _failoverService.ShouldSwitchProvider(_providerIds[0], _providers20);
-    }
-
-    /// <summary>
     /// Benchmark: Calculate metrics health score for a single provider.
     /// </summary>
     [Benchmark]
@@ -312,7 +308,7 @@ public class ProviderSelectionBenchmarks
     [Benchmark]
     public IReadOnlyDictionary<string, ProviderResilienceState> GetSnapshot()
     {
-        return _resilienceService.GetSnapshot();
+        return _availabilityService.GetSnapshot();
     }
 
     /// <summary>
@@ -330,7 +326,7 @@ public class ProviderSelectionBenchmarks
     [Benchmark]
     public bool HasCapacity_Single()
     {
-        return _resilienceService.HasCapacity(_providerIds[0]);
+        return _availabilityService.HasCapacity(_providerIds[0]);
     }
 
     /// <summary>
@@ -342,7 +338,7 @@ public class ProviderSelectionBenchmarks
         int count = 0;
         for (int i = 0; i < 20; i++)
         {
-            if (_resilienceService.HasCapacity(_providerIds[i]))
+            if (_availabilityService.HasCapacity(_providerIds[i]))
             {
                 count++;
             }

@@ -16,7 +16,10 @@
 using System;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
-using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.MpegTs.Core;
+using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
+using Jellyfin.Xtream.Service.MpegTs.Models;
+using Jellyfin.Xtream.Service.MpegTs.Parsing;
 
 namespace Jellyfin.Xtream.Benchmarks;
 
@@ -109,16 +112,6 @@ public class MpegTsParserBenchmarks
     }
 
     /// <summary>
-    /// Benchmark: Extract both PTS and DTS.
-    /// </summary>
-    /// <returns></returns>
-    [Benchmark(Description = "PesParser.TryExtractTimestamps")]
-    public bool PesParser_TryExtractTimestamps()
-    {
-        return PesParser.TryExtractTimestamps(_videoPacketWithPts, out _, out _);
-    }
-
-    /// <summary>
     /// Benchmark: Stream type classification.
     /// </summary>
     /// <returns></returns>
@@ -126,16 +119,6 @@ public class MpegTsParserBenchmarks
     public bool PesParser_IsVideoStream()
     {
         return PesParser.IsVideoStream(0xE0);
-    }
-
-    /// <summary>
-    /// Benchmark: Get PES header length.
-    /// </summary>
-    /// <returns></returns>
-    [Benchmark(Description = "PesParser.GetPesHeaderLength")]
-    public int PesParser_GetPesHeaderLength()
-    {
-        return PesParser.GetPesHeaderLength(_videoPacketWithPts);
     }
 
     /// <summary>
