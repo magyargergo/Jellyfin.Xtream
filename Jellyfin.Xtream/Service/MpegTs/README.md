@@ -8,12 +8,13 @@ Production-grade MPEG-TS parser that indexes video keyframes (I-frames) in real-
 ### **Industry-Grade Solution**
 - **Multi-Program Support (MPTS)**: Full support for streams with multiple programs, each with independent keyframe tracking
 - **Packet Reassembly**: Handles TCP fragmentation correctly (critical for real-world networks)
-- **Lock-Free Design**: Zero lock contention using `ConcurrentQueue` and atomic operations
+- **Lock-Free Design**: Zero lock contention using fixed-size ring buffers and atomic operations
 - **SIMD Optimization**: Hardware-accelerated sync byte search (AVX-512/AVX2/SSE2) for 10-40x faster recovery
-- **Zero-Allocation**: Hot paths avoid GC pressure through caching and manual enumeration
+- **Zero-Allocation**: Hot paths avoid GC pressure through fixed-size ring buffers, caching, and unsafe pointer arithmetic
 - **Robust Parsing**: Comprehensive bounds checking and SIMD-accelerated sync recovery
-- **TR 101 290 Compliance**: Stream quality monitoring including PCR jitter, continuity errors, and transport errors
-- **A/V Sync Tracking**: Real-time audio/video drift detection with configurable thresholds
+- **TR 101 290 Compliance**: Stream quality monitoring including PCR jitter (±500ns threshold), continuity errors, and transport errors
+- **A/V Sync Tracking**: Real-time audio/video drift detection with reconnection-aware offset validation
+- **FFmpeg-Compatible**: Stream type classification and codec detection aligned with FFmpeg mpegts.h
 
 ### **Solves "Sound But No Video" Problem**
 When clients connect mid-stream, the indexer ensures they start at a video keyframe (I-frame), guaranteeing immediate video playback instead of waiting 2-5 seconds for the next GOP.
@@ -102,12 +103,12 @@ double driftMs = indexer.GetCurrentDriftMs(programNumber: 2);
 // Check if video PID detected
 if (!writeStream.TsIndexer.HasVideoPid())
 {
-    logger.LogWarning("Video PID not detected - may be audio-only stream");
+    logger.PluginLogWarning("Video PID not detected - may be audio-only stream");
 }
 
 // Get comprehensive diagnostics
 string diagnostics = writeStream.TsIndexer.GetDiagnostics();
-logger.LogInformation(diagnostics);
+logger.PluginLogInformation(diagnostics);
 
 // Output:
 // TS Indexer Diagnostics:
@@ -134,11 +135,11 @@ logger.LogInformation(diagnostics);
 
 // Subscribe to stream quality events
 indexer.StreamQualityViolation += (sender, e) => {
-    logger.LogWarning("Stream quality issue: {Type} - {Details}", e.ViolationType, e.Details);
+    logger.PluginLogWarning("Stream quality issue: {Type} - {Details}", e.ViolationType, e.Details);
 };
 
 indexer.SyncDriftDetected += (sender, e) => {
-    logger.LogWarning("A/V drift detected: {DriftMs}ms, Status: {Status}", e.DriftMs, e.Status);
+    logger.PluginLogWarning("A/V drift detected: {DriftMs}ms, Status: {Status}", e.DriftMs, e.Status);
 };
 ```
 
@@ -148,11 +149,14 @@ indexer.SyncDriftDetected += (sender, e) => {
 Production-grade optimizations achieving **95-98% of native C/C++ performance**:
 
 - **SIMD-Accelerated Sync Recovery**: AVX-512 (64 bytes), AVX2 (32 bytes), SSE2 (16 bytes) per iteration
-- **Zero-Allocation Hot Paths**: Eliminated LINQ allocations via caching and manual enumeration
-- **Lookup Table Stream Detection**: O(1) stream type detection vs O(n) comparisons
-- **Aggressive JIT Optimization**: `AggressiveInlining` and `AggressiveOptimization` on critical methods
+- **Unsafe Pointer Arithmetic**: `MemoryMarshal.GetReference` + `Unsafe.Add` for bounds-check elimination
+- **32-bit Start Code Detection**: Single `uint` comparison replaces 3-byte checks for MPEG start codes
+- **Fixed-Size Ring Buffers**: Zero-allocation jitter tracking with O(1) insertion
+- **Lookup Table Stream Detection**: O(1) stream type and audio codec classification
+- **Branchless Stream ID Checks**: Unsigned subtraction range checks for PES header parsing
 - **Cache-Line Padding**: Prevents false sharing between reader/writer threads
 - **Power-of-2 Buffer Optimization**: Bitwise AND instead of modulo for position calculation
+- **Aggressive JIT Optimization**: `AggressiveInlining` on all critical path methods
 
 ### Performance Metrics
 
@@ -168,17 +172,30 @@ Production-grade optimizations achieving **95-98% of native C/C++ performance**:
 
 ## Supported Codecs
 
+Per ISO/IEC 13818-1 and FFmpeg mpegts.h:
+
 ### Video
 - **H.264 / AVC** (stream_type 0x1B)
 - **HEVC / H.265** (stream_type 0x24)
+- **VVC / H.266** (stream_type 0x33)
 - **MPEG-2 Video** (stream_type 0x02)
 - **MPEG-1 Video** (stream_type 0x01)
+- **MPEG-4 Visual** (stream_type 0x10)
+- **JPEG-XS** (stream_type 0x32)
+- **VC-1** (stream_type 0xEA)
+- **AVS Video** (stream_type 0x42)
+- **AVS2 Video** (stream_type 0xD2)
+- **AVS3 Video** (stream_type 0xD4)
+- **DIRAC** (stream_type 0xD1)
 
 ### Audio
 - **AAC ADTS** (stream_type 0x0F)
 - **AAC LATM** (stream_type 0x11)
 - **AC-3 / Dolby Digital** (stream_type 0x81)
 - **E-AC-3 / Dolby Digital Plus** (stream_type 0x84, 0x87)
+- **DTS** (stream_type 0x82)
+- **DTS-HD** (stream_type 0x85, 0x86)
+- **Dolby TrueHD** (stream_type 0x83)
 - **MPEG-1 Audio** (stream_type 0x03)
 - **MPEG-2 Audio** (stream_type 0x04)
 
@@ -201,12 +218,14 @@ Real-time drift detection between audio and video PTS:
 | Status | Description | Action |
 |--------|-------------|--------|
 | Unknown | Not enough data yet | Waiting for samples |
-| Synchronized | Within ±40ms | Normal operation |
+| Synchronized | Within ±20ms (EBU R37) | Normal operation |
 | AudioAhead | Audio leads video | Lipsync issue detected |
 | AudioBehind | Video leads audio | Lipsync issue detected |
 | Drifting | Clock mismatch accumulating | Warning logged, Discord notification |
 | NoAudio | No audio stream | Audio-only detection |
 | NoVideo | No video stream | Video-only detection |
+
+**Reconnection-Aware Drift Detection**: After HTTP reconnections, the drift calculator validates that both audio and video PTS samples are from the same stream segment (within 2MB offset). This prevents false drift readings caused by comparing pre-reconnection PTS with post-reconnection PTS values.
 
 ## Troubleshooting
 
@@ -228,7 +247,7 @@ if (indexer.GetKeyframeCount() == 0 && indexer.TotalPacketsParsed > 1000)
 if (indexer.ResyncCount > indexer.TotalPacketsParsed / 100)
 {
     // More than 1% resync = stream quality issue
-    logger.LogWarning("High packet corruption detected - check network/source");
+    logger.PluginLogWarning("High packet corruption detected - check network/source");
 }
 ```
 
@@ -237,7 +256,7 @@ if (indexer.ResyncCount > indexer.TotalPacketsParsed / 100)
 if (indexer.TotalContinuityErrors > indexer.TotalPacketsParsed / 1000)
 {
     // More than 0.1% CC errors = packet loss
-    logger.LogWarning("Significant packet loss detected - check provider connection");
+    logger.PluginLogWarning("Significant packet loss detected - check provider connection");
 }
 ```
 
@@ -250,6 +269,68 @@ if (isReconnection)
     indexer.ResetTimingState();
 }
 ```
+
+## Clean Architecture
+
+The MPEG-TS module follows Clean Architecture principles with strict layering:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                      Infrastructure                          │
+│  (TsIndexer, TimestampRemappingService, StopwatchClock)     │
+├─────────────────────────────────────────────────────────────┤
+│                        Adapters                              │
+│  (StreamProcessor - Cinegy wrapper, TsPacketEventArgs)       │
+├─────────────────────────────────────────────────────────────┤
+│                        UseCases                              │
+│  (ITsQualityMonitor, ITimestampRemappingService, Events)     │
+├─────────────────────────────────────────────────────────────┤
+│            Core          │           Parsing                 │
+│  (NalUnitType,           │  (TsPacketHelper,                 │
+│   StreamTimestamp,       │   IdrFrameDetector,               │
+│   ProgramInfo,           │   PesParser)                      │
+│   TsConstants)           │                                   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Layers
+
+| Layer              | Purpose                                   | Dependencies         |
+|--------------------|-------------------------------------------|----------------------|
+| **Core**           | Domain entities, value types, enums       | None (only BCL)      |
+| **Parsing**        | Pure packet parsing utilities             | Core (bidirectional) |
+| **UseCases**       | Interfaces, events, application contracts | Core                 |
+| **Adapters**       | External library wrappers (Cinegy)        | Core, UseCases       |
+| **Infrastructure** | Service implementations                   | All layers           |
+
+### Dependency Rule
+
+Inner layers cannot reference outer layers:
+
+- Core and Parsing are the innermost layers
+- Cinegy.TsDecoder is isolated in the Adapters layer
+- All dependencies point inward
+
+### Architecture Tests
+
+The `LayeringTests.cs` file enforces these rules using NetArchTest:
+
+```csharp
+[Fact]
+public void Core_ShouldNotDependOn_Cinegy()
+{
+    var result = Types.InAssembly(MpegTsAssembly)
+        .That()
+        .ResideInNamespace("Jellyfin.Xtream.Service.MpegTs.Core")
+        .ShouldNot()
+        .HaveDependencyOn("Cinegy")
+        .GetResult();
+
+    Assert.True(result.IsSuccessful);
+}
+```
+
+See `docs/mpegts-refactor/DECISION.md` for architectural decisions and `LAYER_MAP.md` for file mappings.
 
 ## References
 - ISO/IEC 13818-1: MPEG-2 Systems

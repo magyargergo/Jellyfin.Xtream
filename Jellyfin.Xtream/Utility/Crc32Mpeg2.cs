@@ -23,7 +23,11 @@ namespace Jellyfin.Xtream.Utility;
 /// Implements ISO/IEC 13818-1 Annex A CRC-32 calculation.
 /// Polynomial: 0x04C11DB7 (normal form), initial value: 0xFFFFFFFF.
 /// </summary>
-public static class Crc32Mpeg2
+/// <remarks>
+/// This class is only used in tests and benchmarks, not in production code.
+/// It is kept in the main project for framework compatibility (net8.0).
+/// </remarks>
+internal static class Crc32Mpeg2
 {
     private const uint Polynomial = 0x04C11DB7;
     private const uint InitialValue = 0xFFFFFFFF;
@@ -36,9 +40,9 @@ public static class Crc32Mpeg2
 
         for (uint i = 0; i < 256; i++)
         {
-            uint crc = i << 24;
+            var crc = i << 24;
 
-            for (int j = 0; j < 8; j++)
+            for (var j = 0; j < 8; j++)
             {
                 if ((crc & 0x80000000) != 0)
                 {
@@ -64,11 +68,11 @@ public static class Crc32Mpeg2
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint Compute(ReadOnlySpan<byte> data)
     {
-        uint crc = InitialValue;
+        var crc = InitialValue;
 
-        for (int i = 0; i < data.Length; i++)
+        for (var i = 0; i < data.Length; i++)
         {
-            byte index = (byte)((crc >> 24) ^ data[i]);
+            var index = (byte)((crc >> 24) ^ data[i]);
             crc = (crc << 8) ^ LookupTable[index];
         }
 
@@ -83,15 +87,8 @@ public static class Crc32Mpeg2
     /// <param name="sectionWithCrc">The complete section including the trailing CRC-32.</param>
     /// <returns>True if the CRC is valid, false otherwise.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool Validate(ReadOnlySpan<byte> sectionWithCrc)
-    {
-        if (sectionWithCrc.Length < 4)
-        {
-            return false;
-        }
-
-        return Compute(sectionWithCrc) == 0;
-    }
+    public static bool Validate(ReadOnlySpan<byte> sectionWithCrc) =>
+        sectionWithCrc.Length >= 4 && Compute(sectionWithCrc) == 0;
 
     /// <summary>
     /// Validates a PSI section by comparing computed CRC with the embedded CRC.
@@ -100,10 +97,8 @@ public static class Crc32Mpeg2
     /// <param name="embeddedCrc">The CRC-32 value read from the section.</param>
     /// <returns>True if the computed CRC matches the embedded CRC.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool Validate(ReadOnlySpan<byte> sectionWithoutCrc, uint embeddedCrc)
-    {
-        return Compute(sectionWithoutCrc) == embeddedCrc;
-    }
+    public static bool Validate(ReadOnlySpan<byte> sectionWithoutCrc, uint embeddedCrc) =>
+        Compute(sectionWithoutCrc) == embeddedCrc;
 
     /// <summary>
     /// Extracts the CRC-32 value from the last 4 bytes of a section.
@@ -118,7 +113,7 @@ public static class Crc32Mpeg2
             return 0;
         }
 
-        int offset = section.Length - 4;
+        var offset = section.Length - 4;
         return ((uint)section[offset] << 24)
             | ((uint)section[offset + 1] << 16)
             | ((uint)section[offset + 2] << 8)
