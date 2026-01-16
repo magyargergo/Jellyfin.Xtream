@@ -101,10 +101,8 @@ public sealed class ProviderAvailabilityService(
 
     /// <inheritdoc />
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public CircuitState GetCircuitState(string providerId)
-    {
-        return GetOrCreateState(providerId).CircuitStateProvider.CircuitState;
-    }
+    public ProviderCircuitState GetCircuitState(string providerId) =>
+        GetOrCreateState(providerId).CircuitStateProvider.CircuitState.ToProviderCircuitState();
 
     /// <inheritdoc />
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -112,14 +110,11 @@ public sealed class ProviderAvailabilityService(
     {
         var state = GetOrCreateState(providerId);
         var circuitState = state.CircuitStateProvider.CircuitState;
-        return circuitState != CircuitState.Open && circuitState != CircuitState.Isolated;
+        return circuitState is not CircuitState.Open and not CircuitState.Isolated;
     }
 
     /// <inheritdoc />
-    public Task IsolateCircuitAsync(string providerId)
-    {
-        return RecordConnectionLimitAsync(providerId);
-    }
+    public Task IsolateCircuitAsync(string providerId) => RecordConnectionLimitAsync(providerId);
 
     /// <inheritdoc />
     public int GetSelectionScore(string providerId)
@@ -264,7 +259,7 @@ public sealed class ProviderAvailabilityService(
         var state = GetOrCreateState(providerId);
 
         // Increment consecutive failures
-        int failures = Interlocked.Increment(ref state.ConsecutiveFailures);
+        var failures = Interlocked.Increment(ref state.ConsecutiveFailures);
         state.LastFailureTicks = DateTime.UtcNow.Ticks;
         state.LastFailureReason = reason;
 
@@ -272,10 +267,10 @@ public sealed class ProviderAvailabilityService(
         UpdateSuccessRate(state, success: false);
 
         // Execute failing operation through pipeline to trigger circuit breaker
-        bool circuitOpened = false;
+        var circuitOpened = false;
         try
         {
-            state.Pipeline.Execute<object?>(() =>
+            _ = state.Pipeline.Execute<object?>(() =>
                 throw new InvalidOperationException($"Provider {providerName ?? providerId} failed: {reason}")
             );
         }
@@ -360,7 +355,7 @@ public sealed class ProviderAvailabilityService(
             snapshot[kvp.Key] = new ProviderResilienceState
             {
                 ProviderId = kvp.Key,
-                CircuitState = state.CircuitStateProvider.CircuitState,
+                CircuitState = state.CircuitStateProvider.CircuitState.ToProviderCircuitState(),
                 SelectionScore = CalculateSelectionScore(state),
                 IsAvailable = IsAvailable(kvp.Key),
                 ConsecutiveFailures = state.ConsecutiveFailures,
@@ -388,35 +383,29 @@ public sealed class ProviderAvailabilityService(
         }
 
         // Check if status is still valid
-        if (DateTime.UtcNow - state.LastStatusUpdate > CacheExpiry)
-        {
-            return null;
-        }
-
-        return new ProviderResilienceState
-        {
-            ProviderId = providerId,
-            CircuitState = state.CircuitStateProvider.CircuitState,
-            SelectionScore = CalculateSelectionScore(state),
-            IsAvailable = IsAvailable(providerId),
-            ConsecutiveFailures = state.ConsecutiveFailures,
-            AvailableSlots = state.AvailableSlots,
-            MaxConnections = state.MaxConnections,
-            Timestamp = state.LastStatusUpdate,
-            IsOnline = state.IsOnline,
-            ActiveConnections = state.ActiveConnections,
-            Status = state.AccountStatus,
-            ExpirationDate = state.ExpirationDate,
-            IsTrial = state.IsTrial,
-            ErrorMessage = state.ErrorMessage,
-        };
+        return DateTime.UtcNow - state.LastStatusUpdate > CacheExpiry
+            ? null
+            : new ProviderResilienceState
+            {
+                ProviderId = providerId,
+                CircuitState = state.CircuitStateProvider.CircuitState.ToProviderCircuitState(),
+                SelectionScore = CalculateSelectionScore(state),
+                IsAvailable = IsAvailable(providerId),
+                ConsecutiveFailures = state.ConsecutiveFailures,
+                AvailableSlots = state.AvailableSlots,
+                MaxConnections = state.MaxConnections,
+                Timestamp = state.LastStatusUpdate,
+                IsOnline = state.IsOnline,
+                ActiveConnections = state.ActiveConnections,
+                Status = state.AccountStatus,
+                ExpirationDate = state.ExpirationDate,
+                IsTrial = state.IsTrial,
+                ErrorMessage = state.ErrorMessage,
+            };
     }
 
     /// <inheritdoc />
-    public bool NeedsRefresh()
-    {
-        return DateTime.UtcNow - _lastFullRefresh > CacheExpiry;
-    }
+    public bool NeedsRefresh() => DateTime.UtcNow - _lastFullRefresh > CacheExpiry;
 
     /// <inheritdoc />
     public async Task RefreshAsync(IEnumerable<XtreamProvider> providers, CancellationToken cancellationToken = default)
@@ -430,7 +419,7 @@ public sealed class ProviderAvailabilityService(
         try
         {
             var providerList = providers.ToList();
-            _logger.LogDebug("Refreshing connection status for {Count} providers", providerList.Count);
+            _logger.LogDebugIfEnabled("Refreshing connection status for {Count} providers", providerList.Count);
 
             var tasks = providerList.Select(provider => RefreshProviderAsync(provider, cancellationToken));
             await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -439,7 +428,7 @@ public sealed class ProviderAvailabilityService(
         }
         finally
         {
-            _refreshLock.Release();
+            _ = _refreshLock.Release();
         }
     }
 
@@ -482,7 +471,7 @@ public sealed class ProviderAvailabilityService(
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed to get connection status for provider {ProviderId}", provider.Id);
+            _logger.LogDebugIfEnabled(ex, "Failed to get connection status for provider {ProviderId}", provider.Id);
             state.ErrorMessage = ex.Message;
             state.IsOnline = false;
             state.LastStatusUpdate = DateTime.UtcNow;
@@ -503,8 +492,8 @@ public sealed class ProviderAvailabilityService(
             return; // Unknown max, can't track state
         }
 
-        bool currentlyAtLimit = state.ActiveConnections >= state.MaxConnections;
-        bool previouslyAtLimit = _previousAtLimitState.TryGetValue(provider.Id, out var wasAtLimit) && wasAtLimit;
+        var currentlyAtLimit = state.ActiveConnections >= state.MaxConnections;
+        var previouslyAtLimit = _previousAtLimitState.TryGetValue(provider.Id, out var wasAtLimit) && wasAtLimit;
 
         // Detect state transition
         if (currentlyAtLimit != previouslyAtLimit)
@@ -606,10 +595,7 @@ public sealed class ProviderAvailabilityService(
         ProviderIndex.SetScore(index, newScore);
     }
 
-    private ProviderState GetOrCreateState(string providerId)
-    {
-        return _states.GetOrAdd(providerId, id => CreateProviderState(id));
-    }
+    private ProviderState GetOrCreateState(string providerId) => _states.GetOrAdd(providerId, CreateProviderState);
 
     private ProviderState CreateProviderState(string providerId)
     {
@@ -662,30 +648,30 @@ public sealed class ProviderAvailabilityService(
     {
         // Circuit open = immediate exclusion
         var circuitState = state.CircuitStateProvider.CircuitState;
-        if (circuitState == CircuitState.Open || circuitState == CircuitState.Isolated)
+        if (circuitState is CircuitState.Open or CircuitState.Isolated)
         {
             return 0;
         }
 
         // Calculate base score from success rate (0-100)
-        int successRateScore = state.RecentTotal > 0 ? (state.RecentSuccesses * 100) / state.RecentTotal : 50;
+        var successRateScore = state.RecentTotal > 0 ? state.RecentSuccesses * 100 / state.RecentTotal : 50;
 
         // Calculate capacity score (0-100)
-        int capacityScore =
-            state.MaxConnections > 0 ? Math.Min(100, (state.AvailableSlots * 100) / state.MaxConnections) : 100;
+        var capacityScore =
+            state.MaxConnections > 0 ? Math.Min(100, state.AvailableSlots * 100 / state.MaxConnections) : 100;
 
         // Combine weighted scores
-        double score = (successRateScore * SuccessRateWeight) + (capacityScore * CapacityWeight) + (50 * HealthWeight); // Base health score
+        var score = (successRateScore * SuccessRateWeight) + (capacityScore * CapacityWeight) + (50 * HealthWeight); // Base health score
 
         // Apply consecutive failure penalty
         if (state.ConsecutiveFailures > 0)
         {
-            int penalty = Math.Min(MaxConsecutiveFailurePenalty, state.ConsecutiveFailures * ConsecutiveFailurePenalty);
+            var penalty = Math.Min(MaxConsecutiveFailurePenalty, state.ConsecutiveFailures * ConsecutiveFailurePenalty);
             score += penalty;
         }
 
         // Apply recency bonuses/penalties
-        long now = DateTime.UtcNow.Ticks;
+        var now = DateTime.UtcNow.Ticks;
         if (state.LastSuccessTicks > 0 && (now - state.LastSuccessTicks) < RecentSuccessWindow.Ticks)
         {
             score += RecentSuccessBonus;
@@ -710,14 +696,14 @@ public sealed class ProviderAvailabilityService(
     private static void UpdateSuccessRate(ProviderState state, bool success)
     {
         // Exponential moving average with cap at 20 samples
-        int total = state.RecentTotal;
-        int successes = state.RecentSuccesses;
+        var total = state.RecentTotal;
+        var successes = state.RecentSuccesses;
 
         if (total >= 20)
         {
             // Decay old data by 10%
-            total = (total * 9) / 10;
-            successes = (successes * 9) / 10;
+            total = total * 9 / 10;
+            successes = successes * 9 / 10;
         }
 
         state.RecentTotal = total + 1;
@@ -728,16 +714,37 @@ public sealed class ProviderAvailabilityService(
     {
         return reason switch
         {
+            // Severe errors - extended blacklist (60s)
             ProviderFailureReason.ConnectionLimit => TimeSpan.FromMilliseconds(
                 StreamingTimeoutPolicy.ExtendedBlacklistDurationMs
             ),
             ProviderFailureReason.ClientError => TimeSpan.FromMilliseconds(
                 StreamingTimeoutPolicy.ExtendedBlacklistDurationMs
             ),
+
+            // Transient errors - quick recovery (10s)
+            ProviderFailureReason.Timeout => TimeSpan.FromMilliseconds(StreamingTimeoutPolicy.QuickBlacklistDurationMs),
+            ProviderFailureReason.PrematureEof => TimeSpan.FromMilliseconds(
+                StreamingTimeoutPolicy.QuickBlacklistDurationMs
+            ),
             ProviderFailureReason.RateLimited => TimeSpan.FromMilliseconds(
                 StreamingTimeoutPolicy.QuickBlacklistDurationMs
             ),
-            ProviderFailureReason.Timeout => TimeSpan.FromMilliseconds(StreamingTimeoutPolicy.QuickBlacklistDurationMs),
+
+            // Provider infrastructure issues - moderate blacklist (30s)
+            // 407 errors are caused by provider's misconfigured origin proxy, may self-heal
+            ProviderFailureReason.ProxyAuthenticationError => TimeSpan.FromMilliseconds(
+                StreamingTimeoutPolicy.DefaultBlacklistDurationMs
+            ),
+
+            // Zombie backend - moderate blacklist (30s)
+            // Load balancer may be routing to multiple backends, some dead
+            // Moderate duration allows re-routing to healthy backend on retry
+            ProviderFailureReason.ZombieBackend => TimeSpan.FromMilliseconds(
+                StreamingTimeoutPolicy.DefaultBlacklistDurationMs
+            ),
+
+            // Default for other errors (30s)
             _ => GetDefaultBlacklistDuration(),
         };
     }
@@ -786,26 +793,27 @@ public sealed class ProviderAvailabilityService(
     }
 
     /// <inheritdoc />
-    public void Dispose()
-    {
-        _refreshLock.Dispose();
-    }
+    public void Dispose() => _refreshLock.Dispose();
 
     /// <summary>
     /// Internal state for a single provider.
     /// </summary>
-    private sealed class ProviderState
+    private sealed class ProviderState(
+        ResiliencePipeline pipeline,
+        CircuitBreakerStateProvider stateProvider,
+        CircuitBreakerManualControl manualControl
+    )
     {
-        public readonly ResiliencePipeline Pipeline;
-        public readonly CircuitBreakerStateProvider CircuitStateProvider;
-        public readonly CircuitBreakerManualControl ManualControl;
+        public readonly ResiliencePipeline Pipeline = pipeline;
+        public readonly CircuitBreakerStateProvider CircuitStateProvider = stateProvider;
+        public readonly CircuitBreakerManualControl ManualControl = manualControl;
 
         // Health metrics (use volatile for 32-bit, interlocked for 64-bit)
         public int ConsecutiveFailures;
         public long LastSuccessTicks;
         public long LastFailureTicks;
-        public int RecentSuccesses;
-        public int RecentTotal;
+        public int RecentSuccesses = 5;
+        public int RecentTotal = 10;
         public ProviderFailureReason LastFailureReason;
 
         // Capacity tracking
@@ -820,20 +828,5 @@ public sealed class ProviderAvailabilityService(
         public bool IsTrial;
         public string? ErrorMessage;
         public DateTime LastStatusUpdate;
-
-        public ProviderState(
-            ResiliencePipeline pipeline,
-            CircuitBreakerStateProvider stateProvider,
-            CircuitBreakerManualControl manualControl
-        )
-        {
-            Pipeline = pipeline;
-            CircuitStateProvider = stateProvider;
-            ManualControl = manualControl;
-
-            // Start with neutral assumption (50% success rate)
-            RecentSuccesses = 5;
-            RecentTotal = 10;
-        }
     }
 }

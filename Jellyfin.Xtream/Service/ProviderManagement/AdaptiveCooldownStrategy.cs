@@ -17,13 +17,17 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
 
-namespace Jellyfin.Xtream.Service.Switching;
+namespace Jellyfin.Xtream.Service.ProviderManagement;
 
 /// <summary>
 /// Adaptive cooldown strategy that adjusts switch cooldown based on recent success rate.
 /// Reduces cooldown when switches are successful, increases when they fail.
 /// </summary>
-internal sealed class AdaptiveCooldownStrategy
+/// <remarks>
+/// Initializes a new instance of the <see cref="AdaptiveCooldownStrategy"/> class.
+/// </remarks>
+/// <param name="initialCooldownMs">Initial cooldown in milliseconds.</param>
+internal sealed class AdaptiveCooldownStrategy(int initialCooldownMs = AdaptiveCooldownStrategy.DefaultCooldownMs)
 {
     private const int DefaultCooldownMs = 5000;
     private const int MinCooldownMs = 2000;
@@ -33,22 +37,11 @@ internal sealed class AdaptiveCooldownStrategy
     private const double SuccessRateThresholdLow = 0.5;
     private const int CooldownAdjustmentMs = 1000;
 
-    private readonly bool[] _recentResults;
+    private readonly bool[] _recentResults = new bool[HistorySize];
     private int _resultIndex;
     private int _resultCount;
-    private int _currentCooldownMs;
-    private long _lastAdjustmentTicks;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="AdaptiveCooldownStrategy"/> class.
-    /// </summary>
-    /// <param name="initialCooldownMs">Initial cooldown in milliseconds.</param>
-    public AdaptiveCooldownStrategy(int initialCooldownMs = DefaultCooldownMs)
-    {
-        _recentResults = new bool[HistorySize];
-        _currentCooldownMs = Math.Clamp(initialCooldownMs, MinCooldownMs, MaxCooldownMs);
-        _lastAdjustmentTicks = Environment.TickCount64;
-    }
+    private int _currentCooldownMs = Math.Clamp(initialCooldownMs, MinCooldownMs, MaxCooldownMs);
+    private long _lastAdjustmentTicks = Environment.TickCount64;
 
     /// <summary>
     /// Gets the current cooldown duration in milliseconds.
@@ -62,15 +55,15 @@ internal sealed class AdaptiveCooldownStrategy
     {
         get
         {
-            int count = Volatile.Read(ref _resultCount);
+            var count = Volatile.Read(ref _resultCount);
             if (count == 0)
             {
                 return 1.0;
             }
 
-            int successes = 0;
-            int samplesToCheck = Math.Min(count, HistorySize);
-            for (int i = 0; i < samplesToCheck; i++)
+            var successes = 0;
+            var samplesToCheck = Math.Min(count, HistorySize);
+            for (var i = 0; i < samplesToCheck; i++)
             {
                 if (Volatile.Read(ref _recentResults[i]))
                 {
@@ -94,9 +87,9 @@ internal sealed class AdaptiveCooldownStrategy
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void RecordResult(bool success)
     {
-        int index = Interlocked.Increment(ref _resultIndex) % HistorySize;
+        var index = Interlocked.Increment(ref _resultIndex) % HistorySize;
         Volatile.Write(ref _recentResults[index], success);
-        Interlocked.Increment(ref _resultCount);
+        _ = Interlocked.Increment(ref _resultCount);
 
         AdjustCooldown();
     }
@@ -139,8 +132,8 @@ internal sealed class AdaptiveCooldownStrategy
 
     private void AdjustCooldown()
     {
-        long now = Environment.TickCount64;
-        long lastAdjust = Interlocked.Read(ref _lastAdjustmentTicks);
+        var now = Environment.TickCount64;
+        var lastAdjust = Interlocked.Read(ref _lastAdjustmentTicks);
 
         if (now - lastAdjust < 10000)
         {
@@ -152,15 +145,15 @@ internal sealed class AdaptiveCooldownStrategy
             return;
         }
 
-        int count = Volatile.Read(ref _resultCount);
+        var count = Volatile.Read(ref _resultCount);
         if (count < 3)
         {
             return;
         }
 
-        double rate = SuccessRate;
-        int current = Volatile.Read(ref _currentCooldownMs);
-        int newCooldown = current;
+        var rate = SuccessRate;
+        var current = Volatile.Read(ref _currentCooldownMs);
+        var newCooldown = current;
 
         if (rate >= SuccessRateThresholdHigh)
         {

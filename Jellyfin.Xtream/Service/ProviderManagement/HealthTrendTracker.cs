@@ -64,30 +64,16 @@ public sealed class HealthTrendTracker : IHealthTrendTracker
     /// </summary>
     /// <param name="providerId">The provider ID.</param>
     /// <returns>The trend direction.</returns>
-    public HealthTrend GetTrend(string providerId)
-    {
-        if (!_trends.TryGetValue(providerId, out var trend))
-        {
-            return HealthTrend.Stable;
-        }
-
-        return trend.GetTrend();
-    }
+    public HealthTrend GetTrend(string providerId) =>
+        !_trends.TryGetValue(providerId, out var trend) ? HealthTrend.Stable : trend.GetTrend();
 
     /// <summary>
     /// Gets the trend snapshot for a provider.
     /// </summary>
     /// <param name="providerId">The provider ID.</param>
     /// <returns>The trend snapshot, or default if no data.</returns>
-    public HealthTrendSnapshot GetSnapshot(string providerId)
-    {
-        if (!_trends.TryGetValue(providerId, out var trend))
-        {
-            return HealthTrendSnapshot.Default;
-        }
-
-        return trend.GetSnapshot();
-    }
+    public HealthTrendSnapshot GetSnapshot(string providerId) =>
+        !_trends.TryGetValue(providerId, out var trend) ? HealthTrendSnapshot.Default : trend.GetSnapshot();
 
     /// <summary>
     /// Gets all provider trends.
@@ -108,18 +94,12 @@ public sealed class HealthTrendTracker : IHealthTrendTracker
     /// Clears trend data for a specific provider.
     /// </summary>
     /// <param name="providerId">The provider ID.</param>
-    public void Clear(string providerId)
-    {
-        _trends.TryRemove(providerId, out _);
-    }
+    public void Clear(string providerId) => _trends.TryRemove(providerId, out _);
 
     /// <summary>
     /// Clears all trend data.
     /// </summary>
-    public void ClearAll()
-    {
-        _trends.Clear();
-    }
+    public void ClearAll() => _trends.Clear();
 
     private sealed class ProviderTrendData
     {
@@ -142,7 +122,7 @@ public sealed class HealthTrendTracker : IHealthTrendTracker
                 // Trim old samples
                 while (_samples.Count > MaxSamples)
                 {
-                    _samples.Dequeue();
+                    _ = _samples.Dequeue();
                 }
 
                 if (!_initialized)
@@ -177,8 +157,8 @@ public sealed class HealthTrendTracker : IHealthTrendTracker
                 }
 
                 // Assume samples come every 10 seconds
-                double samplesAhead = secondsAhead / 10.0;
-                double predicted = _emaFast + (_velocity * samplesAhead);
+                var samplesAhead = secondsAhead / 10.0;
+                var predicted = _emaFast + (_velocity * samplesAhead);
 
                 return Math.Clamp((int)predicted, 0, 100);
             }
@@ -194,24 +174,16 @@ public sealed class HealthTrendTracker : IHealthTrendTracker
                 }
 
                 // Compare fast and slow EMAs
-                double divergence = _emaFast - _emaSlow;
+                var divergence = _emaFast - _emaSlow;
 
                 if (divergence > 5 && _velocity > 0.5)
                 {
                     return HealthTrend.Improving;
                 }
 
-                if (divergence < -5 && _velocity < -0.5)
-                {
-                    return HealthTrend.Degrading;
-                }
-
-                if (divergence < -10 && _velocity < -1.0)
-                {
-                    return HealthTrend.RapidlyDegrading;
-                }
-
-                return HealthTrend.Stable;
+                return divergence < -5 && _velocity < -0.5 ? HealthTrend.Degrading
+                    : divergence < -10 && _velocity < -1.0 ? HealthTrend.RapidlyDegrading
+                    : HealthTrend.Stable;
             }
         }
 

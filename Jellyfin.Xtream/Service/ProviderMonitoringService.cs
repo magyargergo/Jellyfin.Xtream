@@ -61,46 +61,36 @@ public interface IProviderMonitoringService
 /// Background service that periodically refreshes provider monitoring data.
 /// Ensures the monitoring dashboard can display data without impacting streaming.
 /// </summary>
-public sealed class ProviderMonitoringService : BackgroundService, IProviderMonitoringService
+/// <remarks>
+/// Initializes a new instance of the <see cref="ProviderMonitoringService"/> class.
+/// </remarks>
+/// <param name="failoverService">The automatic failover service.</param>
+/// <param name="logger">The logger.</param>
+public sealed class ProviderMonitoringService(
+    IAutomaticFailoverService failoverService,
+    ILogger<ProviderMonitoringService> logger
+) : BackgroundService, IProviderMonitoringService
 {
-    private readonly IProviderAvailabilityService _resilienceService;
-    private readonly ILogger<ProviderMonitoringService> _logger;
+    private readonly IAutomaticFailoverService _failoverService = failoverService;
+    private readonly ILogger<ProviderMonitoringService> _logger = logger;
     private readonly TimeSpan _refreshInterval = TimeSpan.FromSeconds(30);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
     private ConnectionStatusResponse? _cachedStatus;
-    private DateTime? _lastRefreshTime;
     private volatile bool _refreshRequested;
     private volatile bool _isRefreshing;
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ProviderMonitoringService"/> class.
-    /// </summary>
-    /// <param name="resilienceService">The resilience service.</param>
-    /// <param name="logger">The logger.</param>
-    public ProviderMonitoringService(
-        IProviderAvailabilityService resilienceService,
-        ILogger<ProviderMonitoringService> logger
-    )
-    {
-        _resilienceService = resilienceService;
-        _logger = logger;
-    }
 
     /// <inheritdoc />
     public ConnectionStatusResponse? GetCachedStatus() => _cachedStatus;
 
     /// <inheritdoc />
-    public DateTime? LastRefreshTime => _lastRefreshTime;
+    public DateTime? LastRefreshTime { get; private set; }
 
     /// <inheritdoc />
     public bool IsRefreshing => _isRefreshing;
 
     /// <inheritdoc />
-    public void TriggerRefresh()
-    {
-        _refreshRequested = true;
-    }
+    public void TriggerRefresh() => _refreshRequested = true;
 
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -122,7 +112,7 @@ public sealed class ProviderMonitoringService : BackgroundService, IProviderMoni
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error refreshing monitoring data");
+                _logger.PluginLogWarning(ex, "Error refreshing monitoring data");
             }
 
             // Wait for next refresh interval or manual trigger
@@ -161,18 +151,18 @@ public sealed class ProviderMonitoringService : BackgroundService, IProviderMoni
             if (enabledProviders.Count == 0)
             {
                 _cachedStatus = new ConnectionStatusResponse();
-                _lastRefreshTime = DateTime.UtcNow;
+                LastRefreshTime = DateTime.UtcNow;
                 return;
             }
 
-            // Refresh the resilience service (this makes HTTP calls to providers)
-            await _resilienceService.RefreshAsync(enabledProviders, cancellationToken).ConfigureAwait(false);
+            // Refresh the failover service (this makes HTTP calls to providers)
+            await _failoverService.RefreshAsync(enabledProviders, cancellationToken).ConfigureAwait(false);
 
             // Build the response from cached data
             var response = BuildStatusResponse(config, enabledProviders);
 
             _cachedStatus = response;
-            _lastRefreshTime = DateTime.UtcNow;
+            LastRefreshTime = DateTime.UtcNow;
 
             _logger.LogDebugIfEnabled(
                 "Monitoring data refreshed: {ProviderCount} providers, {ActiveStreams} active streams, {Utilization}% utilization",
@@ -184,7 +174,7 @@ public sealed class ProviderMonitoringService : BackgroundService, IProviderMoni
         finally
         {
             _isRefreshing = false;
-            _refreshLock.Release();
+            _ = _refreshLock.Release();
         }
     }
 
@@ -199,10 +189,9 @@ public sealed class ProviderMonitoringService : BackgroundService, IProviderMoni
             ConfiguredMaxStreams = config.MaxConcurrentStreams,
             EnforcementEnabled = config.EnforceConnectionLimit,
             AutoKillEnabled = config.AutoKillOldestStream,
+            // Build provider status from the shared cache
+            Providers = [.. enabledProviders.Select(BuildProviderStatus)],
         };
-
-        // Build provider status from the shared cache
-        response.Providers = enabledProviders.Select(provider => BuildProviderStatus(provider)).ToList();
 
         // Calculate effective max streams and available slots
         var onlineProviders = response.Providers.Where(p => p.IsOnline).ToList();
@@ -251,11 +240,10 @@ public sealed class ProviderMonitoringService : BackgroundService, IProviderMoni
     {
         var status = new ProviderConnectionStatus { ProviderId = provider.Id, ProviderName = provider.Name };
 
-        // Get cached status from resilience service
-        var cachedStatus = _resilienceService.GetStatus(provider.Id);
-        if (cachedStatus.HasValue)
+        // Get cached status from failover service
+        var allStates = _failoverService.GetProviderStates();
+        if (allStates.TryGetValue(provider.Id, out var state))
         {
-            var state = cachedStatus.Value;
             status.MaxConnections = state.MaxConnections;
             status.ProviderActiveConnections = state.ActiveConnections;
             status.Status = state.Status ?? string.Empty;
@@ -272,9 +260,9 @@ public sealed class ProviderMonitoringService : BackgroundService, IProviderMoni
         {
             status.ErrorMessage = "No cached status";
             status.IsOnline = false;
-            status.CircuitState = _resilienceService.GetCircuitState(provider.Id).ToString();
-            status.SelectionScore = _resilienceService.GetSelectionScore(provider.Id);
-            status.IsAvailable = _resilienceService.IsAvailable(provider.Id);
+            status.CircuitState = _failoverService.GetCircuitState(provider.Id).ToString();
+            status.SelectionScore = _failoverService.GetSelectionScore(provider.Id);
+            status.IsAvailable = _failoverService.IsAvailable(provider.Id);
             status.ConsecutiveFailures = GetConsecutiveFailures(provider.Id);
         }
 
@@ -283,7 +271,7 @@ public sealed class ProviderMonitoringService : BackgroundService, IProviderMoni
 
     private int GetConsecutiveFailures(string providerId)
     {
-        var snapshot = _resilienceService.GetSnapshot();
+        var snapshot = _failoverService.GetProviderStates();
         return snapshot.TryGetValue(providerId, out var state) ? state.ConsecutiveFailures : 0;
     }
 

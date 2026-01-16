@@ -54,7 +54,7 @@ public sealed class ProviderMetricsTracker : IProviderMetricsTracker
         }
 
         var metrics = GetOrCreate(providerId);
-        double mbps = (bytes / 1024.0 / 1024.0) / (durationMs / 1000.0);
+        var mbps = bytes / 1024.0 / 1024.0 / (durationMs / 1000.0);
         metrics.AddThroughputSample(mbps);
     }
 
@@ -85,15 +85,8 @@ public sealed class ProviderMetricsTracker : IProviderMetricsTracker
     /// </summary>
     /// <param name="providerId">The provider ID.</param>
     /// <returns>The metrics snapshot, or default values if not tracked.</returns>
-    public ProviderMetricsSnapshot GetSnapshot(string providerId)
-    {
-        if (!_metrics.TryGetValue(providerId, out var metrics))
-        {
-            return ProviderMetricsSnapshot.Default;
-        }
-
-        return metrics.GetSnapshot();
-    }
+    public ProviderMetricsSnapshot GetSnapshot(string providerId) =>
+        !_metrics.TryGetValue(providerId, out var metrics) ? ProviderMetricsSnapshot.Default : metrics.GetSnapshot();
 
     /// <summary>
     /// Calculates a health score based on metrics (0-100, higher is better).
@@ -145,7 +138,7 @@ public sealed class ProviderMetricsTracker : IProviderMetricsTracker
         score += throughputScore;
 
         // Error rate score (0-30): 0% = 30, >10% = 0
-        double errorRate = snapshot.TotalSamples > 0 ? (double)snapshot.TotalErrors / snapshot.TotalSamples * 100 : 0;
+        var errorRate = snapshot.TotalSamples > 0 ? (double)snapshot.TotalErrors / snapshot.TotalSamples * 100 : 0;
         double errorScore = errorRate switch
         {
             < 0.1 => 30,
@@ -158,7 +151,7 @@ public sealed class ProviderMetricsTracker : IProviderMetricsTracker
         score += errorScore;
 
         // Uptime score (0-20): based on mean time between disconnections
-        double mtbdMinutes =
+        var mtbdMinutes =
             snapshot.DisconnectionCount > 0
                 ? snapshot.TotalStreamTimeMs / 1000.0 / 60.0 / snapshot.DisconnectionCount
                 : 60; // Assume 60 minutes if no disconnections
@@ -190,15 +183,9 @@ public sealed class ProviderMetricsTracker : IProviderMetricsTracker
     /// <summary>
     /// Clears all tracked metrics.
     /// </summary>
-    public void Clear()
-    {
-        _metrics.Clear();
-    }
+    public void Clear() => _metrics.Clear();
 
-    private ProviderMetrics GetOrCreate(string providerId)
-    {
-        return _metrics.GetOrAdd(providerId, _ => new ProviderMetrics());
-    }
+    private ProviderMetrics GetOrCreate(string providerId) => _metrics.GetOrAdd(providerId, _ => new ProviderMetrics());
 }
 
 /// <summary>
@@ -263,9 +250,9 @@ internal sealed class ProviderMetrics
         if (Interlocked.Read(ref _latencyCount) >= MaxSamples)
         {
             // Decay by 10%
-            double oldSum = Interlocked.CompareExchange(ref _latencySum, 0, 0);
-            Interlocked.Exchange(ref _latencySum, oldSum * 0.9);
-            Interlocked.Exchange(ref _latencyCount, (long)(Interlocked.Read(ref _latencyCount) * 0.9));
+            var oldSum = Interlocked.CompareExchange(ref _latencySum, 0, 0);
+            _ = Interlocked.Exchange(ref _latencySum, oldSum * 0.9);
+            _ = Interlocked.Exchange(ref _latencyCount, (long)(Interlocked.Read(ref _latencyCount) * 0.9));
         }
 
         // Add new sample
@@ -277,8 +264,8 @@ internal sealed class ProviderMetrics
             newSum = currentSum + latencyMs;
         } while (Interlocked.CompareExchange(ref _latencySum, newSum, currentSum) != currentSum);
 
-        Interlocked.Increment(ref _latencyCount);
-        Interlocked.Increment(ref _totalSamples);
+        _ = Interlocked.Increment(ref _latencyCount);
+        _ = Interlocked.Increment(ref _totalSamples);
 
         // Update min/max
         UpdateMin(ref _latencyMin, latencyMs);
@@ -289,9 +276,9 @@ internal sealed class ProviderMetrics
     {
         if (Interlocked.Read(ref _throughputCount) >= MaxSamples)
         {
-            double oldSum = Interlocked.CompareExchange(ref _throughputSum, 0, 0);
-            Interlocked.Exchange(ref _throughputSum, oldSum * 0.9);
-            Interlocked.Exchange(ref _throughputCount, (long)(Interlocked.Read(ref _throughputCount) * 0.9));
+            var oldSum = Interlocked.CompareExchange(ref _throughputSum, 0, 0);
+            _ = Interlocked.Exchange(ref _throughputSum, oldSum * 0.9);
+            _ = Interlocked.Exchange(ref _throughputCount, (long)(Interlocked.Read(ref _throughputCount) * 0.9));
         }
 
         double currentSum;
@@ -302,7 +289,7 @@ internal sealed class ProviderMetrics
             newSum = currentSum + mbps;
         } while (Interlocked.CompareExchange(ref _throughputSum, newSum, currentSum) != currentSum);
 
-        Interlocked.Increment(ref _throughputCount);
+        _ = Interlocked.Increment(ref _throughputCount);
 
         UpdateMax(ref _throughputMax, mbps);
     }
@@ -312,29 +299,29 @@ internal sealed class ProviderMetrics
         switch (errorType)
         {
             case StreamErrorType.PacketError:
-                Interlocked.Increment(ref _packetErrors);
+                _ = Interlocked.Increment(ref _packetErrors);
                 break;
             case StreamErrorType.ContinuityError:
-                Interlocked.Increment(ref _continuityErrors);
+                _ = Interlocked.Increment(ref _continuityErrors);
                 break;
             case StreamErrorType.SyncError:
-                Interlocked.Increment(ref _syncErrors);
+                _ = Interlocked.Increment(ref _syncErrors);
                 break;
             case StreamErrorType.Timeout:
-                Interlocked.Increment(ref _timeoutErrors);
+                _ = Interlocked.Increment(ref _timeoutErrors);
                 break;
             case StreamErrorType.NetworkError:
-                Interlocked.Increment(ref _networkErrors);
+                _ = Interlocked.Increment(ref _networkErrors);
                 break;
             case StreamErrorType.DataStall:
-                Interlocked.Increment(ref _dataStallErrors);
+                _ = Interlocked.Increment(ref _dataStallErrors);
                 break;
         }
     }
 
     public void AddDisconnection(double streamDurationMs)
     {
-        Interlocked.Increment(ref _disconnectionCount);
+        _ = Interlocked.Increment(ref _disconnectionCount);
 
         double currentTotal;
         double newTotal;
@@ -347,8 +334,8 @@ internal sealed class ProviderMetrics
 
     public ProviderMetricsSnapshot GetSnapshot()
     {
-        long latencyCount = Interlocked.Read(ref _latencyCount);
-        long throughputCount = Interlocked.Read(ref _throughputCount);
+        var latencyCount = Interlocked.Read(ref _latencyCount);
+        var throughputCount = Interlocked.Read(ref _throughputCount);
 
         return new ProviderMetricsSnapshot
         {
@@ -380,22 +367,22 @@ internal sealed class ProviderMetrics
 
     public void Reset()
     {
-        Interlocked.Exchange(ref _latencySum, 0);
-        Interlocked.Exchange(ref _latencyCount, 0L);
+        _ = Interlocked.Exchange(ref _latencySum, 0);
+        _ = Interlocked.Exchange(ref _latencyCount, 0L);
         _latencyMin = double.MaxValue;
-        Interlocked.Exchange(ref _latencyMax, 0);
-        Interlocked.Exchange(ref _throughputSum, 0);
-        Interlocked.Exchange(ref _throughputCount, 0L);
-        Interlocked.Exchange(ref _throughputMax, 0);
-        Interlocked.Exchange(ref _packetErrors, 0L);
-        Interlocked.Exchange(ref _continuityErrors, 0L);
-        Interlocked.Exchange(ref _syncErrors, 0L);
-        Interlocked.Exchange(ref _timeoutErrors, 0L);
-        Interlocked.Exchange(ref _networkErrors, 0L);
-        Interlocked.Exchange(ref _dataStallErrors, 0L);
-        Interlocked.Exchange(ref _disconnectionCount, 0L);
-        Interlocked.Exchange(ref _totalStreamTimeMs, 0);
-        Interlocked.Exchange(ref _totalSamples, 0L);
+        _ = Interlocked.Exchange(ref _latencyMax, 0);
+        _ = Interlocked.Exchange(ref _throughputSum, 0);
+        _ = Interlocked.Exchange(ref _throughputCount, 0L);
+        _ = Interlocked.Exchange(ref _throughputMax, 0);
+        _ = Interlocked.Exchange(ref _packetErrors, 0L);
+        _ = Interlocked.Exchange(ref _continuityErrors, 0L);
+        _ = Interlocked.Exchange(ref _syncErrors, 0L);
+        _ = Interlocked.Exchange(ref _timeoutErrors, 0L);
+        _ = Interlocked.Exchange(ref _networkErrors, 0L);
+        _ = Interlocked.Exchange(ref _dataStallErrors, 0L);
+        _ = Interlocked.Exchange(ref _disconnectionCount, 0L);
+        _ = Interlocked.Exchange(ref _totalStreamTimeMs, 0);
+        _ = Interlocked.Exchange(ref _totalSamples, 0L);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

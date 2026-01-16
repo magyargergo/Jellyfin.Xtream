@@ -18,30 +18,32 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
-using Jellyfin.Xtream.Service.ProviderManagement;
+using Jellyfin.Xtream.Service;
 using Microsoft.Extensions.Logging;
 
-namespace Jellyfin.Xtream.Service.Switching;
+namespace Jellyfin.Xtream.Service.ProviderManagement;
 
 /// <summary>
 /// Resolves alternative provider URLs for hot-swap operations.
-/// Selects the best available provider based on health scores, capacity, and circuit breaker state.
+/// Delegates provider selection to IAutomaticFailoverService (source of truth)
+/// which combines health scoring, circuit breaker state, metrics, and trend analysis.
 /// </summary>
 /// <remarks>
 /// Initializes a new instance of the <see cref="ProviderUrlResolver"/> class.
 /// </remarks>
-/// <param name="resilienceService">The provider resilience service.</param>
+/// <param name="failoverService">The automatic failover service (source of truth for provider selection).</param>
 /// <param name="logger">The logger.</param>
 /// <param name="configProvider">Configuration provider.</param>
 public sealed class ProviderUrlResolver(
-    IProviderAvailabilityService resilienceService,
+    IAutomaticFailoverService failoverService,
     ILogger<ProviderUrlResolver> logger,
     IPluginConfigurationProvider? configProvider = null
 ) : IProviderUrlResolver
 {
-    private readonly IProviderAvailabilityService _resilienceService =
-        resilienceService ?? throw new ArgumentNullException(nameof(resilienceService));
+    private readonly IAutomaticFailoverService _failoverService =
+        failoverService ?? throw new ArgumentNullException(nameof(failoverService));
     private readonly ILogger<ProviderUrlResolver> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     private readonly IPluginConfigurationProvider _configProvider = configProvider ?? new PluginConfigurationProvider();
 
@@ -57,7 +59,7 @@ public sealed class ProviderUrlResolver(
         var currentProviderId = ExtractProviderId(currentUrl);
         if (string.IsNullOrEmpty(currentProviderId))
         {
-            _logger.LogDebug("Could not extract provider ID from URL: {Url}", currentUrl);
+            _logger.LogDebugIfEnabled("Could not extract provider ID from URL: {Url}", currentUrl);
             return Task.FromResult<string?>(null);
         }
 
@@ -75,87 +77,124 @@ public sealed class ProviderUrlResolver(
             return Task.FromResult<string?>(null);
         }
 
+        // Extract stream ID from URL for ProviderStreamInfo creation
+        var extractedStreamId = ExtractStreamId(currentUrl);
+
         // Build provider stream info list, excluding current provider
-        var alternativeUrl = FindBestAlternative(providers, currentProviderId, currentUrl, reason);
+        var alternativeUrl = FindBestAlternative(providers, currentProviderId, currentUrl, extractedStreamId, reason);
 
         return Task.FromResult(alternativeUrl);
     }
 
     /// <summary>
-    /// Finds the best alternative provider URL.
+    /// Finds the best alternative provider URL using AutomaticFailoverService as the source of truth.
+    /// The failover service combines health scoring, circuit breaker state, metrics, and trend analysis.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private string? FindBestAlternative(
         List<XtreamProvider> providers,
         string currentProviderId,
         string currentUrl,
+        int streamId,
         SwitchReason reason
     )
     {
-        XtreamProvider? bestProvider = null;
-        int bestScore = -1;
+        // Build ProviderStreamInfo list for failover service (excluding current provider)
+        var alternatives = new List<ProviderStreamInfo>();
 
-        for (int i = 0; i < providers.Count; i++)
+        // Create a minimal StreamInfo with the extracted stream ID
+        var minimalStreamInfo = new StreamInfo { StreamId = streamId, Name = string.Empty };
+
+        foreach (var provider in providers)
         {
-            var provider = providers[i];
-
-            // Skip current provider
-            if (string.Equals(provider.Id, currentProviderId, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            // Skip disabled providers
             if (!provider.Enabled)
             {
                 continue;
             }
 
-            // Check if provider is available (circuit breaker not open)
-            if (!_resilienceService.IsAvailable(provider.Id))
+            if (string.Equals(provider.Id, currentProviderId, StringComparison.Ordinal))
             {
-                _logger.LogDebug("Skipping provider {Provider} - circuit breaker open", provider.Name);
                 continue;
             }
 
-            // Check capacity
-            if (!_resilienceService.HasCapacity(provider.Id))
-            {
-                _logger.LogDebug("Skipping provider {Provider} - no capacity", provider.Name);
-                continue;
-            }
-
-            // Get combined health score
-            var score = _resilienceService.GetSelectionScore(provider.Id);
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestProvider = provider;
-            }
+            // Create ProviderStreamInfo for each enabled alternative using proper record constructor
+            alternatives.Add(new ProviderStreamInfo(provider, minimalStreamInfo));
         }
 
-        if (bestProvider == null)
+        if (alternatives.Count == 0)
         {
-            _logger.LogDebug(
-                "No alternative provider found for {CurrentProvider} (reason: {Reason})",
+            _logger.PluginLogWarning(
+                "No alternative providers available for {CurrentProvider} (reason: {Reason})",
                 currentProviderId,
                 reason
             );
             return null;
         }
 
-        // Build the alternative URL using the best provider
-        var alternativeUrl = BuildAlternativeUrl(currentUrl, bestProvider);
+        // Delegate to AutomaticFailoverService for optimal provider selection
+        // This is the source of truth for provider health and selection
+        var orderedProviders = _failoverService.GetOrderedProviders(alternatives);
 
-        _logger.LogInformation(
-            "Found alternative provider: {Provider} (score: {Score}) for reason: {Reason}",
-            bestProvider.Name,
-            bestScore,
+        if (orderedProviders.Count == 0)
+        {
+            _logger.PluginLogWarning(
+                "AutomaticFailoverService returned no available providers for {CurrentProvider} (reason: {Reason})",
+                currentProviderId,
+                reason
+            );
+            return null;
+        }
+
+        var bestProvider = orderedProviders[0];
+
+        // Build the alternative URL using the best provider
+        var alternativeUrl = BuildAlternativeUrl(currentUrl, bestProvider.Provider);
+
+        _logger.PluginLogInformation(
+            "Hot-swap: selecting {Provider} from {CandidateCount} candidates for reason {Reason} (via AutomaticFailoverService)",
+            bestProvider.Provider.Name,
+            orderedProviders.Count,
             reason
         );
 
         return alternativeUrl;
+    }
+
+    /// <summary>
+    /// Extracts the stream ID from a URL.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int ExtractStreamId(string url)
+    {
+        // Xtream URLs typically end with /streamId.ts or /streamId
+        // Example: http://provider.com/user/pass/12345.ts
+        try
+        {
+            var uri = new Uri(url);
+            var path = uri.AbsolutePath;
+            var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length == 0)
+            {
+                return 0;
+            }
+
+            // Get the last part (stream ID with optional extension)
+            var lastPart = parts[^1];
+
+            // Remove extension if present (.ts, .m3u8, etc.)
+            var dotIndex = lastPart.LastIndexOf('.');
+            if (dotIndex > 0)
+            {
+                lastPart = lastPart[..dotIndex];
+            }
+
+            return int.TryParse(lastPart, out var id) ? id : 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     /// <summary>
@@ -257,7 +296,7 @@ public sealed class ProviderUrlResolver(
         }
 
         // Check if it starts with 'live'
-        string prefix = string.Empty;
+        var prefix = string.Empty;
         if (parts[0].Equals("live", StringComparison.OrdinalIgnoreCase))
         {
             prefix = "/live";

@@ -16,7 +16,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Jellyfin.Xtream.Service.Switching;
+namespace Jellyfin.Xtream.Service.ProviderManagement;
 
 /// <summary>
 /// Resolves alternative provider URLs for hot-swap operations.

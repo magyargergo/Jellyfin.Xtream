@@ -17,8 +17,11 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
+using Jellyfin.Xtream.Service.MpegTs;
+using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
+using Jellyfin.Xtream.Service.MpegTs.UseCases;
 
-namespace Jellyfin.Xtream.Service.Switching;
+namespace Jellyfin.Xtream.Service.ProviderManagement;
 
 /// <summary>
 /// Quality state indicating current stream health.
@@ -59,6 +62,14 @@ public sealed class StreamQualityMonitor
     private const int SlidingWindowSize = 20;
     private const long MinBaselineBytesPerSecond = 100_000; // 100 KB/s minimum baseline
 
+    // Adaptive baseline adjustment
+    private const double BaselineAdaptationRate = 0.1; // Adjust baseline by 10% per cycle
+    private const int BaselineAdaptationIntervalSamples = 10; // Reconsider baseline every 10 samples
+    private const double BaselineRecoveryThreshold = 0.7; // If current is >70% of baseline, consider recovery
+
+    // Clock for timing (injectable for testing)
+    private readonly ISystemClock _clock;
+
     // Sliding window for throughput samples (bytes per second)
     private readonly long[] _throughputSamples;
     private int _sampleIndex;
@@ -66,10 +77,11 @@ public sealed class StreamQualityMonitor
 
     // State tracking
     private long _lastBytesWritten;
-    private long _lastSampleTicks;
+    private long _lastSampleMs;
     private long _baselineThroughput;
     private int _currentQuality;
     private int _qualityChangedFlag;
+    private int _stableHealthySamples; // Count consecutive samples where throughput is stable
 
     // Callback for quality changes
     private Action<StreamQuality, long>? _onQualityChanged;
@@ -77,10 +89,12 @@ public sealed class StreamQualityMonitor
     /// <summary>
     /// Initializes a new instance of the <see cref="StreamQualityMonitor"/> class.
     /// </summary>
-    public StreamQualityMonitor()
+    /// <param name="clock">Optional clock for timing. If null, uses StopwatchClock.</param>
+    public StreamQualityMonitor(ISystemClock? clock = null)
     {
+        _clock = clock ?? new StopwatchClock();
         _throughputSamples = new long[SlidingWindowSize];
-        _lastSampleTicks = Environment.TickCount64;
+        _lastSampleMs = _clock.ElapsedMilliseconds;
         _currentQuality = (int)StreamQuality.Healthy;
     }
 
@@ -118,10 +132,7 @@ public sealed class StreamQualityMonitor
     /// Sets the callback for quality changes.
     /// </summary>
     /// <param name="callback">Callback receiving quality and current throughput.</param>
-    public void SetQualityChangedCallback(Action<StreamQuality, long> callback)
-    {
-        _onQualityChanged = callback;
-    }
+    public void SetQualityChangedCallback(Action<StreamQuality, long> callback) => _onQualityChanged = callback;
 
     /// <summary>
     /// Records a throughput sample. Call this periodically (e.g., every 100-500ms).
@@ -130,9 +141,9 @@ public sealed class StreamQualityMonitor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void RecordSample(long totalBytesWritten)
     {
-        long now = Environment.TickCount64;
-        long lastTicks = Interlocked.Read(ref _lastSampleTicks);
-        long elapsedMs = now - lastTicks;
+        var now = _clock.ElapsedMilliseconds;
+        var lastMs = Interlocked.Read(ref _lastSampleMs);
+        var elapsedMs = now - lastMs;
 
         // Avoid division by zero and too-frequent sampling
         if (elapsedMs < 50)
@@ -140,11 +151,11 @@ public sealed class StreamQualityMonitor
             return;
         }
 
-        long lastBytes = Interlocked.Exchange(ref _lastBytesWritten, totalBytesWritten);
-        Interlocked.Exchange(ref _lastSampleTicks, now);
+        var lastBytes = Interlocked.Exchange(ref _lastBytesWritten, totalBytesWritten);
+        _ = Interlocked.Exchange(ref _lastSampleMs, now);
 
-        long bytesThisPeriod = totalBytesWritten - lastBytes;
-        long bytesPerSecond = (bytesThisPeriod * 1000) / elapsedMs;
+        var bytesThisPeriod = totalBytesWritten - lastBytes;
+        var bytesPerSecond = bytesThisPeriod * 1000 / elapsedMs;
 
         AddSample(bytesPerSecond, elapsedMs);
     }
@@ -158,7 +169,7 @@ public sealed class StreamQualityMonitor
     public bool ShouldTriggerSwitch()
     {
         var quality = CurrentQuality;
-        return quality == StreamQuality.Critical || quality == StreamQuality.Stalled;
+        return quality is StreamQuality.Critical or StreamQuality.Stalled;
     }
 
     /// <summary>
@@ -166,10 +177,7 @@ public sealed class StreamQualityMonitor
     /// </summary>
     /// <returns>True if preconnection is recommended.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool ShouldPreconnect()
-    {
-        return CurrentQuality >= StreamQuality.Degrading;
-    }
+    public bool ShouldPreconnect() => CurrentQuality >= StreamQuality.Degrading;
 
     /// <summary>
     /// Resets the monitor state. Call when switching providers.
@@ -180,8 +188,9 @@ public sealed class StreamQualityMonitor
         _sampleIndex = 0;
         _sampleCount = 0;
         _lastBytesWritten = 0;
-        _lastSampleTicks = Environment.TickCount64;
-        Interlocked.Exchange(ref _baselineThroughput, 0);
+        _lastSampleMs = _clock.ElapsedMilliseconds;
+        _stableHealthySamples = 0;
+        _ = Interlocked.Exchange(ref _baselineThroughput, 0);
         Volatile.Write(ref _currentQuality, (int)StreamQuality.Healthy);
         Volatile.Write(ref _qualityChangedFlag, 0);
     }
@@ -190,34 +199,78 @@ public sealed class StreamQualityMonitor
     /// Manually sets the baseline throughput. Useful when inheriting from previous provider.
     /// </summary>
     /// <param name="bytesPerSecond">Baseline throughput in bytes per second.</param>
-    public void SetBaseline(long bytesPerSecond)
-    {
+    public void SetBaseline(long bytesPerSecond) =>
         Interlocked.Exchange(ref _baselineThroughput, Math.Max(bytesPerSecond, MinBaselineBytesPerSecond));
-    }
 
     private void AddSample(long bytesPerSecond, long elapsedMs)
     {
         // Store in sliding window
-        int idx = _sampleIndex;
+        var idx = _sampleIndex;
         _throughputSamples[idx] = bytesPerSecond;
         _sampleIndex = (idx + 1) % SlidingWindowSize;
 
-        int count = Volatile.Read(ref _sampleCount);
+        var count = Volatile.Read(ref _sampleCount);
         if (count < SlidingWindowSize)
         {
-            Interlocked.Increment(ref _sampleCount);
+            _ = Interlocked.Increment(ref _sampleCount);
             count++;
         }
 
         // Update baseline from early samples
         if (count == MinSamplesForBaseline)
         {
-            long baseline = CalculateAverageThroughput();
-            Interlocked.Exchange(ref _baselineThroughput, Math.Max(baseline, MinBaselineBytesPerSecond));
+            var baseline = CalculateAverageThroughput();
+            _ = Interlocked.Exchange(ref _baselineThroughput, Math.Max(baseline, MinBaselineBytesPerSecond));
+        }
+
+        // Adaptive baseline adjustment: if throughput is stable, gradually adjust baseline
+        // This prevents the baseline from being stuck at an artificially high initial value
+        if (count > MinSamplesForBaseline && count % BaselineAdaptationIntervalSamples == 0)
+        {
+            AdaptBaseline();
         }
 
         // Assess quality
         AssessQuality(elapsedMs);
+    }
+
+    private void AdaptBaseline()
+    {
+        var currentAvg = CalculateAverageThroughput();
+        var baseline = Interlocked.Read(ref _baselineThroughput);
+
+        if (baseline == 0 || currentAvg == 0)
+        {
+            return;
+        }
+
+        var ratio = (double)currentAvg / baseline;
+
+        // If current throughput is consistently above recovery threshold but below baseline,
+        // gradually lower the baseline to match sustained performance
+        if (ratio is >= BaselineRecoveryThreshold and < 1.0)
+        {
+            // Gradually lower baseline toward current average
+            var newBaseline = (long)(
+                (baseline * (1.0 - BaselineAdaptationRate)) + (currentAvg * BaselineAdaptationRate)
+            );
+            newBaseline = Math.Max(newBaseline, MinBaselineBytesPerSecond);
+            _ = Interlocked.Exchange(ref _baselineThroughput, newBaseline);
+            _stableHealthySamples++;
+
+            // If we've had sustained stable throughput, aggressively adapt baseline
+            if (_stableHealthySamples >= 3)
+            {
+                // After 3 stable adaptation cycles, set baseline to current average
+                _ = Interlocked.Exchange(ref _baselineThroughput, Math.Max(currentAvg, MinBaselineBytesPerSecond));
+                _stableHealthySamples = 0;
+            }
+        }
+        else
+        {
+            // Throughput recovered/exceeded baseline OR quality is degraded - reset stable counter
+            _stableHealthySamples = 0;
+        }
     }
 
     private void AssessQuality(long sampleIntervalMs)
@@ -225,8 +278,8 @@ public sealed class StreamQualityMonitor
         var previousQuality = (StreamQuality)Volatile.Read(ref _currentQuality);
         StreamQuality newQuality;
 
-        long baseline = Interlocked.Read(ref _baselineThroughput);
-        long currentThroughput = CalculateAverageThroughput();
+        var baseline = Interlocked.Read(ref _baselineThroughput);
+        var currentThroughput = CalculateAverageThroughput();
 
         // Check for stall
         if (currentThroughput == 0 && sampleIntervalMs > StallThresholdMs)
@@ -240,20 +293,12 @@ public sealed class StreamQualityMonitor
         }
         else
         {
-            double ratio = (double)currentThroughput / baseline;
+            var ratio = (double)currentThroughput / baseline;
 
-            if (ratio < CriticalThresholdRatio)
-            {
-                newQuality = StreamQuality.Critical;
-            }
-            else if (ratio < DegradingThresholdRatio)
-            {
-                newQuality = StreamQuality.Degrading;
-            }
-            else
-            {
-                newQuality = StreamQuality.Healthy;
-            }
+            newQuality =
+                ratio < CriticalThresholdRatio ? StreamQuality.Critical
+                : ratio < DegradingThresholdRatio ? StreamQuality.Degrading
+                : StreamQuality.Healthy;
         }
 
         if (newQuality != previousQuality)
@@ -267,16 +312,16 @@ public sealed class StreamQualityMonitor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private long CalculateAverageThroughput()
     {
-        int count = Volatile.Read(ref _sampleCount);
+        var count = Volatile.Read(ref _sampleCount);
         if (count == 0)
         {
             return 0;
         }
 
         long sum = 0;
-        int samplesToUse = Math.Min(count, SlidingWindowSize);
+        var samplesToUse = Math.Min(count, SlidingWindowSize);
 
-        for (int i = 0; i < samplesToUse; i++)
+        for (var i = 0; i < samplesToUse; i++)
         {
             sum += Volatile.Read(ref _throughputSamples[i]);
         }

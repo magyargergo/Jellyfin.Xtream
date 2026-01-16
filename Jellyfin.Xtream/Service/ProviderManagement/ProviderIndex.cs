@@ -81,10 +81,7 @@ public sealed class FastProviderIndex
     /// <param name="index">The output index if found.</param>
     /// <returns>True if the provider was found.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryGetIndex(string providerId, out int index)
-    {
-        return _idToIndex.TryGetValue(providerId, out index);
-    }
+    public bool TryGetIndex(string providerId, out int index) => _idToIndex.TryGetValue(providerId, out index);
 
     /// <summary>
     /// Gets the provider ID for a given index.
@@ -95,12 +92,7 @@ public sealed class FastProviderIndex
     public string? GetProviderId(int index)
     {
         var ids = _indexToId;
-        if ((uint)index >= (uint)Volatile.Read(ref _count))
-        {
-            return null;
-        }
-
-        return ids[index];
+        return (uint)index >= (uint)Volatile.Read(ref _count) ? null : ids[index];
     }
 
     /// <summary>
@@ -112,12 +104,7 @@ public sealed class FastProviderIndex
     public int GetScore(int index)
     {
         var scores = _scores;
-        if ((uint)index >= (uint)Volatile.Read(ref _count))
-        {
-            return 0;
-        }
-
-        return Volatile.Read(ref scores[index]);
+        return (uint)index >= (uint)Volatile.Read(ref _count) ? 0 : Volatile.Read(ref scores[index]);
     }
 
     /// <summary>
@@ -126,15 +113,7 @@ public sealed class FastProviderIndex
     /// <param name="providerId">The provider ID.</param>
     /// <returns>The provider score, or 0 if not found.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public int GetScore(string providerId)
-    {
-        if (!TryGetIndex(providerId, out var index))
-        {
-            return 0;
-        }
-
-        return GetScore(index);
-    }
+    public int GetScore(string providerId) => !TryGetIndex(providerId, out var index) ? 0 : GetScore(index);
 
     /// <summary>
     /// Sets the score for a provider by index. Thread-safe using volatile writes.
@@ -189,12 +168,7 @@ public sealed class FastProviderIndex
         }
 
         var lastTicks = Volatile.Read(ref updateTicks[index]);
-        if (lastTicks == 0)
-        {
-            return long.MaxValue;
-        }
-
-        return (DateTime.UtcNow.Ticks - lastTicks) / TimeSpan.TicksPerMillisecond;
+        return lastTicks == 0 ? long.MaxValue : (DateTime.UtcNow.Ticks - lastTicks) / TimeSpan.TicksPerMillisecond;
     }
 
     /// <summary>
@@ -208,7 +182,7 @@ public sealed class FastProviderIndex
         var count = Volatile.Read(ref _count);
         if (count == 0)
         {
-            return Array.Empty<int>();
+            return [];
         }
 
         topN = Math.Min(topN, count);
@@ -218,16 +192,16 @@ public sealed class FastProviderIndex
         if (count <= 16)
         {
             Span<(int Index, int Score)> items = stackalloc (int, int)[count];
-            for (int i = 0; i < count; i++)
+            for (var i = 0; i < count; i++)
             {
                 items[i] = (i, Volatile.Read(ref scores[i]));
             }
 
             // Sort descending by score using insertion sort (optimal for small N)
-            for (int i = 1; i < count; i++)
+            for (var i = 1; i < count; i++)
             {
                 var key = items[i];
-                int j = i - 1;
+                var j = i - 1;
                 while (j >= 0 && items[j].Score < key.Score)
                 {
                     items[j + 1] = items[j];
@@ -238,7 +212,7 @@ public sealed class FastProviderIndex
             }
 
             var result = new int[topN];
-            for (int i = 0; i < topN; i++)
+            for (var i = 0; i < topN; i++)
             {
                 result[i] = items[i].Index;
             }
@@ -257,10 +231,7 @@ public sealed class FastProviderIndex
     /// <param name="staleThresholdMs">The staleness threshold in milliseconds.</param>
     /// <returns>True if the score is stale or never updated.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsScoreStale(int index, long staleThresholdMs)
-    {
-        return GetMillisSinceUpdate(index) > staleThresholdMs;
-    }
+    public bool IsScoreStale(int index, long staleThresholdMs) => GetMillisSinceUpdate(index) > staleThresholdMs;
 
     /// <summary>
     /// Gets all provider IDs as a read-only span.
@@ -292,7 +263,7 @@ public sealed class FastProviderIndex
         var updateTicks = _lastUpdateTicks;
         var count = Volatile.Read(ref _count);
 
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             Volatile.Write(ref scores[i], 0);
             Volatile.Write(ref updateTicks[i], 0);
@@ -349,13 +320,13 @@ public sealed class FastProviderIndex
         _lastUpdateTicks = newUpdateTicks;
     }
 
-    private int[] GetTopNPartialSort(int topN, int count, int[] scores)
+    private static int[] GetTopNPartialSort(int topN, int count, int[] scores)
     {
         // Use a min-heap approach for larger arrays
         var heap = new (int Score, int Index)[topN];
-        int heapSize = 0;
+        var heapSize = 0;
 
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             var score = Volatile.Read(ref scores[i]);
 
@@ -366,10 +337,10 @@ public sealed class FastProviderIndex
                 heapSize++;
 
                 // Heapify up
-                int child = heapSize - 1;
+                var child = heapSize - 1;
                 while (child > 0)
                 {
-                    int parent = (child - 1) / 2;
+                    var parent = (child - 1) / 2;
                     if (heap[parent].Score <= heap[child].Score)
                     {
                         break;
@@ -385,12 +356,12 @@ public sealed class FastProviderIndex
                 heap[0] = (score, i);
 
                 // Heapify down
-                int parent = 0;
+                var parent = 0;
                 while (true)
                 {
-                    int left = 2 * parent + 1;
-                    int right = 2 * parent + 2;
-                    int smallest = parent;
+                    var left = (2 * parent) + 1;
+                    var right = (2 * parent) + 2;
+                    var smallest = parent;
 
                     if (left < heapSize && heap[left].Score < heap[smallest].Score)
                     {
@@ -415,7 +386,7 @@ public sealed class FastProviderIndex
 
         // Extract results in descending order
         var result = new int[heapSize];
-        for (int i = heapSize - 1; i >= 0; i--)
+        for (var i = heapSize - 1; i >= 0; i--)
         {
             result[i] = heap[0].Index;
 
@@ -423,12 +394,12 @@ public sealed class FastProviderIndex
             heap[0] = heap[heapSize - 1];
             heapSize--;
 
-            int parent = 0;
+            var parent = 0;
             while (true)
             {
-                int left = 2 * parent + 1;
-                int right = 2 * parent + 2;
-                int smallest = parent;
+                var left = (2 * parent) + 1;
+                var right = (2 * parent) + 2;
+                var smallest = parent;
 
                 if (left < heapSize && heap[left].Score < heap[smallest].Score)
                 {

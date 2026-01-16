@@ -17,6 +17,8 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
@@ -26,37 +28,34 @@ namespace Jellyfin.Xtream.Service.ProviderManagement;
 /// <summary>
 /// Automatic failover service that selects optimal providers based on
 /// combined health metrics, circuit breaker state, performance data,
-/// and predictive health trend analysis.
+/// and predictive health trend analysis. This is the single entry point
+/// for all provider-related operations outside the ProviderManagement namespace.
 /// </summary>
 /// <remarks>
 /// Initializes a new instance of the <see cref="AutomaticFailoverService"/> class.
 /// </remarks>
-/// <param name="healthScorer">The provider health scorer for availability and scoring.</param>
-/// <param name="circuitBreaker">The circuit breaker service for state queries.</param>
+/// <param name="availabilityService">The provider availability service (combines health scoring, circuit breaker, and capacity).</param>
 /// <param name="metrics">The provider metrics tracker.</param>
 /// <param name="trends">The health trend tracker.</param>
 /// <param name="logger">The logger instance.</param>
 /// <param name="configProvider">Configuration provider.</param>
 public sealed class AutomaticFailoverService(
-    IProviderHealthScorer healthScorer,
-    ICircuitBreakerService circuitBreaker,
+    IProviderAvailabilityService availabilityService,
     IProviderMetricsTracker metrics,
     IHealthTrendTracker trends,
     ILogger logger,
     IPluginConfigurationProvider? configProvider = null
 ) : IAutomaticFailoverService
 {
-    private readonly IProviderHealthScorer _healthScorer = healthScorer;
-    private readonly ICircuitBreakerService _circuitBreaker = circuitBreaker;
+    private readonly IProviderAvailabilityService _availabilityService = availabilityService;
     private readonly IProviderMetricsTracker _metrics = metrics;
-    private readonly IHealthTrendTracker _trends = trends;
     private readonly ILogger _logger = logger;
     private readonly IPluginConfigurationProvider _configProvider = configProvider ?? new PluginConfigurationProvider();
 
     /// <summary>
     /// Gets the health trend tracker for external access.
     /// </summary>
-    public IHealthTrendTracker TrendTracker => _trends;
+    public IHealthTrendTracker TrendTracker { get; } = trends;
 
     /// <summary>
     /// Gets providers ordered by combined health score for optimal failover.
@@ -70,7 +69,7 @@ public sealed class AutomaticFailoverService(
         var skipUnavailable = config?.SkipUnavailableProviders ?? true;
 
         // Delegate to the optimized resilience service for base sorting
-        var baseSorted = _healthScorer.GetSortedProviders(providers, forceIncludeAll: !skipUnavailable);
+        var baseSorted = _availabilityService.GetSortedProviders(providers, forceIncludeAll: !skipUnavailable);
 
         if (baseSorted.Count == 0)
         {
@@ -90,9 +89,9 @@ public sealed class AutomaticFailoverService(
             for (var i = 0; i < count; i++)
             {
                 var p = baseSorted[i];
-                var resilienceScore = _healthScorer.GetSelectionScore(p.Provider.Id);
+                var resilienceScore = _availabilityService.GetSelectionScore(p.Provider.Id);
                 var metricsScore = _metrics.CalculateHealthScore(p.Provider.Id);
-                var isAvailable = _healthScorer.IsAvailable(p.Provider.Id);
+                var isAvailable = _availabilityService.IsAvailable(p.Provider.Id);
                 var combined = CalculateCombinedScore(resilienceScore, metricsScore, isAvailable);
                 scoredArray[i] = (p, combined, resilienceScore, metricsScore);
             }
@@ -106,8 +105,8 @@ public sealed class AutomaticFailoverService(
                 var rankings = new string[topCount];
                 for (var i = 0; i < topCount; i++)
                 {
-                    var s = scoredArray[i];
-                    rankings[i] = $"{s.Provider.Provider.Name}={s.Combined} (R:{s.Resilience} M:{s.Metrics})";
+                    var (provider, Combined, resilience, metrics) = scoredArray[i];
+                    rankings[i] = $"{provider.Provider.Name}={Combined} (R:{resilience} M:{metrics})";
                 }
 
                 _logger.LogDebugIfEnabled("Provider ranking: {Providers}", string.Join(", ", rankings));
@@ -149,199 +148,10 @@ public sealed class AutomaticFailoverService(
             }
 
             var resilienceCompare = y.Resilience.CompareTo(x.Resilience);
-            if (resilienceCompare != 0)
-            {
-                return resilienceCompare;
-            }
-
-            return StringComparer.Ordinal.Compare(x.Provider.Provider.Name, y.Provider.Provider.Name);
+            return resilienceCompare != 0
+                ? resilienceCompare
+                : StringComparer.Ordinal.Compare(x.Provider.Provider.Name, y.Provider.Provider.Name);
         }
-    }
-
-    /// <summary>
-    /// Determines if a provider switch is recommended based on health trends.
-    /// Uses predictive analysis to switch before failures occur.
-    /// </summary>
-    /// <param name="currentProviderId">The currently active provider.</param>
-    /// <param name="availableProviders">All available providers.</param>
-    /// <returns>Recommended provider if switch is advised, null otherwise.</returns>
-    public ProviderStreamInfo? ShouldSwitchProvider(
-        string currentProviderId,
-        IEnumerable<ProviderStreamInfo> availableProviders
-    )
-    {
-        var providers = availableProviders as IList<ProviderStreamInfo> ?? [.. availableProviders];
-        if (providers.Count <= 1)
-        {
-            return null;
-        }
-
-        // Find current provider
-        ProviderStreamInfo? currentProvider = null;
-        foreach (var p in providers)
-        {
-            if (p.Provider.Id == currentProviderId)
-            {
-                currentProvider = p;
-                break;
-            }
-        }
-
-        if (currentProvider is null)
-        {
-            return null;
-        }
-
-        // Get current provider scores and trend data
-        var currentResilienceScore = _healthScorer.GetSelectionScore(currentProviderId);
-        var currentMetricsScore = _metrics.CalculateHealthScore(currentProviderId);
-        var currentCombined = CalculateCombinedScore(currentResilienceScore, currentMetricsScore, true);
-        var currentTrend = _trends.GetSnapshot(currentProviderId);
-
-        // Check if current provider is degraded or predicted to fail
-        var isCurrentDegraded = currentCombined < DegradedThreshold;
-        var isCurrentCritical = currentCombined < CriticalThreshold;
-        var predictedFailure = currentTrend.SuggestsImminentFailure;
-
-        // Find the best alternative - filter out current provider manually
-        var alternativesCount = providers.Count - 1;
-        if (alternativesCount == 0)
-        {
-            return null;
-        }
-
-        var alternatives = ArrayPool<ProviderStreamInfo>.Shared.Rent(alternativesCount);
-        try
-        {
-            var altIndex = 0;
-            foreach (var p in providers)
-            {
-                if (p.Provider.Id != currentProviderId)
-                {
-                    alternatives[altIndex++] = p;
-                }
-            }
-
-            var ordered = GetOrderedProviders(alternatives.AsSpan(0, altIndex).ToArray());
-            if (ordered.Count == 0)
-            {
-                return null;
-            }
-
-            var bestAlt = ordered[0];
-            var altResilienceScore = _healthScorer.GetSelectionScore(bestAlt.Provider.Id);
-            var altMetricsScore = _metrics.CalculateHealthScore(bestAlt.Provider.Id);
-            var altCombined = CalculateCombinedScore(altResilienceScore, altMetricsScore, true);
-            var altTrend = _trends.GetSnapshot(bestAlt.Provider.Id);
-
-            return EvaluateSwitchDecision(
-                currentProvider,
-                currentCombined,
-                currentTrend,
-                isCurrentDegraded,
-                isCurrentCritical,
-                predictedFailure,
-                bestAlt,
-                altCombined,
-                altTrend
-            );
-        }
-        finally
-        {
-            ArrayPool<ProviderStreamInfo>.Shared.Return(alternatives);
-        }
-    }
-
-    private ProviderStreamInfo? EvaluateSwitchDecision(
-        ProviderStreamInfo currentProvider,
-        int currentCombined,
-        HealthTrendSnapshot currentTrend,
-        bool isCurrentDegraded,
-        bool isCurrentCritical,
-        bool predictedFailure,
-        ProviderStreamInfo bestAlt,
-        int altCombined,
-        HealthTrendSnapshot altTrend
-    )
-    {
-        // Switch decision logic:
-        // 0. Predictive: Switch if current provider is predicted to fail soon
-        // 1. Critical current provider - switch if any alternative is better
-        // 2. Degraded current provider - switch if alternative is significantly better
-        // 3. Healthy current provider - switch only if alternative is much better (avoid flapping)
-
-        // Predictive switching: switch before failure if alternative is stable/improving
-        if (predictedFailure && !altTrend.SuggestsImminentFailure && altCombined >= DegradedThreshold)
-        {
-            _logger.PluginLogInformation(
-                "Predictive provider switch: {Current} (score={CurrentScore}, trend={Trend}, predicted60s={Predicted}) → {Alt} (score={AltScore}) - imminent failure predicted",
-                currentProvider.Provider.Name,
-                currentCombined,
-                currentTrend.Trend,
-                currentTrend.PredictedScore60s,
-                bestAlt.Provider.Name,
-                altCombined
-            );
-            return bestAlt;
-        }
-
-        if (isCurrentCritical && altCombined > currentCombined)
-        {
-            _logger.PluginLogInformation(
-                "Recommending provider switch: {Current} (score={CurrentScore}) → {Alt} (score={AltScore}) - current is critical",
-                currentProvider.Provider.Name,
-                currentCombined,
-                bestAlt.Provider.Name,
-                altCombined
-            );
-            return bestAlt;
-        }
-
-        if (isCurrentDegraded && altCombined > currentCombined + SignificantImprovement)
-        {
-            _logger.PluginLogInformation(
-                "Recommending provider switch: {Current} (score={CurrentScore}) → {Alt} (score={AltScore}) - significant improvement available",
-                currentProvider.Provider.Name,
-                currentCombined,
-                bestAlt.Provider.Name,
-                altCombined
-            );
-            return bestAlt;
-        }
-
-        // Healthy provider - only switch if alternative is much better
-        if (altCombined > currentCombined + MajorImprovement)
-        {
-            _logger.PluginLogInformation(
-                "Recommending provider switch: {Current} (score={CurrentScore}) → {Alt} (score={AltScore}) - major improvement available",
-                currentProvider.Provider.Name,
-                currentCombined,
-                bestAlt.Provider.Name,
-                altCombined
-            );
-            return bestAlt;
-        }
-
-        // Also consider switching if current is degrading and alternative is improving
-        if (
-            currentTrend.Trend == HealthTrend.Degrading
-            && altTrend.Trend == HealthTrend.Improving
-            && altCombined >= currentCombined
-        )
-        {
-            _logger.PluginLogInformation(
-                "Trend-based provider switch: {Current} (score={CurrentScore}, trend={CurrentTrend}) → {Alt} (score={AltScore}, trend={AltTrend}) - better trajectory",
-                currentProvider.Provider.Name,
-                currentCombined,
-                currentTrend.Trend,
-                bestAlt.Provider.Name,
-                altCombined,
-                altTrend.Trend
-            );
-            return bestAlt;
-        }
-
-        return null;
     }
 
     /// <summary>
@@ -362,9 +172,9 @@ public sealed class AutomaticFailoverService(
         for (var i = 0; i < count; i++)
         {
             var p = providerList[i];
-            var resilienceScore = _healthScorer.GetSelectionScore(p.Id);
+            var resilienceScore = _availabilityService.GetSelectionScore(p.Id);
             var metricsScore = _metrics.CalculateHealthScore(p.Id);
-            var isAvailable = _healthScorer.IsAvailable(p.Id);
+            var isAvailable = _availabilityService.IsAvailable(p.Id);
 
             summaries[i] = new ProviderHealthSummary
             {
@@ -374,9 +184,9 @@ public sealed class AutomaticFailoverService(
                 MetricsScore = metricsScore,
                 CombinedScore = CalculateCombinedScore(resilienceScore, metricsScore, isAvailable),
                 IsAvailable = isAvailable,
-                CircuitState = _circuitBreaker.GetCircuitState(p.Id),
+                CircuitState = _availabilityService.GetCircuitState(p.Id),
                 Metrics = _metrics.GetSnapshot(p.Id),
-                TrendSnapshot = _trends.GetSnapshot(p.Id),
+                TrendSnapshot = TrendTracker.GetSnapshot(p.Id),
             };
         }
 
@@ -385,39 +195,6 @@ public sealed class AutomaticFailoverService(
 
         return summaries;
     }
-
-    /// <summary>
-    /// Records a health sample for trend tracking.
-    /// </summary>
-    /// <param name="providerId">The provider ID.</param>
-    /// <param name="healthScore">The current health score (0-100).</param>
-    public void RecordHealthSample(string providerId, int healthScore)
-    {
-        _trends.RecordSample(providerId, healthScore);
-    }
-
-    /// <summary>
-    /// Updates all provider trends based on current metrics.
-    /// Should be called periodically (e.g., every 5-10 seconds).
-    /// </summary>
-    /// <param name="providers">The providers to update.</param>
-    public void UpdateTrends(IEnumerable<XtreamProvider> providers)
-    {
-        foreach (var provider in providers)
-        {
-            var resilienceScore = _healthScorer.GetSelectionScore(provider.Id);
-            var metricsScore = _metrics.CalculateHealthScore(provider.Id);
-            var isAvailable = _healthScorer.IsAvailable(provider.Id);
-            var combined = CalculateCombinedScore(resilienceScore, metricsScore, isAvailable);
-            _trends.RecordSample(provider.Id, combined);
-        }
-    }
-
-    // Thresholds for failover decisions
-    private const int DegradedThreshold = 50;
-    private const int CriticalThreshold = 25;
-    private const int SignificantImprovement = 15;
-    private const int MajorImprovement = 30;
 
     // Weights for combined score
     private const double ResilienceWeight = 0.6;
@@ -431,15 +208,74 @@ public sealed class AutomaticFailoverService(
             return 0;
         }
 
-        double combined = (resilienceScore * ResilienceWeight) + (metricsScore * MetricsWeight);
+        var combined = (resilienceScore * ResilienceWeight) + (metricsScore * MetricsWeight);
         return Math.Clamp((int)combined, 0, 100);
     }
+
+    #region Provider State Management (delegated to underlying services)
+
+    /// <inheritdoc />
+    public int GetSelectionScore(string providerId) => _availabilityService.GetSelectionScore(providerId);
+
+    /// <inheritdoc />
+    public bool IsAvailable(string providerId) => _availabilityService.IsAvailable(providerId);
+
+    /// <inheritdoc />
+    public bool HasCapacity(string providerId) => _availabilityService.HasCapacity(providerId);
+
+    /// <inheritdoc />
+    public ProviderCircuitState GetCircuitState(string providerId) => _availabilityService.GetCircuitState(providerId);
+
+    /// <inheritdoc />
+    public bool NeedsRefresh() => _availabilityService.NeedsRefresh();
+
+    /// <inheritdoc />
+    public Task RefreshAsync(
+        IEnumerable<XtreamProvider> providers,
+        System.Threading.CancellationToken cancellationToken = default
+    ) => _availabilityService.RefreshAsync(providers, cancellationToken);
+
+    /// <inheritdoc />
+    public Task ResetCircuitAsync(string providerId) => _availabilityService.ResetCircuitAsync(providerId);
+
+    /// <inheritdoc />
+    public IReadOnlyDictionary<string, ProviderResilienceState> GetProviderStates() =>
+        _availabilityService.GetSnapshot();
+
+    /// <inheritdoc />
+    public ProviderMetricsSnapshot GetMetricsSnapshot(string providerId) => _metrics.GetSnapshot(providerId);
+
+    /// <inheritdoc />
+    public void RecordSuccess(string providerId) => _availabilityService.RecordSuccess(providerId);
+
+    /// <inheritdoc />
+    public bool RecordFailure(string providerId, ProviderFailureReason reason, string? providerName = null) =>
+        _availabilityService.RecordFailure(providerId, reason, providerName);
+
+    /// <inheritdoc />
+    public IReadOnlyList<ProviderStreamInfo> GetSortedProviders(
+        IEnumerable<ProviderStreamInfo> providers,
+        bool forceIncludeAll = false
+    ) => _availabilityService.GetSortedProviders(providers, forceIncludeAll);
+
+    /// <inheritdoc />
+    public void RecordThroughput(string providerId, long bytes, long elapsedMs) =>
+        _metrics.RecordThroughput(providerId, bytes, elapsedMs);
+
+    /// <inheritdoc />
+    public void RecordError(string providerId, StreamErrorType errorType) =>
+        _metrics.RecordError(providerId, errorType);
+
+    /// <inheritdoc />
+    public int CalculateHealthScore(string providerId) => _metrics.CalculateHealthScore(providerId);
+
+    #endregion
 }
 
 /// <summary>
 /// Summary of a provider's health status.
 /// </summary>
-public record struct ProviderHealthSummary
+public readonly record struct ProviderHealthSummary
 {
     /// <summary>Gets the provider ID.</summary>
     public required string ProviderId { get; init; }
@@ -460,7 +296,7 @@ public record struct ProviderHealthSummary
     public required bool IsAvailable { get; init; }
 
     /// <summary>Gets the circuit breaker state.</summary>
-    public required Polly.CircuitBreaker.CircuitState CircuitState { get; init; }
+    public required ProviderCircuitState CircuitState { get; init; }
 
     /// <summary>Gets the detailed metrics snapshot.</summary>
     public ProviderMetricsSnapshot Metrics { get; init; }

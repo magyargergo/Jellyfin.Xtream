@@ -14,6 +14,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Xtream.Configuration;
 
 namespace Jellyfin.Xtream.Service.ProviderManagement;
@@ -21,6 +23,8 @@ namespace Jellyfin.Xtream.Service.ProviderManagement;
 /// <summary>
 /// Selects optimal providers based on combined health metrics,
 /// circuit breaker state, performance data, and predictive trend analysis.
+/// This is the single entry point for all provider-related operations outside
+/// the ProviderManagement namespace.
 /// </summary>
 public interface IAutomaticFailoverService
 {
@@ -38,35 +42,124 @@ public interface IAutomaticFailoverService
     IReadOnlyList<ProviderStreamInfo> GetOrderedProviders(IEnumerable<ProviderStreamInfo> providers);
 
     /// <summary>
-    /// Determines if a provider switch is recommended based on health trends.
-    /// Uses predictive analysis to switch before failures occur.
-    /// </summary>
-    /// <param name="currentProviderId">The currently active provider.</param>
-    /// <param name="availableProviders">All available providers.</param>
-    /// <returns>Recommended provider if switch is advised, null otherwise.</returns>
-    ProviderStreamInfo? ShouldSwitchProvider(
-        string currentProviderId,
-        IEnumerable<ProviderStreamInfo> availableProviders
-    );
-
-    /// <summary>
     /// Gets a health summary for all known providers.
     /// </summary>
     /// <param name="providers">The providers to get summaries for.</param>
     /// <returns>List of provider health summaries.</returns>
     IReadOnlyList<ProviderHealthSummary> GetHealthSummaries(IEnumerable<XtreamProvider> providers);
 
-    /// <summary>
-    /// Records a health sample for trend tracking.
-    /// </summary>
-    /// <param name="providerId">The provider ID.</param>
-    /// <param name="healthScore">The current health score (0-100).</param>
-    void RecordHealthSample(string providerId, int healthScore);
+    #region Provider State Management
 
     /// <summary>
-    /// Updates all provider trends based on current metrics.
-    /// Should be called periodically (e.g., every 5-10 seconds).
+    /// Gets the selection score for a provider (0-100).
+    /// Higher scores indicate healthier providers.
     /// </summary>
-    /// <param name="providers">The providers to update.</param>
-    void UpdateTrends(IEnumerable<XtreamProvider> providers);
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>The selection score.</returns>
+    int GetSelectionScore(string providerId);
+
+    /// <summary>
+    /// Gets whether a provider is available (circuit not open).
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>True if the provider is available.</returns>
+    bool IsAvailable(string providerId);
+
+    /// <summary>
+    /// Gets whether a provider has capacity for new connections.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>True if the provider has available slots.</returns>
+    bool HasCapacity(string providerId);
+
+    /// <summary>
+    /// Gets the circuit breaker state for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>The circuit state.</returns>
+    ProviderCircuitState GetCircuitState(string providerId);
+
+    /// <summary>
+    /// Gets whether the provider status data needs refreshing.
+    /// </summary>
+    /// <returns>True if refresh is needed.</returns>
+    bool NeedsRefresh();
+
+    /// <summary>
+    /// Refreshes provider connection status asynchronously.
+    /// </summary>
+    /// <param name="providers">The providers to refresh.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the async operation.</returns>
+    Task RefreshAsync(IEnumerable<XtreamProvider> providers, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resets the circuit breaker for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>A task representing the async operation.</returns>
+    Task ResetCircuitAsync(string providerId);
+
+    /// <summary>
+    /// Gets a snapshot of all provider states.
+    /// </summary>
+    /// <returns>Dictionary of provider states.</returns>
+    IReadOnlyDictionary<string, ProviderResilienceState> GetProviderStates();
+
+    /// <summary>
+    /// Gets the metrics snapshot for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>The metrics snapshot.</returns>
+    ProviderMetricsSnapshot GetMetricsSnapshot(string providerId);
+
+    /// <summary>
+    /// Records a successful operation for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    void RecordSuccess(string providerId);
+
+    /// <summary>
+    /// Records a failed operation for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="reason">The failure reason.</param>
+    /// <param name="providerName">Optional provider name for logging.</param>
+    /// <returns>True if the circuit breaker tripped.</returns>
+    bool RecordFailure(string providerId, ProviderFailureReason reason, string? providerName = null);
+
+    /// <summary>
+    /// Gets providers sorted by selection score for failover.
+    /// </summary>
+    /// <param name="providers">The providers to sort.</param>
+    /// <param name="forceIncludeAll">Include unavailable providers.</param>
+    /// <returns>Providers sorted by selection score descending.</returns>
+    IReadOnlyList<ProviderStreamInfo> GetSortedProviders(
+        IEnumerable<ProviderStreamInfo> providers,
+        bool forceIncludeAll = false
+    );
+
+    /// <summary>
+    /// Records throughput metrics for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="bytes">The number of bytes transferred.</param>
+    /// <param name="elapsedMs">The elapsed time in milliseconds.</param>
+    void RecordThroughput(string providerId, long bytes, long elapsedMs);
+
+    /// <summary>
+    /// Records a stream error for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="errorType">The type of error.</param>
+    void RecordError(string providerId, StreamErrorType errorType);
+
+    /// <summary>
+    /// Calculates the health score for a provider based on metrics.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>The health score (0-100).</returns>
+    int CalculateHealthScore(string providerId);
+
+    #endregion
 }

@@ -50,6 +50,29 @@ public static class StreamingTimeoutPolicy
     public const int DefaultConnectTimeoutMs = 5000;
 
     /// <summary>
+    /// Default timeout for receiving HTTP response headers after TCP connection.
+    /// Detects "zombie backend" scenarios where TCP connects but HTTP never responds.
+    /// This is distinct from ConnectTimeout (TCP) and FirstByteTimeout (content).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// IPTV providers often use load balancers that route to backend servers.
+    /// When a backend is dead but TCP still accepts connections (common with nginx/haproxy),
+    /// the HTTP request is sent but no response headers are ever received.
+    /// </para>
+    /// <para>
+    /// Network analysis of provider 161.123.116.21 showed:
+    /// - TCP connects in &lt;100ms ✓
+    /// - HTTP request sent successfully ✓
+    /// - No HTTP response headers received (hangs indefinitely) ✗
+    /// </para>
+    /// <para>
+    /// 10 seconds allows for slow but responsive backends while catching dead ones.
+    /// </para>
+    /// </remarks>
+    public const int DefaultResponseHeadersTimeoutMs = 10000;
+
+    /// <summary>
     /// Default timeout for receiving first byte of data after connection.
     /// Detects "connected but no data" scenarios common with overloaded providers.
     /// </summary>
@@ -60,10 +83,12 @@ public static class StreamingTimeoutPolicy
 
     /// <summary>
     /// Default timeout for detecting data stalls during MPEG-TS streaming.
-    /// For persistent TCP streams, 10s is conservative; broadcast systems typically use 2-5s.
-    /// We use 10s to accommodate variable bitrate streams and network jitter.
+    /// For persistent TCP streams, 20s accommodates bursty IPTV providers that deliver data
+    /// in irregular intervals. Many providers pause for 5-15s between data bursts during
+    /// lower-bitrate segments or congestion. Using 10s caused excessive false-positive
+    /// reconnections and hot-swaps. 20s balances responsiveness with burst tolerance.
     /// </summary>
-    public const int DefaultDataStallTimeoutMs = 10000;
+    public const int DefaultDataStallTimeoutMs = 20000;
 
     /// <summary>
     /// Minimum delay between reconnection attempts within same provider.
@@ -125,8 +150,10 @@ public static class StreamingTimeoutPolicy
 
     /// <summary>
     /// Number of consecutive failures before blacklisting a provider.
+    /// Reduced from 3 to 2 for faster failover per Polly best practices.
+    /// At 20s stall detection, 2 failures = 40s before switch vs 60s with 3.
     /// </summary>
-    public const int BlacklistThreshold = 3;
+    public const int BlacklistThreshold = 2;
 
     // ========== Configuration Accessors ==========
     // Get timeout values from plugin configuration with fallback to defaults
@@ -153,6 +180,19 @@ public static class StreamingTimeoutPolicy
         config ??= GetConfig();
         var seconds = config?.StreamFirstByteTimeoutSeconds ?? 0;
         return seconds > 0 ? seconds * 1000 : DefaultFirstByteTimeoutMs;
+    }
+
+    /// <summary>
+    /// Gets the response headers timeout from configuration or default.
+    /// This is the time to wait for HTTP response headers after TCP connection.
+    /// </summary>
+    /// <param name="config">Plugin configuration (optional).</param>
+    /// <returns>Response headers timeout in milliseconds.</returns>
+    public static int GetResponseHeadersTimeoutMs(PluginConfiguration? config = null)
+    {
+        config ??= GetConfig();
+        var seconds = config?.StreamResponseHeadersTimeoutSeconds ?? 0;
+        return seconds > 0 ? seconds * 1000 : DefaultResponseHeadersTimeoutMs;
     }
 
     /// <summary>
@@ -195,19 +235,13 @@ public static class StreamingTimeoutPolicy
     /// Gets the extended blacklist duration (for severe errors).
     /// </summary>
     /// <returns>Extended blacklist duration as TimeSpan.</returns>
-    public static TimeSpan GetExtendedBlacklistDuration()
-    {
-        return TimeSpan.FromMilliseconds(ExtendedBlacklistDurationMs);
-    }
+    public static TimeSpan GetExtendedBlacklistDuration() => TimeSpan.FromMilliseconds(ExtendedBlacklistDurationMs);
 
     /// <summary>
     /// Gets the quick blacklist duration (for transient errors).
     /// </summary>
     /// <returns>Quick blacklist duration as TimeSpan.</returns>
-    public static TimeSpan GetQuickBlacklistDuration()
-    {
-        return TimeSpan.FromMilliseconds(QuickBlacklistDurationMs);
-    }
+    public static TimeSpan GetQuickBlacklistDuration() => TimeSpan.FromMilliseconds(QuickBlacklistDurationMs);
 
     /// <summary>
     /// Gets the max failover attempts from configuration or default.
@@ -234,7 +268,7 @@ public static class StreamingTimeoutPolicy
             return 0; // No delay for first attempt
         }
 
-        int delay = FailoverDelayBaseMs * (1 << (attemptNumber - 2));
+        var delay = FailoverDelayBaseMs * (1 << (attemptNumber - 2));
         return Math.Min(delay, FailoverDelayMaxMs);
     }
 
@@ -243,10 +277,8 @@ public static class StreamingTimeoutPolicy
     /// </summary>
     /// <param name="config">Plugin configuration (optional).</param>
     /// <returns>Combined timeout in milliseconds.</returns>
-    public static int GetStreamOpenTimeoutMs(PluginConfiguration? config = null)
-    {
-        return GetConnectTimeoutMs(config) + GetFirstByteTimeoutMs(config);
-    }
+    public static int GetStreamOpenTimeoutMs(PluginConfiguration? config = null) =>
+        GetConnectTimeoutMs(config) + GetFirstByteTimeoutMs(config);
 
     /// <summary>
     /// Calculates the per-attempt timeout to allow multiple providers within budget.
@@ -268,19 +300,17 @@ public static class StreamingTimeoutPolicy
         }
 
         // Calculate fair share of remaining budget
-        int fairShareMs = attemptsRemaining > 0 ? remainingBudgetMs / attemptsRemaining : remainingBudgetMs;
+        var fairShareMs = attemptsRemaining > 0 ? remainingBudgetMs / attemptsRemaining : remainingBudgetMs;
 
         // Ensure minimum viable timeout for TCP establishment
-        int effectiveTimeout = Math.Max(fairShareMs, MinPerAttemptTimeoutMs);
+        var effectiveTimeout = Math.Max(fairShareMs, MinPerAttemptTimeoutMs);
 
         // Cap at remaining budget (can't exceed what's left)
         effectiveTimeout = Math.Min(effectiveTimeout, remainingBudgetMs);
 
         // Also cap at stream open timeout (no need to wait longer than connection time)
-        int streamOpenTimeout = GetStreamOpenTimeoutMs(config);
-        effectiveTimeout = Math.Min(effectiveTimeout, streamOpenTimeout);
-
-        return effectiveTimeout;
+        var streamOpenTimeout = GetStreamOpenTimeoutMs(config);
+        return Math.Min(effectiveTimeout, streamOpenTimeout);
     }
 
     private static PluginConfiguration? GetConfig()
