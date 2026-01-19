@@ -547,6 +547,64 @@ graph TD
     Provider --> MpegTs
 ```
 
+## Development Status
+
+### Recent Changes (January 2025)
+
+#### TsDuck Native TR 101 290 Integration
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **TsDuck Native Library** | ✅ Complete | C++ interop library for broadcast-grade TR 101 290 monitoring |
+| **Native Build System** | ✅ Complete | Docker-based build for Linux, MSBuild integration |
+| **ITsDuckAnalyzer Interface** | ✅ Complete | Abstraction with NativeTsDuckAnalyzer and NullTsDuckAnalyzer |
+| **TsDuckMetrics** | ✅ Complete | Priority 1/2 error tracking, PCR jitter analysis, quality scoring |
+| **Streaming Integration** | ✅ Complete | Wired into CircularBufferWriteStream and Restream |
+| **Discord Integration** | ✅ Complete | TsDuck metrics in stream health notifications |
+
+#### Provider Management Enhancements
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **Auto-Priority Scoring** | ✅ Complete | Automatic priority calculation from streaming performance |
+| **Priority Property** | ✅ Complete | XtreamProvider.Priority (0-100, lower = better) |
+| **Predictive Failover** | ✅ Complete | Trend analysis in AutomaticFailoverService |
+| **TsDuck Metrics Forwarding** | ✅ Complete | ProviderSwitchService records TsDuck quality data |
+| **UI Priority Display** | ✅ Complete | Web UI shows priority badges, sorted by performance |
+
+#### Channel Matching Improvements
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **Unicode Separators** | ✅ Complete | Support for ⭐★▶►•●○–—~ in channel name prefixes |
+| **Country Fallback** | ✅ Complete | Country-prefixed source can match country-less target |
+
+#### Code Quality & Infrastructure
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **TsIndexer Simplification** | ✅ Complete | Removed built-in TR 101 290, delegated to TsDuck |
+| **Buffer Diagnostics** | ✅ Complete | Rate-limited progress logging (10MB intervals) |
+| **LiveTV Timeout Fix** | ✅ Complete | 2s timeout for optional channel name lookup |
+| **Logging Refactor** | ✅ Complete | IsDebugEnabled as extension method |
+
+### Work In Progress
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **NativeTsDuckAnalyzer Tests** | 🔄 In Progress | Unit tests for native interop |
+| **Native Library Loading** | 🔄 In Progress | Ensure plugin finds .so files in Jellyfin plugin directory |
+| **Ubuntu Build Fine-tuning** | 🔄 In Progress | Optimize Docker build for Ubuntu/Debian deployments |
+| **Real-time Metrics Dashboard** | 📋 Planned | Web UI for live stream quality visualization |
+| **Historical Metrics Storage** | 📋 Planned | Persist quality metrics for trend analysis |
+
+### Known Issues Being Addressed
+
+| Issue | Priority | Status |
+|-------|----------|--------|
+| Native library path resolution in Jellyfin | High | Fixing DllImport search paths |
+| Channel name lookup can timeout on slow providers | Fixed | 2s timeout added in LiveTvService |
+
 ## Areas of Improvement
 
 Current limitations and areas where the implementation could be enhanced:
