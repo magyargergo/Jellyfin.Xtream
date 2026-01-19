@@ -90,20 +90,35 @@ public sealed class ChannelMatcher(IChannelNameNormalizer normalizer) : IChannel
         // Phase 1: Try exact normalized match (O(1) lookup)
         if (targetIndex.ExactMatchLookup.TryGetValue(normalizedSource, out var exactMatches))
         {
-            // If source has a country, only match same-country targets
+            // If source has a country, prefer same-country targets, but also accept country-less targets
             if (sourceCountry != null)
             {
+                StreamInfo? countrylessMatch = null;
+
                 foreach (var match in exactMatches)
                 {
                     var targetCountry = NormalizationPatterns.ExtractCountryCode(match.Name);
+
+                    // Exact country match is preferred
                     if (string.Equals(sourceCountry, targetCountry, StringComparison.OrdinalIgnoreCase))
                     {
                         return new ChannelMatchResult(match, 100, normalizedSource);
                     }
+
+                    // Target has no country prefix - treat as "universal" (acceptable fallback)
+                    if (targetCountry == null && countrylessMatch == null)
+                    {
+                        countrylessMatch = match;
+                    }
                 }
 
-                // Source has country but no same-country target found - don't match to different country
-                // Continue to fuzzy matching which will also respect country constraints
+                // No same-country match found, but found a country-less target - use it
+                if (countrylessMatch != null)
+                {
+                    return new ChannelMatchResult(countrylessMatch, 100, normalizedSource);
+                }
+
+                // Source has country but no compatible target found - continue to fuzzy matching
             }
             else
             {
@@ -160,10 +175,16 @@ public sealed class ChannelMatcher(IChannelNameNormalizer normalizer) : IChannel
         foreach (var (targetStream, targetNormalized) in targetIndex.NormalizedStreams)
         {
             // If same-country only, skip channels from different countries
+            // But allow country-less targets (they are treated as "universal")
             if (sameCountryOnly && sourceCountry != null)
             {
                 var targetCountry = NormalizationPatterns.ExtractCountryCode(targetStream.Name);
-                if (!string.Equals(sourceCountry, targetCountry, StringComparison.OrdinalIgnoreCase))
+
+                // Skip if target has a DIFFERENT country (not same, not null)
+                if (
+                    targetCountry != null
+                    && !string.Equals(sourceCountry, targetCountry, StringComparison.OrdinalIgnoreCase)
+                )
                 {
                     continue;
                 }

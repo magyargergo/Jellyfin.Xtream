@@ -65,6 +65,12 @@ public sealed class ChannelMatchingTests(ITestOutputHelper output)
     [InlineData("Polsat TV", "Polsat", 100)] // Trailing TV stripped
     [InlineData("PL | MTV POLSKA", "MTV", 100)] // POLSKA country suffix stripped
     [InlineData("PL | TV6", "PL: TV 6 HD", 100)] // TV6 with space variation
+    // Unicode separator tests
+    [InlineData("PL ⭐ TVN HD", "TVN", 100)] // White star separator
+    [InlineData("PL★ HBO HD", "HBO", 100)] // Black star separator
+    [InlineData("UK▶ BBC One HD", "BBC One", 100)] // Right-pointing triangle
+    [InlineData("PL• Polsat HD", "Polsat", 100)] // Bullet separator
+    [InlineData("PL ⭐ TVN Poland HD", "TVN", 100)] // Star separator with country suffix at end
     public void ShouldMatch_SameChannelDifferentFormat(string source, string target, int minExpectedSimilarity)
     {
         var norm1 = _normalizer.Normalize(source);
@@ -208,6 +214,14 @@ public sealed class ChannelMatchingTests(ITestOutputHelper output)
     [InlineData("123 PL: TVN HD", "PL")]
     [InlineData("TVN HD", null)] // No prefix
     [InlineData("Discovery Channel", null)] // No prefix
+    // Unicode separator tests
+    [InlineData("PL ⭐ TVN HD", "PL")] // White star
+    [InlineData("PL★ HBO", "PL")] // Black star
+    [InlineData("UK▶ BBC One", "UK")] // Right-pointing triangle
+    [InlineData("FR• Canal+", "FR")] // Bullet
+    [InlineData("DE– ZDF", "DE")] // En dash
+    [InlineData("ES— TVE", "ES")] // Em dash
+    [InlineData("IT~ RAI", "IT")] // Tilde
     public void ExtractCountryCode_ReturnsCorrectCode(string channelName, string? expectedCode)
     {
         var result = NormalizationPatterns.ExtractCountryCode(channelName);
@@ -300,6 +314,98 @@ public sealed class ChannelMatchingTests(ITestOutputHelper output)
         // Should match one of the available HBO channels
         Assert.NotNull(result.MatchedStream);
         Assert.Contains("HBO", result.MatchedStream.Name);
+    }
+
+    /// <summary>
+    /// Tests that source WITH country prefix CAN match target WITHOUT country prefix.
+    /// This is the key fix for matching "PL: TVN 7" to "TVN7 HD" (no country in target).
+    /// </summary>
+    [Fact]
+    public void CountryAwareMatching_CountrySourceMatchesNoCountryTarget()
+    {
+        var matcher = ChannelMatcher.Default;
+
+        // Target streams without country prefix (common in some providers)
+        var targetStreams = new[]
+        {
+            new StreamInfo { StreamId = 1, Name = "TVN7 HD" },
+            new StreamInfo { StreamId = 2, Name = "TVN HD" },
+            new StreamInfo { StreamId = 3, Name = "Polsat HD" },
+            new StreamInfo { StreamId = 4, Name = "National Geographic HD" },
+        };
+
+        var targetIndex = matcher.BuildIndex(targetStreams);
+
+        // Source HAS country prefix - should still match country-less targets
+        var sourceStream = new StreamInfo { StreamId = 100, Name = "PL: TVN 7 HD" };
+        var result = matcher.FindBestMatch(sourceStream, targetIndex);
+
+        _output.WriteLine($"Source: '{sourceStream.Name}'");
+        _output.WriteLine($"Matched: '{result.MatchedStream?.Name}' (Score: {result.SimilarityScore}%)");
+
+        // Should match TVN7 HD (country-less target is treated as "universal")
+        Assert.NotNull(result.MatchedStream);
+        Assert.Equal("TVN7 HD", result.MatchedStream.Name);
+        Assert.Equal(100, result.SimilarityScore);
+    }
+
+    /// <summary>
+    /// Tests that same-country targets are preferred over country-less targets.
+    /// </summary>
+    [Fact]
+    public void CountryAwareMatching_PrefersSameCountryOverCountryless()
+    {
+        var matcher = ChannelMatcher.Default;
+
+        // Mix of country-prefixed and country-less targets
+        var targetStreams = new[]
+        {
+            new StreamInfo { StreamId = 1, Name = "HBO HD" }, // No country - universal
+            new StreamInfo { StreamId = 2, Name = "PL- HBO HD" }, // Polish version
+            new StreamInfo { StreamId = 3, Name = "FR- HBO HD" }, // French version
+        };
+
+        var targetIndex = matcher.BuildIndex(targetStreams);
+
+        // Source is Polish - should prefer Polish target over country-less
+        var sourceStream = new StreamInfo { StreamId = 100, Name = "PL | HBO Poland HD" };
+        var result = matcher.FindBestMatch(sourceStream, targetIndex);
+
+        _output.WriteLine($"Source: '{sourceStream.Name}'");
+        _output.WriteLine($"Matched: '{result.MatchedStream?.Name}' (Score: {result.SimilarityScore}%)");
+
+        // Should prefer same-country (PL- HBO HD) over country-less (HBO HD)
+        Assert.NotNull(result.MatchedStream);
+        Assert.Equal("PL- HBO HD", result.MatchedStream.Name);
+    }
+
+    /// <summary>
+    /// Tests fallback to country-less when same-country not available.
+    /// </summary>
+    [Fact]
+    public void CountryAwareMatching_FallsBackToCountrylessWhenNoSameCountry()
+    {
+        var matcher = ChannelMatcher.Default;
+
+        // Only country-less and different-country targets
+        var targetStreams = new[]
+        {
+            new StreamInfo { StreamId = 1, Name = "HBO HD" }, // No country - universal
+            new StreamInfo { StreamId = 2, Name = "FR- HBO HD" }, // French version (wrong country)
+        };
+
+        var targetIndex = matcher.BuildIndex(targetStreams);
+
+        // Source is Polish - no Polish target exists
+        var sourceStream = new StreamInfo { StreamId = 100, Name = "PL | HBO Poland HD" };
+        var result = matcher.FindBestMatch(sourceStream, targetIndex);
+
+        _output.WriteLine($"Source: '{sourceStream.Name}'");
+        _output.WriteLine($"Matched: '{result.MatchedStream?.Name}' (Score: {result.SimilarityScore}%)");
+
+        // Should match country-less HBO HD (not French version)
+        Assert.NotNull(result.MatchedStream);
+        Assert.Equal("HBO HD", result.MatchedStream.Name);
     }
 
     /// <summary>

@@ -25,10 +25,11 @@ public static partial class NormalizationPatterns
 {
     /// <summary>
     /// Matches country/region prefixes in various formats.
-    /// Examples: "PL:", "PL |", "|PL|", "[PL]", "(PL)", "NL-", "UK:", "123 PL:".
+    /// Examples: "PL:", "PL |", "|PL|", "[PL]", "(PL)", "NL-", "UK:", "123 PL:", "PL ⭐", "PL ★".
+    /// Includes Unicode separators commonly used in IPTV channel names (stars, arrows, bullets, etc.).
     /// </summary>
     [GeneratedRegex(
-        @"^(\d+\s+)?([A-Z]{2,3}\s*[\|:\-]|\|[A-Z]{2,3}\||\[[A-Z]{2,3}\]|\([A-Z]{2,3}\)|[A-Z]{2,3}-)\s*",
+        @"^(\d+\s+)?([A-Z]{2,3}\s*[\|:\-⭐★▶►•●○–—~]|\|[A-Z]{2,3}\||\[[A-Z]{2,3}\]|\([A-Z]{2,3}\)|[A-Z]{2,3}-)\s*",
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
         matchTimeoutMilliseconds: 100
     )]
@@ -92,10 +93,11 @@ public static partial class NormalizationPatterns
     /// <summary>
     /// Captures the country code from channel name prefixes.
     /// Captures group 1 contains the 2-3 letter country code.
-    /// Examples: "PL:" -> "PL", "PL |" -> "PL", "|PL|" -> "PL", "[UK]" -> "UK", "FR-" -> "FR".
+    /// Examples: "PL:" -> "PL", "PL |" -> "PL", "|PL|" -> "PL", "[UK]" -> "UK", "FR-" -> "FR", "PL ⭐" -> "PL".
+    /// Includes Unicode separators commonly used in IPTV channel names (stars, arrows, bullets, etc.).
     /// </summary>
     [GeneratedRegex(
-        @"^(?:\d+\s+)?(?:([A-Z]{2,3})\s*[\|:\-]|\|([A-Z]{2,3})\||\[([A-Z]{2,3})\]|\(([A-Z]{2,3})\)|([A-Z]{2,3})-)",
+        @"^(?:\d+\s+)?(?:([A-Z]{2,3})\s*[\|:\-⭐★▶►•●○–—~]|\|([A-Z]{2,3})\||\[([A-Z]{2,3})\]|\(([A-Z]{2,3})\)|([A-Z]{2,3})-)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
         matchTimeoutMilliseconds: 100
     )]
