@@ -196,10 +196,9 @@ public sealed class ProviderMonitoringService(
         // Calculate effective max streams and available slots
         var onlineProviders = response.Providers.Where(p => p.IsOnline).ToList();
 
-        // Calculate provider-side availability
-        var providerAvailableSlots = onlineProviders.Sum(p =>
-            Math.Max(0, p.MaxConnections - p.ProviderActiveConnections)
-        );
+        // Calculate provider-side availability using per-provider AvailableSlots
+        // This is already calculated in BuildProviderStatus (0 for offline, max-active for online)
+        var providerAvailableSlots = response.Providers.Sum(p => p.AvailableSlots);
         var providerTotalCapacity = onlineProviders.Sum(p => p.MaxConnections);
         var providerTotalActiveConnections = onlineProviders.Sum(p => p.ProviderActiveConnections);
 
@@ -255,11 +254,14 @@ public sealed class ProviderMonitoringService(
             status.SelectionScore = state.SelectionScore;
             status.IsAvailable = state.IsAvailable;
             status.ConsecutiveFailures = state.ConsecutiveFailures;
+            // Calculate available slots: 0 if offline, otherwise max - active
+            status.AvailableSlots = state.IsOnline ? Math.Max(0, state.MaxConnections - state.ActiveConnections) : 0;
         }
         else
         {
             status.ErrorMessage = "No cached status";
             status.IsOnline = false;
+            status.AvailableSlots = 0; // No slots available when status unknown
             status.CircuitState = _failoverService.GetCircuitState(provider.Id).ToString();
             status.SelectionScore = _failoverService.GetSelectionScore(provider.Id);
             status.IsAvailable = _failoverService.IsAvailable(provider.Id);

@@ -92,6 +92,12 @@ public sealed class ProviderConnectionStatus
     /// Gets or sets the number of consecutive failures.
     /// </summary>
     public int ConsecutiveFailures { get; set; }
+
+    /// <summary>
+    /// Gets or sets the number of available connection slots for this provider.
+    /// Calculated as MaxConnections - ProviderActiveConnections when online, 0 when offline.
+    /// </summary>
+    public int AvailableSlots { get; set; }
 }
 
 /// <summary>

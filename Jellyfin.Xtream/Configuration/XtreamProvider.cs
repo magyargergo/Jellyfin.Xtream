@@ -54,6 +54,15 @@ public class XtreamProvider
     public bool Enabled { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets the priority for provider selection (0-100).
+    /// Lower values indicate higher priority.
+    /// 0 = highest priority (always try first if healthy)
+    /// 50 = default priority (equal weighting)
+    /// 100 = lowest priority (backup provider).
+    /// </summary>
+    public int Priority { get; set; } = 50;
+
+    /// <summary>
     /// Gets the selected Live TV categories and streams.
     /// Key: Category ID, Value: Set of Stream IDs.
     /// </summary>

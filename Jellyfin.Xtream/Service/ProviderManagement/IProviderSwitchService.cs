@@ -17,6 +17,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Service.MpegTs.TsDuck;
 
 namespace Jellyfin.Xtream.Service.ProviderManagement;
 
@@ -89,6 +90,14 @@ public interface IProviderSwitchService : IDisposable
     /// <param name="streamId">The stream identifier.</param>
     /// <param name="bytesWritten">Total bytes written since stream start.</param>
     void RecordThroughput(string streamId, long bytesWritten);
+
+    /// <summary>
+    /// Forwards TsDuck TR 101 290 metrics to the stream's quality monitor.
+    /// Call this when TsDuck metrics are updated to enable combined quality assessment.
+    /// </summary>
+    /// <param name="streamId">The stream identifier.</param>
+    /// <param name="metrics">The TsDuck metrics.</param>
+    void RecordTsDuckMetrics(string streamId, TsDuckMetrics metrics);
 
     /// <summary>
     /// Updates the internal timing state used for timestamp remapping during provider switches.

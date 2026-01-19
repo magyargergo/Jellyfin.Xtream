@@ -86,6 +86,45 @@ public sealed class ProviderUrlResolver(
         return Task.FromResult(alternativeUrl);
     }
 
+    /// <inheritdoc />
+    public Task<IReadOnlyList<string>> GetAllAlternativeUrlsAsync(
+        string streamId,
+        string currentUrl,
+        SwitchReason reason,
+        CancellationToken cancellationToken
+    )
+    {
+        // Extract current provider from URL
+        var currentProviderId = ExtractProviderId(currentUrl);
+        if (string.IsNullOrEmpty(currentProviderId))
+        {
+            _logger.LogDebugIfEnabled("Could not extract provider ID from URL: {Url}", currentUrl);
+            return Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+
+        // Get configuration
+        var config = _configProvider.GetConfiguration();
+        if (config == null)
+        {
+            return Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+
+        // Get all providers from configuration
+        var providers = config.Providers;
+        if (providers == null || providers.Count == 0)
+        {
+            return Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+
+        // Extract stream ID from URL for ProviderStreamInfo creation
+        var extractedStreamId = ExtractStreamId(currentUrl);
+
+        // Build provider stream info list, excluding current provider
+        var alternativeUrls = FindAllAlternatives(providers, currentProviderId, currentUrl, extractedStreamId, reason);
+
+        return Task.FromResult<IReadOnlyList<string>>(alternativeUrls);
+    }
+
     /// <summary>
     /// Finds the best alternative provider URL using AutomaticFailoverService as the source of truth.
     /// The failover service combines health scoring, circuit breaker state, metrics, and trend analysis.
@@ -132,8 +171,10 @@ public sealed class ProviderUrlResolver(
         }
 
         // Delegate to AutomaticFailoverService for optimal provider selection
-        // This is the source of truth for provider health and selection
-        var orderedProviders = _failoverService.GetOrderedProviders(alternatives);
+        // CRITICAL: Use forceIncludeAll=true during hot-swap to try ALL providers,
+        // including those marked offline. The offline status might be stale and
+        // the provider might have recovered since the last background refresh.
+        var orderedProviders = _failoverService.GetSortedProviders(alternatives, forceIncludeAll: true);
 
         if (orderedProviders.Count == 0)
         {
@@ -158,6 +199,88 @@ public sealed class ProviderUrlResolver(
         );
 
         return alternativeUrl;
+    }
+
+    /// <summary>
+    /// Finds all alternative provider URLs using AutomaticFailoverService as the source of truth.
+    /// Returns all alternatives ordered by health score (best first).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private List<string> FindAllAlternatives(
+        List<XtreamProvider> providers,
+        string currentProviderId,
+        string currentUrl,
+        int streamId,
+        SwitchReason reason
+    )
+    {
+        // Build ProviderStreamInfo list for failover service (excluding current provider)
+        var alternatives = new List<ProviderStreamInfo>();
+
+        // Create a minimal StreamInfo with the extracted stream ID
+        var minimalStreamInfo = new StreamInfo { StreamId = streamId, Name = string.Empty };
+
+        foreach (var provider in providers)
+        {
+            if (!provider.Enabled)
+            {
+                continue;
+            }
+
+            if (string.Equals(provider.Id, currentProviderId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Create ProviderStreamInfo for each enabled alternative using proper record constructor
+            alternatives.Add(new ProviderStreamInfo(provider, minimalStreamInfo));
+        }
+
+        if (alternatives.Count == 0)
+        {
+            _logger.PluginLogWarning(
+                "No alternative providers available for {CurrentProvider} (reason: {Reason})",
+                currentProviderId,
+                reason
+            );
+            return [];
+        }
+
+        // Delegate to AutomaticFailoverService for optimal provider ordering
+        // CRITICAL: Use forceIncludeAll=true during hot-swap to try ALL providers,
+        // including those marked offline. The offline status might be stale (from background
+        // refresh 30+ seconds ago) and the provider might have recovered. During an active
+        // stream failure, it's better to try and fail than to not try at all.
+        var orderedProviders = _failoverService.GetSortedProviders(alternatives, forceIncludeAll: true);
+
+        if (orderedProviders.Count == 0)
+        {
+            _logger.PluginLogWarning(
+                "AutomaticFailoverService returned no available providers for {CurrentProvider} (reason: {Reason})",
+                currentProviderId,
+                reason
+            );
+            return [];
+        }
+
+        // Build URLs for all ordered providers
+        var result = new List<string>(orderedProviders.Count);
+        foreach (var provider in orderedProviders)
+        {
+            var url = BuildAlternativeUrl(currentUrl, provider.Provider);
+            if (!string.IsNullOrEmpty(url))
+            {
+                result.Add(url);
+            }
+        }
+
+        _logger.PluginLogInformation(
+            "Hot-swap: found {CandidateCount} alternative providers for reason {Reason} (via AutomaticFailoverService)",
+            result.Count,
+            reason
+        );
+
+        return result;
     }
 
     /// <summary>

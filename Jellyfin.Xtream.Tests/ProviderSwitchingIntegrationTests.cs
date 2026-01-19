@@ -137,7 +137,8 @@ public sealed class ProviderSwitchingIntegrationTests : IDisposable
             _configProvider,
             NullLogger<ProviderSwitchService>.Instance,
             NullLoggerFactory.Instance,
-            config
+            metricsTracker: null,
+            config: config
         );
 
         // Initialize PluginLogger with test configuration provider to avoid Plugin.Instance access
@@ -448,7 +449,8 @@ public sealed class ProviderSwitchingIntegrationTests : IDisposable
             _configProvider,
             NullLogger<ProviderSwitchService>.Instance,
             NullLoggerFactory.Instance,
-            config
+            metricsTracker: null,
+            config: config
         );
 
         limitedSwitchService.RegisterStream(streamId, currentUrl);

@@ -28,6 +28,7 @@ using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service.MpegTs.Core;
 using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
 using Jellyfin.Xtream.Service.MpegTs.Infrastructure.Pooling;
+using Jellyfin.Xtream.Service.MpegTs.TsDuck;
 using Jellyfin.Xtream.Service.MpegTs.UseCases;
 using Microsoft.Extensions.Logging;
 
@@ -80,6 +81,7 @@ public sealed class ProviderSwitchService(
     IPluginConfigurationProvider configProvider,
     ILogger<ProviderSwitchService> logger,
     ILoggerFactory loggerFactory,
+    IProviderMetricsTracker? metricsTracker = null,
     ProviderSwitchConfiguration? config = null,
     IFFmpegContext? ffmpegContext = null,
     IFFmpegProcessorPool? demuxerPool = null,
@@ -95,6 +97,7 @@ public sealed class ProviderSwitchService(
     private readonly IPluginConfigurationProvider _configProvider =
         configProvider ?? throw new ArgumentNullException(nameof(configProvider));
     private readonly ILogger<ProviderSwitchService> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly IProviderMetricsTracker? _metricsTracker = metricsTracker;
     private readonly ProviderSwitchConfiguration _config = config ?? ProviderSwitchConfiguration.Default;
     private readonly IFFmpegContext _ffmpegContext = ffmpegContext ?? FFmpegContextAdapter.Instance;
     private readonly IFFmpegProcessorPool? _demuxerPool = demuxerPool;
@@ -263,37 +266,105 @@ public sealed class ProviderSwitchService(
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(_config.TimeoutMs);
 
-            // Get alternative URL from resolver
-            var newUrl = await _urlResolver
-                .GetAlternativeUrlAsync(streamId, currentUrl, reason, timeoutCts.Token)
+            // Get ALL alternative URLs from resolver (ordered by health score)
+            var alternativeUrls = await _urlResolver
+                .GetAllAlternativeUrlsAsync(streamId, currentUrl, reason, timeoutCts.Token)
                 .ConfigureAwait(false);
 
-            if (string.IsNullOrEmpty(newUrl))
+            if (alternativeUrls.Count == 0)
             {
                 return CompleteFailedSwitch(state, SwitchFailureReason.NoAlternativeProvider);
             }
 
-            // Try aligned switching if enabled
-            if (_config.UseByteAlignment)
-            {
-                var alignedResult = await TrySwitchWithAlignmentAsync(state, newUrl, stopwatch, timeoutCts.Token)
-                    .ConfigureAwait(false);
+            // Try each alternative provider until one succeeds
+            SwitchFailureReason lastFailureReason = SwitchFailureReason.NoAlternativeProvider;
+            string? lastFailureMessage = null;
 
-                if (alignedResult.HasValue)
+            for (var i = 0; i < alternativeUrls.Count; i++)
+            {
+                var newUrl = alternativeUrls[i];
+
+                // Check if we're still within timeout
+                if (timeoutCts.Token.IsCancellationRequested)
                 {
-                    return alignedResult.Value;
+                    _logger.PluginLogWarning(
+                        "Provider switch timeout reached after trying {AttemptCount}/{TotalCount} providers for {StreamId}",
+                        i,
+                        alternativeUrls.Count,
+                        streamId
+                    );
+                    break;
                 }
 
-                // Fall through to simple URL switch if alignment failed
+                _logger.LogDebugIfEnabled(
+                    "Trying alternative provider {Index}/{Total} for {StreamId}",
+                    i + 1,
+                    alternativeUrls.Count,
+                    streamId
+                );
+
+                // Try aligned switching if enabled
+                if (_config.UseByteAlignment)
+                {
+                    var alignedResult = await TrySwitchWithAlignmentAsync(state, newUrl, stopwatch, timeoutCts.Token)
+                        .ConfigureAwait(false);
+
+                    if (alignedResult.HasValue)
+                    {
+                        if (alignedResult.Value.Success)
+                        {
+                            // Success! Return the result
+                            _logger.PluginLogInformation(
+                                "Provider switch succeeded on attempt {Index}/{Total} for {StreamId}",
+                                i + 1,
+                                alternativeUrls.Count,
+                                streamId
+                            );
+                            return alignedResult.Value;
+                        }
+
+                        // This provider failed - record the reason and try the next one
+                        lastFailureReason = alignedResult.Value.FailureReason;
+                        lastFailureMessage = alignedResult.Value.FailureMessage;
+
+                        _logger.PluginLogWarning(
+                            "Alternative provider {Index}/{Total} failed for {StreamId}: {Reason} - {Message}. Trying next...",
+                            i + 1,
+                            alternativeUrls.Count,
+                            streamId,
+                            lastFailureReason,
+                            lastFailureMessage ?? "No details"
+                        );
+
+                        continue;
+                    }
+
+                    // alignedResult is null means alignment failed but we can fall through to simple switch
+                }
+
+                // Simple URL switch (no alignment) - if we reach here, alignment was disabled or failed softly
+                return CompleteSuccessfulSwitch(
+                    state,
+                    newUrl,
+                    stopwatch.ElapsedMilliseconds,
+                    timestampRemappingActive: false,
+                    alignedToKeyframe: false
+                );
             }
 
-            // Simple URL switch (no alignment)
-            return CompleteSuccessfulSwitch(
+            // All providers failed
+            _logger.PluginLogError(
+                "All {Count} alternative providers failed for {StreamId}. Last error: {Reason} - {Message}",
+                alternativeUrls.Count,
+                streamId,
+                lastFailureReason,
+                lastFailureMessage ?? "No details"
+            );
+
+            return CompleteFailedSwitch(
                 state,
-                newUrl,
-                stopwatch.ElapsedMilliseconds,
-                timestampRemappingActive: false,
-                alignedToKeyframe: false
+                lastFailureReason,
+                lastFailureMessage ?? "All alternative providers failed"
             );
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -317,6 +388,27 @@ public sealed class ProviderSwitchService(
         if (_streams.TryGetValue(streamId, out var state))
         {
             state.QualityMonitor.RecordSample(bytesWritten);
+        }
+    }
+
+    /// <inheritdoc />
+    public void RecordTsDuckMetrics(string streamId, TsDuckMetrics metrics)
+    {
+        if (_streams.TryGetValue(streamId, out var state))
+        {
+            // Use the event handler method which properly sets both properties
+            state.QualityMonitor.OnTsDuckMetricsUpdated(this, new TsDuckMetricsEventArgs(metrics));
+
+            // Forward TsDuck quality score to provider-level metrics tracker
+            if (_metricsTracker != null)
+            {
+                var providerId = ExtractProviderId(state.CurrentUrl);
+                if (!string.IsNullOrEmpty(providerId))
+                {
+                    var qualityScore = metrics.CalculateQualityScore();
+                    _metricsTracker.RecordTsDuckQuality(providerId, qualityScore);
+                }
+            }
         }
     }
 

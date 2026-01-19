@@ -96,7 +96,11 @@ public sealed class ProviderAvailabilityService(
         // Also check capacity if tracked
         var hasCapacity = state.MaxConnections == 0 || state.AvailableSlots > 0;
 
-        return circuitAvailable && hasCapacity;
+        // Provider must be online (API reachable, no 4xx/5xx errors like 452)
+        // For newly created state with no status update yet, assume online
+        var isOnline = state.LastStatusUpdate == default || state.IsOnline;
+
+        return circuitAvailable && hasCapacity && isOnline;
     }
 
     /// <inheritdoc />
@@ -474,6 +478,7 @@ public sealed class ProviderAvailabilityService(
             _logger.LogDebugIfEnabled(ex, "Failed to get connection status for provider {ProviderId}", provider.Id);
             state.ErrorMessage = ex.Message;
             state.IsOnline = false;
+            state.AvailableSlots = 0; // Reset slots when provider is offline
             state.LastStatusUpdate = DateTime.UtcNow;
         }
     }

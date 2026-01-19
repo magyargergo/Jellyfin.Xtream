@@ -137,6 +137,30 @@ export default function (view) {
       userInfo.textContent = `User: ${provider.Username || 'Not set'}`;
       infoRow.appendChild(userInfo);
 
+      // Show priority badge (calculated automatically based on performance)
+      const priority = provider.Priority ?? 50;
+      const priorityBadge = document.createElement('span');
+      priorityBadge.style.cssText = 'padding: 2px 8px; border-radius: 4px; font-size: 0.85em;';
+      priorityBadge.title = 'Auto-calculated from streaming performance history';
+      if (priority <= 20) {
+        priorityBadge.style.background = 'rgba(76, 175, 80, 0.2)';
+        priorityBadge.style.color = '#4caf50';
+        priorityBadge.textContent = `★ Excellent (${priority})`;
+      } else if (priority <= 40) {
+        priorityBadge.style.background = 'rgba(33, 150, 243, 0.2)';
+        priorityBadge.style.color = '#2196f3';
+        priorityBadge.textContent = `Good (${priority})`;
+      } else if (priority >= 80) {
+        priorityBadge.style.background = 'rgba(244, 67, 54, 0.2)';
+        priorityBadge.style.color = '#f44336';
+        priorityBadge.textContent = `Poor (${priority})`;
+      } else {
+        priorityBadge.style.background = 'rgba(255, 255, 255, 0.1)';
+        priorityBadge.style.color = '#aaa';
+        priorityBadge.textContent = `Score: ${priority}`;
+      }
+      infoRow.appendChild(priorityBadge);
+
       card.appendChild(infoRow);
 
       return card;
@@ -156,7 +180,16 @@ export default function (view) {
         return;
       }
 
-      providers.forEach(provider => {
+      // Sort providers by priority (lower = higher priority)
+      const sortedProviders = [...providers].sort((a, b) => {
+        const priorityA = a.Priority ?? 50;
+        const priorityB = b.Priority ?? 50;
+        if (priorityA !== priorityB) return priorityA - priorityB;
+        // Secondary sort by name for consistent ordering
+        return (a.Name || '').localeCompare(b.Name || '');
+      });
+
+      sortedProviders.forEach(provider => {
         container.appendChild(createProviderCard(provider));
       });
     };
@@ -548,12 +581,17 @@ export default function (view) {
         return;
       }
 
+      // Get existing provider's calculated priority if updating
+      const existingProvider = providerId ? providers.find(p => p.Id === providerId) : null;
+      const existingPriority = existingProvider?.Priority ?? 50; // Preserve calculated priority, default 50 for new
+
       const providerData = {
         Id: providerId || generateProviderId(),
         Name: providerName,
         BaseUrl: providerBaseUrl.replace(/\/$/, ''), // Remove trailing slash
         Username: providerUsername,
         Password: providerPassword,
+        Priority: existingPriority, // Priority is auto-calculated, not user-editable
         Enabled: providerEnabled,
       };
 

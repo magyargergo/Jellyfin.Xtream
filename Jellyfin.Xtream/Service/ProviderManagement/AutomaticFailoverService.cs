@@ -59,7 +59,8 @@ public sealed class AutomaticFailoverService(
 
     /// <summary>
     /// Gets providers ordered by combined health score for optimal failover.
-    /// Combines circuit breaker state, capacity, latency, throughput, and error rates.
+    /// Combines circuit breaker state, capacity, latency, throughput, error rates,
+    /// predictive trend analysis, user-defined priority, and least-connections load balancing.
     /// </summary>
     /// <param name="providers">Available providers for the channel.</param>
     /// <returns>Providers ordered by combined health score (best first).</returns>
@@ -78,35 +79,43 @@ public sealed class AutomaticFailoverService(
 
         // Re-score with combined metrics for final ordering
         var count = baseSorted.Count;
-        var scoredArray = ArrayPool<(
-            ProviderStreamInfo Provider,
-            int Combined,
-            int Resilience,
-            int Metrics
-        )>.Shared.Rent(count);
+        var scoredArray = ArrayPool<ScoredProvider>.Shared.Rent(count);
         try
         {
             for (var i = 0; i < count; i++)
             {
                 var p = baseSorted[i];
-                var resilienceScore = _availabilityService.GetSelectionScore(p.Provider.Id);
-                var metricsScore = _metrics.CalculateHealthScore(p.Provider.Id);
-                var isAvailable = _availabilityService.IsAvailable(p.Provider.Id);
-                var combined = CalculateCombinedScore(resilienceScore, metricsScore, isAvailable);
-                scoredArray[i] = (p, combined, resilienceScore, metricsScore);
+                var providerId = p.Provider.Id;
+                var resilienceScore = _availabilityService.GetSelectionScore(providerId);
+                var metricsScore = _metrics.CalculateHealthScore(providerId);
+                var isAvailable = _availabilityService.IsAvailable(providerId);
+                var priority = p.Provider.Priority;
+                var activeConnections = _availabilityService.GetAvailableSlots(providerId);
+                var combined = CalculateCombinedScore(resilienceScore, metricsScore, isAvailable, providerId, priority);
+                var trendSnapshot = TrendTracker.GetSnapshot(providerId);
+                scoredArray[i] = new ScoredProvider(
+                    p,
+                    combined,
+                    resilienceScore,
+                    metricsScore,
+                    priority,
+                    activeConnections,
+                    trendSnapshot.Trend
+                );
             }
 
-            // Sort by combined score descending, then resilience, then name
-            Array.Sort(scoredArray, 0, count, CombinedScoreComparer.Instance);
+            // Sort by combined score descending with least-connections tie-breaking
+            Array.Sort(scoredArray, 0, count, new ScoredProviderComparer(ScoreTolerance));
 
-            if (_logger.IsEnabled(LogLevel.Debug))
+            if (_logger.IsDebugEnabled())
             {
                 var topCount = Math.Min(3, count);
                 var rankings = new string[topCount];
                 for (var i = 0; i < topCount; i++)
                 {
-                    var (provider, Combined, resilience, metrics) = scoredArray[i];
-                    rankings[i] = $"{provider.Provider.Name}={Combined} (R:{resilience} M:{metrics})";
+                    var s = scoredArray[i];
+                    rankings[i] =
+                        $"{s.Provider.Provider.Name}={s.Combined.ToString(System.Globalization.CultureInfo.InvariantCulture)} (R:{s.Resilience.ToString(System.Globalization.CultureInfo.InvariantCulture)} M:{s.Metrics.ToString(System.Globalization.CultureInfo.InvariantCulture)} P:{s.Priority.ToString(System.Globalization.CultureInfo.InvariantCulture)} T:{s.Trend})";
                 }
 
                 _logger.LogDebugIfEnabled("Provider ranking: {Providers}", string.Join(", ", rankings));
@@ -122,36 +131,86 @@ public sealed class AutomaticFailoverService(
         }
         finally
         {
-            ArrayPool<(ProviderStreamInfo Provider, int Combined, int Resilience, int Metrics)>.Shared.Return(
-                scoredArray
-            );
+            ArrayPool<ScoredProvider>.Shared.Return(scoredArray);
         }
     }
 
     /// <summary>
-    /// Comparer for combined scores.
+    /// Scored provider for sorting with all relevant metrics.
     /// </summary>
-    private sealed class CombinedScoreComparer
-        : IComparer<(ProviderStreamInfo Provider, int Combined, int Resilience, int Metrics)>
-    {
-        public static readonly CombinedScoreComparer Instance = new();
+    private readonly record struct ScoredProvider(
+        ProviderStreamInfo Provider,
+        int Combined,
+        int Resilience,
+        int Metrics,
+        int Priority,
+        int AvailableSlots,
+        HealthTrend Trend
+    );
 
-        public int Compare(
-            (ProviderStreamInfo Provider, int Combined, int Resilience, int Metrics) x,
-            (ProviderStreamInfo Provider, int Combined, int Resilience, int Metrics) y
-        )
+    /// <summary>
+    /// Comparer for scored providers with least-connections tie-breaking.
+    /// When scores are within tolerance, prefer providers with more available slots (least loaded).
+    /// </summary>
+    private sealed class ScoredProviderComparer(int scoreTolerance) : IComparer<ScoredProvider>
+    {
+        private readonly int _scoreTolerance = scoreTolerance;
+
+        public int Compare(ScoredProvider x, ScoredProvider y)
         {
-            var combinedCompare = y.Combined.CompareTo(x.Combined);
-            if (combinedCompare != 0)
+            // Primary: combined score descending
+            var scoreDiff = y.Combined - x.Combined;
+            if (Math.Abs(scoreDiff) > _scoreTolerance)
             {
-                return combinedCompare;
+                return scoreDiff;
             }
 
+            // Tie-breaker 1: least-connections (more available slots = better)
+            // Use available slots since active connections may not be tracked
+            if (x.AvailableSlots >= 0 && y.AvailableSlots >= 0)
+            {
+                var slotsDiff = y.AvailableSlots.CompareTo(x.AvailableSlots);
+                if (slotsDiff != 0)
+                {
+                    return slotsDiff;
+                }
+            }
+
+            // Tie-breaker 2: user priority (lower priority number = higher preference)
+            var priorityDiff = x.Priority.CompareTo(y.Priority);
+            if (priorityDiff != 0)
+            {
+                return priorityDiff;
+            }
+
+            // Tie-breaker 3: prefer stable or improving trends
+            var trendOrder = GetTrendOrder(x.Trend).CompareTo(GetTrendOrder(y.Trend));
+            if (trendOrder != 0)
+            {
+                return trendOrder;
+            }
+
+            // Tie-breaker 4: resilience score (higher = better)
             var resilienceCompare = y.Resilience.CompareTo(x.Resilience);
-            return resilienceCompare != 0
-                ? resilienceCompare
-                : StringComparer.Ordinal.Compare(x.Provider.Provider.Name, y.Provider.Provider.Name);
+            if (resilienceCompare != 0)
+            {
+                return resilienceCompare;
+            }
+
+            // Final: alphabetical by name for deterministic ordering
+            return StringComparer.Ordinal.Compare(x.Provider.Provider.Name, y.Provider.Provider.Name);
         }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int GetTrendOrder(HealthTrend trend) =>
+            trend switch
+            {
+                HealthTrend.Improving => 0,
+                HealthTrend.Stable => 1,
+                HealthTrend.Degrading => 2,
+                HealthTrend.RapidlyDegrading => 3,
+                _ => 1,
+            };
     }
 
     /// <summary>
@@ -182,11 +241,13 @@ public sealed class AutomaticFailoverService(
                 ProviderName = p.Name,
                 ResilienceScore = resilienceScore,
                 MetricsScore = metricsScore,
-                CombinedScore = CalculateCombinedScore(resilienceScore, metricsScore, isAvailable),
+                CombinedScore = CalculateCombinedScore(resilienceScore, metricsScore, isAvailable, p.Id, p.Priority),
                 IsAvailable = isAvailable,
                 CircuitState = _availabilityService.GetCircuitState(p.Id),
                 Metrics = _metrics.GetSnapshot(p.Id),
                 TrendSnapshot = TrendTracker.GetSnapshot(p.Id),
+                Priority = p.Priority,
+                AvailableSlots = _availabilityService.GetAvailableSlots(p.Id),
             };
         }
 
@@ -196,19 +257,57 @@ public sealed class AutomaticFailoverService(
         return summaries;
     }
 
-    // Weights for combined score
-    private const double ResilienceWeight = 0.6;
-    private const double MetricsWeight = 0.4;
+    // Weights for combined score (total = 1.0)
+    // Resilience: circuit breaker state, success rate, capacity - core reliability
+    // Metrics: latency, throughput, error rates - performance quality
+    // Trend: predictive health score - forward-looking stability
+    // Priority: user-defined preference - explicit ordering
+    private const double ResilienceWeight = 0.45;
+    private const double MetricsWeight = 0.25;
+    private const double TrendWeight = 0.15;
+    private const double PriorityWeight = 0.15;
+
+    // Score tolerance for least-connections tie-breaking
+    private const int ScoreTolerance = 5;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int CalculateCombinedScore(int resilienceScore, int metricsScore, bool isAvailable)
+    private int CalculateCombinedScore(
+        int resilienceScore,
+        int metricsScore,
+        bool isAvailable,
+        string providerId,
+        int priority
+    )
     {
         if (!isAvailable)
         {
             return 0;
         }
 
-        var combined = (resilienceScore * ResilienceWeight) + (metricsScore * MetricsWeight);
+        // Get predicted score from trend tracker (forward-looking health)
+        var trendSnapshot = TrendTracker.GetSnapshot(providerId);
+        var predictedScore = trendSnapshot.SampleCount >= 3 ? trendSnapshot.PredictedScore60s : resilienceScore;
+
+        // Apply degrading trend penalty - proactive switching
+        if (trendSnapshot.Trend == HealthTrend.RapidlyDegrading)
+        {
+            predictedScore = Math.Max(0, predictedScore - 20);
+        }
+        else if (trendSnapshot.Trend == HealthTrend.Degrading)
+        {
+            predictedScore = Math.Max(0, predictedScore - 10);
+        }
+
+        // Convert priority to score (0 priority = 100 score, 100 priority = 0 score)
+        var priorityScore = 100 - Math.Clamp(priority, 0, 100);
+
+        // Weighted combination
+        var combined =
+            (resilienceScore * ResilienceWeight)
+            + (metricsScore * MetricsWeight)
+            + (predictedScore * TrendWeight)
+            + (priorityScore * PriorityWeight);
+
         return Math.Clamp((int)combined, 0, 100);
     }
 
@@ -269,6 +368,89 @@ public sealed class AutomaticFailoverService(
     /// <inheritdoc />
     public int CalculateHealthScore(string providerId) => _metrics.CalculateHealthScore(providerId);
 
+    /// <inheritdoc />
+    public int CalculatePriority(string providerId) => _metrics.CalculatePriority(providerId);
+
+    // EMA smoothing constants - precomputed to avoid runtime division
+    private const double SmoothingFactor = 0.3;
+    private const double InverseSmoothingFactor = 1.0 - SmoothingFactor; // 0.7
+    private const int MinSamplesForPriorityUpdate = 5;
+
+    /// <inheritdoc />
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public bool UpdateProviderPriorities()
+    {
+        var config = _configProvider.GetConfiguration();
+        var providers = config?.Providers;
+        if (providers == null || providers.Count == 0)
+        {
+            return false;
+        }
+
+        var anyUpdated = false;
+        var providerCount = providers.Count;
+
+        // Process all providers in a single pass for cache locality
+        for (var i = 0; i < providerCount; i++)
+        {
+            var provider = providers[i];
+
+            // Single O(1) dictionary lookup
+            var snapshot = _metrics.GetSnapshot(provider.Id);
+
+            // Skip if insufficient data - avoids unnecessary calculations
+            if (snapshot.TotalSamples < MinSamplesForPriorityUpdate)
+            {
+                continue;
+            }
+
+            // Calculate priority directly from snapshot - O(1) with lookup tables
+            var calculatedPriority = ProviderMetricsTracker.CalculatePriority(snapshot);
+            var currentPriority = provider.Priority;
+
+            // EMA smoothing: new = α * calculated + (1-α) * old
+            // Using precomputed constants to avoid runtime division
+            var smoothedPriority = (int)(
+                (calculatedPriority * SmoothingFactor) + (currentPriority * InverseSmoothingFactor)
+            );
+
+            // Branchless clamp using Math.Min/Max which JIT optimizes to conditional moves
+            smoothedPriority = Math.Min(100, Math.Max(0, smoothedPriority));
+
+            // Only update if changed - avoids unnecessary writes
+            if (currentPriority != smoothedPriority)
+            {
+                _logger.LogDebugIfEnabled(
+                    "Provider {Name} priority: {OldPriority} -> {NewPriority} (calc: {Calculated}, n={Samples})",
+                    provider.Name,
+                    currentPriority,
+                    smoothedPriority,
+                    calculatedPriority,
+                    snapshot.TotalSamples
+                );
+                provider.Priority = smoothedPriority;
+                anyUpdated = true;
+            }
+        }
+
+        // Persist only if changes occurred - avoids unnecessary I/O
+        if (anyUpdated)
+        {
+            try
+            {
+                Plugin.Instance.SaveConfiguration();
+                _logger.LogDebugIfEnabled("Provider priorities persisted ({Count} providers)", providerCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.PluginLogWarning(ex, "Failed to persist provider priorities");
+                return false;
+            }
+        }
+
+        return anyUpdated;
+    }
+
     #endregion
 }
 
@@ -303,6 +485,12 @@ public readonly record struct ProviderHealthSummary
 
     /// <summary>Gets the health trend snapshot for predictive analysis.</summary>
     public HealthTrendSnapshot TrendSnapshot { get; init; }
+
+    /// <summary>Gets the user-defined priority (0-100, lower = higher priority).</summary>
+    public int Priority { get; init; }
+
+    /// <summary>Gets the number of available connection slots (-1 if unknown).</summary>
+    public int AvailableSlots { get; init; }
 
     /// <summary>Gets the health status description.</summary>
     public readonly string Status =>

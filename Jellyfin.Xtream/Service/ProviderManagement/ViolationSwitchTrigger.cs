@@ -17,6 +17,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Jellyfin.Xtream.Utility;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.ProviderManagement;
 
@@ -82,9 +84,14 @@ public sealed record ViolationSwitchConfiguration
 /// Initializes a new instance of the <see cref="ViolationSwitchTrigger"/> class.
 /// </remarks>
 /// <param name="config">Optional configuration. Uses defaults if not provided.</param>
-public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config = null) : IViolationSwitchTrigger
+/// <param name="logger">Optional logger for debug output.</param>
+public sealed class ViolationSwitchTrigger(
+    ViolationSwitchConfiguration? config = null,
+    ILogger<ViolationSwitchTrigger>? logger = null
+) : IViolationSwitchTrigger
 {
     private readonly ViolationSwitchConfiguration _config = config ?? ViolationSwitchConfiguration.Default;
+    private readonly ILogger<ViolationSwitchTrigger>? _logger = logger;
     private readonly ConcurrentDictionary<string, StreamViolationState> _states = new(StringComparer.Ordinal);
 
     /// <inheritdoc />
@@ -102,7 +109,7 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
             var count = Interlocked.Increment(ref state.PatViolations);
             if (!inWarmup && count >= _config.PatViolationsThreshold)
             {
-                return EvaluateSwitch(state, $"PAT violations ({count} consecutive)");
+                return EvaluateSwitch(state, streamId, $"PAT violations ({count} consecutive)");
             }
         }
         else if (violationType.Contains("PCR", StringComparison.OrdinalIgnoreCase))
@@ -110,7 +117,7 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
             var count = Interlocked.Increment(ref state.PcrViolations);
             if (!inWarmup && count >= _config.PcrViolationsThreshold)
             {
-                return EvaluateSwitch(state, $"PCR violations ({count} consecutive)");
+                return EvaluateSwitch(state, streamId, $"PCR violations ({count} consecutive)");
             }
         }
         else if (violationType.Contains("Continuity", StringComparison.OrdinalIgnoreCase))
@@ -118,7 +125,7 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
             var count = Interlocked.Increment(ref state.ContinuityViolations);
             if (!inWarmup && count >= _config.ContinuityViolationsThreshold)
             {
-                return EvaluateSwitch(state, $"Continuity counter violations ({count} consecutive)");
+                return EvaluateSwitch(state, streamId, $"Continuity counter violations ({count} consecutive)");
             }
         }
         else if (violationType.Contains("Jitter", StringComparison.OrdinalIgnoreCase))
@@ -126,7 +133,11 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
             var count = Interlocked.Increment(ref state.JitterViolations);
             if (!inWarmup && count >= _config.JitterViolationsThreshold)
             {
-                return EvaluateSwitch(state, $"PCR jitter violations ({count} consecutive, TR 101 290 Priority 2)");
+                return EvaluateSwitch(
+                    state,
+                    streamId,
+                    $"PCR jitter violations ({count} consecutive, TR 101 290 Priority 2)"
+                );
             }
         }
 
@@ -157,7 +168,7 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
         var count = Interlocked.Increment(ref state.DriftViolations);
         if (count >= _config.DriftViolationsThreshold)
         {
-            return EvaluateSwitch(state, $"A/V drift {driftMs:F0}ms ({count} consecutive violations)");
+            return EvaluateSwitch(state, streamId, $"A/V drift {driftMs:F0}ms ({count} consecutive violations)");
         }
 
         return ViolationEvaluationResult.NoSwitch;
@@ -202,7 +213,7 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
     /// Evaluates whether a switch should occur, considering adaptive cooldown and max failures.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private ViolationEvaluationResult EvaluateSwitch(StreamViolationState state, string reason)
+    private ViolationEvaluationResult EvaluateSwitch(StreamViolationState state, string streamId, string reason)
     {
         var now = DateTime.UtcNow;
         var lastAttempt = state.LastSwitchAttempt;
@@ -211,6 +222,11 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
         // Check if max consecutive failures reached - disable violation-triggered switching
         if (consecutiveFailures >= _config.MaxConsecutiveFailures)
         {
+            _logger?.LogDebugIfEnabled(
+                "ViolationSwitch [{StreamId}]: max failures ({MaxFailures}) reached, switching disabled",
+                streamId,
+                _config.MaxConsecutiveFailures
+            );
             return ViolationEvaluationResult.MaxFailuresReached;
         }
 
@@ -222,12 +238,17 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
 
         if ((now - lastAttempt).TotalSeconds < adaptiveCooldown)
         {
+            _logger?.LogDebugIfEnabled(
+                "ViolationSwitch [{StreamId}]: cooldown active ({CooldownSec:F0}s remaining)",
+                streamId,
+                adaptiveCooldown - (now - lastAttempt).TotalSeconds
+            );
             return ViolationEvaluationResult.CooldownActive;
         }
 
         // Atomically update last attempt time and increment consecutive failures
         state.LastSwitchAttempt = now;
-        _ = Interlocked.Increment(ref state.ConsecutiveFailures);
+        var newFailureCount = Interlocked.Increment(ref state.ConsecutiveFailures);
 
         // Reset violation counters after triggering switch (but keep consecutive failures)
         _ = Interlocked.Exchange(ref state.PatViolations, 0);
@@ -238,6 +259,13 @@ public sealed class ViolationSwitchTrigger(ViolationSwitchConfiguration? config 
 
         // Reset warmup timer so the new connection gets stabilization time
         state.StreamStartTime = now;
+
+        _logger?.LogDebugIfEnabled(
+            "ViolationSwitch [{StreamId}]: triggering switch - {Reason}, consecutiveFailures={FailureCount}",
+            streamId,
+            reason,
+            newFailureCount
+        );
 
         return new ViolationEvaluationResult(ShouldSwitch: true, reason);
     }

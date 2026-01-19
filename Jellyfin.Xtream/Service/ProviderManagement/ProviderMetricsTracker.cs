@@ -81,6 +81,17 @@ public sealed class ProviderMetricsTracker : IProviderMetricsTracker
     }
 
     /// <summary>
+    /// Records a TsDuck TR 101 290 quality score sample.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="qualityScore">TsDuck quality score (0-100).</param>
+    public void RecordTsDuckQuality(string providerId, int qualityScore)
+    {
+        var metrics = GetOrCreate(providerId);
+        metrics.AddTsDuckQualitySample(qualityScore);
+    }
+
+    /// <summary>
     /// Gets the current metrics snapshot for a provider.
     /// </summary>
     /// <param name="providerId">The provider ID.</param>
@@ -100,72 +111,152 @@ public sealed class ProviderMetricsTracker : IProviderMetricsTracker
     }
 
     /// <summary>
-    /// Calculates health score from a metrics snapshot.
+    /// Calculates a priority score based on metrics (0-100, lower is better).
+    /// This is the inverse of health score - a provider with excellent health
+    /// gets a low priority number (first choice for streaming).
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>Priority score from 0 (best) to 100 (worst).</returns>
+    public int CalculatePriority(string providerId)
+    {
+        var healthScore = CalculateHealthScore(providerId);
+        return 100 - healthScore;
+    }
+
+    /// <summary>
+    /// Calculates a priority score from a metrics snapshot.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int CalculatePriority(ProviderMetricsSnapshot snapshot)
+    {
+        var healthScore = CalculateHealthScore(snapshot);
+        return 100 - healthScore;
+    }
+
+    // Lookup tables for O(1) score calculation - avoids branch mispredictions
+    // Format: (threshold, score) pairs, sorted descending by threshold for binary search
+    private static readonly (double Threshold, int Score)[] LatencyLookup =
+    [
+        (2000, 0),
+        (1000, 4),
+        (500, 9),
+        (200, 14),
+        (100, 17),
+        (0, 20),
+    ];
+
+    private static readonly (double Threshold, int Score)[] ThroughputLookup =
+    [
+        (5.0, 20),
+        (3.0, 17),
+        (1.5, 14),
+        (0.5, 9),
+        (0.1, 4),
+        (0, 0),
+    ];
+
+    private static readonly (double Threshold, int Score)[] ErrorRateLookup =
+    [
+        (10.0, 0),
+        (5.0, 4),
+        (3.0, 8),
+        (1.0, 15),
+        (0.1, 21),
+        (0, 25),
+    ];
+
+    private static readonly (double Threshold, int Score)[] UptimeLookup =
+    [
+        (60, 15),
+        (30, 12),
+        (15, 9),
+        (5, 5),
+        (0, 2),
+    ];
+
+    private static readonly (double Threshold, int Score)[] TsDuckLookup =
+    [
+        (90, 20),
+        (75, 17),
+        (60, 14),
+        (50, 10),
+        (25, 5),
+        (0, 0),
+    ];
+
+    /// <summary>
+    /// Calculates health score from a metrics snapshot.
+    /// Uses lookup tables for O(1) threshold evaluation with minimal branching.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public static int CalculateHealthScore(ProviderMetricsSnapshot snapshot)
     {
         // Weight distribution (total 100):
-        // - Latency: 25% (lower is better)
-        // - Throughput: 25% (higher is better)
-        // - Error rate: 30% (lower is better)
-        // - Uptime: 20% (higher is better)
+        // - Latency: 20% (lower is better)
+        // - Throughput: 20% (higher is better)
+        // - Error rate: 25% (lower is better)
+        // - Uptime: 15% (higher is better)
+        // - TsDuck TR 101 290 Quality: 20% (higher is better)
 
-        double score = 0;
+        // Latency score (0-20): lower latency = higher score
+        var latencyScore = LookupScoreLessThan(snapshot.AvgLatencyMs, LatencyLookup);
 
-        // Latency score (0-25): <100ms = 25, >2000ms = 0
-        double latencyScore = snapshot.AvgLatencyMs switch
-        {
-            < 100 => 25,
-            < 200 => 22,
-            < 500 => 18,
-            < 1000 => 12,
-            < 2000 => 6,
-            _ => 0,
-        };
-        score += latencyScore;
+        // Throughput score (0-20): higher throughput = higher score
+        var throughputScore = LookupScoreGreaterThan(snapshot.AvgThroughputMBps, ThroughputLookup);
 
-        // Throughput score (0-25): >5 MB/s = 25, <0.1 MB/s = 0
-        double throughputScore = snapshot.AvgThroughputMBps switch
-        {
-            > 5.0 => 25,
-            > 3.0 => 22,
-            > 1.5 => 18,
-            > 0.5 => 12,
-            > 0.1 => 6,
-            _ => 0,
-        };
-        score += throughputScore;
+        // Error rate score (0-25): lower error rate = higher score
+        var errorRate = snapshot.TotalSamples > 0 ? (double)snapshot.TotalErrors / snapshot.TotalSamples * 100.0 : 0.0;
+        var errorScore = LookupScoreLessThan(errorRate, ErrorRateLookup);
 
-        // Error rate score (0-30): 0% = 30, >10% = 0
-        var errorRate = snapshot.TotalSamples > 0 ? (double)snapshot.TotalErrors / snapshot.TotalSamples * 100 : 0;
-        double errorScore = errorRate switch
-        {
-            < 0.1 => 30,
-            < 1.0 => 25,
-            < 3.0 => 18,
-            < 5.0 => 10,
-            < 10.0 => 5,
-            _ => 0,
-        };
-        score += errorScore;
-
-        // Uptime score (0-20): based on mean time between disconnections
+        // Uptime score (0-15): higher MTBD = higher score
         var mtbdMinutes =
-            snapshot.DisconnectionCount > 0
-                ? snapshot.TotalStreamTimeMs / 1000.0 / 60.0 / snapshot.DisconnectionCount
-                : 60; // Assume 60 minutes if no disconnections
-        double uptimeScore = mtbdMinutes switch
-        {
-            > 60 => 20,
-            > 30 => 16,
-            > 15 => 12,
-            > 5 => 6,
-            _ => 2,
-        };
-        score += uptimeScore;
+            snapshot.DisconnectionCount > 0 ? snapshot.TotalStreamTimeMs / 60000.0 / snapshot.DisconnectionCount : 60.0;
+        var uptimeScore = LookupScoreGreaterThan(mtbdMinutes, UptimeLookup);
 
-        return Math.Clamp((int)score, 0, 100);
+        // TsDuck score (0-20): higher quality = higher score, neutral if no data
+        var tsDuckScore =
+            (snapshot.AvgTsDuckQuality < 0 || snapshot.TsDuckSampleCount == 0)
+                ? 10
+                : LookupScoreGreaterThan(snapshot.AvgTsDuckQuality, TsDuckLookup);
+
+        return Math.Clamp(latencyScore + throughputScore + errorScore + uptimeScore + tsDuckScore, 0, 100);
+    }
+
+    /// <summary>
+    /// Lookup score where value must be less than threshold (for metrics where lower is better).
+    /// Uses linear scan optimized for small arrays (typically 5-6 elements).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int LookupScoreLessThan(double value, ReadOnlySpan<(double Threshold, int Score)> lookup)
+    {
+        // Linear scan is faster than binary search for small arrays (< 8 elements)
+        // due to better cache locality and branch prediction
+        foreach (var (threshold, score) in lookup)
+        {
+            if (value >= threshold)
+            {
+                return score;
+            }
+        }
+
+        return lookup[^1].Score;
+    }
+
+    /// <summary>
+    /// Lookup score where value must be greater than threshold (for metrics where higher is better).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int LookupScoreGreaterThan(double value, ReadOnlySpan<(double Threshold, int Score)> lookup)
+    {
+        foreach (var (threshold, score) in lookup)
+        {
+            if (value >= threshold)
+            {
+                return score;
+            }
+        }
+
+        return lookup[^1].Score;
     }
 
     /// <summary>
@@ -243,6 +334,10 @@ internal sealed class ProviderMetrics
     private long _disconnectionCount;
     private double _totalStreamTimeMs;
     private long _totalSamples;
+
+    // TsDuck TR 101 290 quality tracking
+    private double _tsDuckQualitySum;
+    private long _tsDuckQualityCount;
 
     public void AddLatencySample(double latencyMs)
     {
@@ -332,10 +427,32 @@ internal sealed class ProviderMetrics
         } while (Interlocked.CompareExchange(ref _totalStreamTimeMs, newTotal, currentTotal) != currentTotal);
     }
 
+    public void AddTsDuckQualitySample(int qualityScore)
+    {
+        // Use exponential decay when over max samples
+        if (Interlocked.Read(ref _tsDuckQualityCount) >= MaxSamples)
+        {
+            var oldSum = Interlocked.CompareExchange(ref _tsDuckQualitySum, 0, 0);
+            _ = Interlocked.Exchange(ref _tsDuckQualitySum, oldSum * 0.9);
+            _ = Interlocked.Exchange(ref _tsDuckQualityCount, (long)(Interlocked.Read(ref _tsDuckQualityCount) * 0.9));
+        }
+
+        double currentSum;
+        double newSum;
+        do
+        {
+            currentSum = Interlocked.CompareExchange(ref _tsDuckQualitySum, 0, 0);
+            newSum = currentSum + qualityScore;
+        } while (Interlocked.CompareExchange(ref _tsDuckQualitySum, newSum, currentSum) != currentSum);
+
+        _ = Interlocked.Increment(ref _tsDuckQualityCount);
+    }
+
     public ProviderMetricsSnapshot GetSnapshot()
     {
         var latencyCount = Interlocked.Read(ref _latencyCount);
         var throughputCount = Interlocked.Read(ref _throughputCount);
+        var tsDuckQualityCount = Interlocked.Read(ref _tsDuckQualityCount);
 
         return new ProviderMetricsSnapshot
         {
@@ -361,6 +478,11 @@ internal sealed class ProviderMetrics
             DisconnectionCount = Interlocked.Read(ref _disconnectionCount),
             TotalStreamTimeMs = Interlocked.CompareExchange(ref _totalStreamTimeMs, 0, 0),
             TotalSamples = Interlocked.Read(ref _totalSamples),
+            AvgTsDuckQuality =
+                tsDuckQualityCount > 0
+                    ? Interlocked.CompareExchange(ref _tsDuckQualitySum, 0, 0) / tsDuckQualityCount
+                    : -1, // -1 indicates no TsDuck data
+            TsDuckSampleCount = tsDuckQualityCount,
             Timestamp = DateTime.UtcNow,
         };
     }
@@ -383,6 +505,8 @@ internal sealed class ProviderMetrics
         _ = Interlocked.Exchange(ref _disconnectionCount, 0L);
         _ = Interlocked.Exchange(ref _totalStreamTimeMs, 0);
         _ = Interlocked.Exchange(ref _totalSamples, 0L);
+        _ = Interlocked.Exchange(ref _tsDuckQualitySum, 0);
+        _ = Interlocked.Exchange(ref _tsDuckQualityCount, 0L);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -473,6 +597,12 @@ public readonly record struct ProviderMetricsSnapshot
 
     /// <summary>Gets the total number of samples collected.</summary>
     public long TotalSamples { get; init; }
+
+    /// <summary>Gets the average TsDuck TR 101 290 quality score (0-100), or -1 if no data.</summary>
+    public double AvgTsDuckQuality { get; init; }
+
+    /// <summary>Gets the number of TsDuck quality samples.</summary>
+    public long TsDuckSampleCount { get; init; }
 
     /// <summary>Gets the snapshot timestamp.</summary>
     public DateTime Timestamp { get; init; }

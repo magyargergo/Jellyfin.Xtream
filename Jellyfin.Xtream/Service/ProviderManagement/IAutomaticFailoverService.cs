@@ -161,5 +161,21 @@ public interface IAutomaticFailoverService
     /// <returns>The health score (0-100).</returns>
     int CalculateHealthScore(string providerId);
 
+    /// <summary>
+    /// Calculates the priority for a provider based on performance history.
+    /// Priority is the inverse of health score (0 = best, 100 = worst).
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>The calculated priority (0-100, lower is better).</returns>
+    int CalculatePriority(string providerId);
+
+    /// <summary>
+    /// Updates provider priorities based on their current performance metrics
+    /// and persists the changes to the plugin configuration.
+    /// Call this periodically or after significant streaming events.
+    /// </summary>
+    /// <returns>True if priorities were updated and saved, false otherwise.</returns>
+    bool UpdateProviderPriorities();
+
     #endregion
 }

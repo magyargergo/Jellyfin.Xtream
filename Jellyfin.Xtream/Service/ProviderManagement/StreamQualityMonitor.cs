@@ -19,6 +19,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Jellyfin.Xtream.Service.MpegTs;
 using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
+using Jellyfin.Xtream.Service.MpegTs.TsDuck;
 using Jellyfin.Xtream.Service.MpegTs.UseCases;
 
 namespace Jellyfin.Xtream.Service.ProviderManagement;
@@ -129,10 +130,32 @@ public sealed class StreamQualityMonitor
     public bool HasBaseline => SampleCount >= MinSamplesForBaseline;
 
     /// <summary>
+    /// Gets the TsDuck metrics history for trend analysis.
+    /// </summary>
+    public TsDuckMetricsHistory MetricsHistory { get; } = new();
+
+    /// <summary>
+    /// Gets the latest TsDuck metrics, or null if none received.
+    /// </summary>
+    public TsDuckMetrics? LatestTsDuckMetrics { get; private set; }
+
+    /// <summary>
     /// Sets the callback for quality changes.
     /// </summary>
     /// <param name="callback">Callback receiving quality and current throughput.</param>
     public void SetQualityChangedCallback(Action<StreamQuality, long> callback) => _onQualityChanged = callback;
+
+    /// <summary>
+    /// Event handler for TsDuck MetricsUpdated events.
+    /// Subscribe this to ITsDuckAnalyzer.MetricsUpdated for automatic metrics tracking.
+    /// </summary>
+    /// <param name="sender">The event sender.</param>
+    /// <param name="e">The metrics event arguments.</param>
+    public void OnTsDuckMetricsUpdated(object? sender, TsDuckMetricsEventArgs e)
+    {
+        LatestTsDuckMetrics = e.Metrics;
+        MetricsHistory.Add(e.Metrics);
+    }
 
     /// <summary>
     /// Records a throughput sample. Call this periodically (e.g., every 100-500ms).
@@ -193,6 +216,10 @@ public sealed class StreamQualityMonitor
         _ = Interlocked.Exchange(ref _baselineThroughput, 0);
         Volatile.Write(ref _currentQuality, (int)StreamQuality.Healthy);
         Volatile.Write(ref _qualityChangedFlag, 0);
+
+        // Clear TsDuck metrics state
+        LatestTsDuckMetrics = null;
+        MetricsHistory.Clear();
     }
 
     /// <summary>
@@ -201,6 +228,101 @@ public sealed class StreamQualityMonitor
     /// <param name="bytesPerSecond">Baseline throughput in bytes per second.</param>
     public void SetBaseline(long bytesPerSecond) =>
         Interlocked.Exchange(ref _baselineThroughput, Math.Max(bytesPerSecond, MinBaselineBytesPerSecond));
+
+    /// <summary>
+    /// Evaluates stream quality using TsDuck TR 101 290 metrics.
+    /// </summary>
+    /// <param name="metrics">TsDuck metrics snapshot.</param>
+    /// <returns>True if TR 101 290 quality is acceptable, false if switch is recommended.</returns>
+    /// <remarks>
+    /// This method provides broadcast-grade quality assessment using TR 101 290 Priority 1 and 2 indicators.
+    /// A quality score below 50 (critical threshold) triggers a switch recommendation.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool EvaluateTsDuckQuality(TsDuckMetrics? metrics)
+    {
+        if (metrics == null)
+        {
+            return true; // No metrics = assume healthy
+        }
+
+        // Use TsDuck's built-in quality score (0-100)
+        var qualityScore = metrics.CalculateQualityScore();
+
+        // Below 50 is critical - recommend switch
+        return qualityScore >= 50;
+    }
+
+    /// <summary>
+    /// Gets a combined quality assessment using both throughput and TsDuck TR 101 290 metrics.
+    /// </summary>
+    /// <param name="metrics">Optional TsDuck metrics for TR 101 290 assessment.</param>
+    /// <returns>The worst quality between throughput and TR 101 290 assessment.</returns>
+    public StreamQuality GetCombinedQuality(TsDuckMetrics? metrics)
+    {
+        var throughputQuality = CurrentQuality;
+
+        if (metrics == null)
+        {
+            return throughputQuality;
+        }
+
+        // Evaluate TR 101 290 quality
+        var qualityScore = metrics.CalculateQualityScore();
+        var tr101290Quality = qualityScore switch
+        {
+            < 25 => StreamQuality.Critical,
+            < 50 => StreamQuality.Degrading,
+            _ => StreamQuality.Healthy,
+        };
+
+        // Return the worst quality between throughput and TR 101 290
+        return (StreamQuality)Math.Max((int)throughputQuality, (int)tr101290Quality);
+    }
+
+    /// <summary>
+    /// Checks if a switch should be triggered based on combined throughput and TsDuck quality.
+    /// </summary>
+    /// <param name="metrics">Optional TsDuck metrics for TR 101 290 assessment.</param>
+    /// <returns>True if switch is recommended based on either metric.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool ShouldTriggerSwitch(TsDuckMetrics? metrics)
+    {
+        var combinedQuality = GetCombinedQuality(metrics);
+        return combinedQuality is StreamQuality.Critical or StreamQuality.Stalled;
+    }
+
+    /// <summary>
+    /// Gets the current error rate statistics from the metrics history.
+    /// </summary>
+    /// <param name="window">Time window for error rate calculation. Defaults to 30 seconds.</param>
+    /// <returns>Error rate statistics, or null if insufficient data.</returns>
+    public ErrorRateStatistics? GetErrorRateStatistics(TimeSpan? window = null) =>
+        MetricsHistory.CalculateErrorRate(window ?? TimeSpan.FromSeconds(30));
+
+    /// <summary>
+    /// Gets the quality trend direction over a time window.
+    /// </summary>
+    /// <param name="window">Time window for trend analysis. Defaults to 30 seconds.</param>
+    /// <returns>Trend direction: positive = improving, negative = degrading, 0 = stable.</returns>
+    public double GetQualityTrend(TimeSpan? window = null) =>
+        MetricsHistory.CalculateQualityTrend(window ?? TimeSpan.FromSeconds(30));
+
+    /// <summary>
+    /// Determines if a proactive switch should be initiated based on error rate trends.
+    /// </summary>
+    /// <returns>True if error rate indicates impending quality degradation.</returns>
+    public bool ShouldTriggerSwitchBasedOnTrend()
+    {
+        var stats = GetErrorRateStatistics();
+        if (stats is null)
+        {
+            return false;
+        }
+
+        // Trigger if Priority 1 error rate is high or quality is consistently degrading
+        return !stats.Value.IsHealthy || stats.Value.IsDegrading;
+    }
 
     private void AddSample(long bytesPerSecond, long elapsedMs)
     {

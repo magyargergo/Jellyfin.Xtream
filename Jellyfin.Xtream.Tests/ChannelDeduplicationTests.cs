@@ -562,6 +562,10 @@ public sealed class ChannelDeduplicationTests(ITestOutputHelper output)
         public void RecordError(string providerId, StreamErrorType errorType) { }
 
         public int CalculateHealthScore(string providerId) => 100;
+
+        public int CalculatePriority(string providerId) => 50;
+
+        public bool UpdateProviderPriorities() => false;
     }
 
     /// <summary>

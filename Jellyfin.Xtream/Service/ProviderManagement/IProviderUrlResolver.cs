@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -32,6 +33,21 @@ public interface IProviderUrlResolver
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The alternative URL if available, null otherwise.</returns>
     Task<string?> GetAlternativeUrlAsync(
+        string streamId,
+        string currentUrl,
+        SwitchReason reason,
+        CancellationToken cancellationToken
+    );
+
+    /// <summary>
+    /// Gets all alternative provider URLs for the given stream, ordered by health score.
+    /// </summary>
+    /// <param name="streamId">The stream identifier.</param>
+    /// <param name="currentUrl">The current provider URL to exclude.</param>
+    /// <param name="reason">The reason for needing alternatives.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of alternative URLs ordered by health score (best first), empty if none available.</returns>
+    Task<IReadOnlyList<string>> GetAllAlternativeUrlsAsync(
         string streamId,
         string currentUrl,
         SwitchReason reason,

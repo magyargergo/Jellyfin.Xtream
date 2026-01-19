@@ -50,6 +50,13 @@ public interface IProviderMetricsTracker
     void RecordDisconnection(string providerId, double streamDurationMs);
 
     /// <summary>
+    /// Records a TsDuck TR 101 290 quality score sample.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="qualityScore">TsDuck quality score (0-100).</param>
+    void RecordTsDuckQuality(string providerId, int qualityScore);
+
+    /// <summary>
     /// Gets the current metrics snapshot for a provider.
     /// </summary>
     /// <param name="providerId">The provider ID.</param>
@@ -62,6 +69,15 @@ public interface IProviderMetricsTracker
     /// <param name="providerId">The provider ID.</param>
     /// <returns>Health score from 0 to 100.</returns>
     int CalculateHealthScore(string providerId);
+
+    /// <summary>
+    /// Calculates a priority score based on metrics (0-100, lower is better).
+    /// This is the inverse of health score - a provider with excellent health
+    /// gets a low priority number (first choice for streaming).
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>Priority score from 0 (best) to 100 (worst).</returns>
+    int CalculatePriority(string providerId);
 
     /// <summary>
     /// Resets metrics for a provider.
