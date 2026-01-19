@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using Jellyfin.Xtream.Service.MpegTs.Core;
-using Jellyfin.Xtream.Service.MpegTs.Models;
 
 namespace Jellyfin.Xtream.Service.MpegTs.Parsing;
 

@@ -23,6 +23,13 @@ namespace Jellyfin.Xtream.Service.MpegTs.Models;
 /// <summary>
 /// Structured metrics for a single program in an MPEG-TS stream.
 /// </summary>
+/// <remarks>
+/// <para>
+/// TR 101 290 compliance metrics (CC errors, PCR jitter, transport errors) are provided
+/// by TsDuck via <see cref="TsDuck.ITsDuckAnalyzer.GetMetrics"/>. This struct focuses
+/// on indexing-specific metrics needed for seeking and playback.
+/// </para>
+/// </remarks>
 /// <param name="ProgramNumber">The program number.</param>
 /// <param name="VideoPid">The video PID, or -1 if no video.</param>
 /// <param name="AudioPid">The audio PID, or -1 if no audio.</param>
@@ -30,10 +37,6 @@ namespace Jellyfin.Xtream.Service.MpegTs.Models;
 /// <param name="PcrPid">The PCR PID.</param>
 /// <param name="KeyframeCount">Number of keyframes indexed.</param>
 /// <param name="AverageGopDuration">Average GOP duration.</param>
-/// <param name="PacketLossCount">Number of packet loss discontinuities.</param>
-/// <param name="PcrCount">Number of PCR values received.</param>
-/// <param name="PcrJitterViolations">Number of PCR jitter violations.</param>
-/// <param name="PcrBufferMs">Current PCR buffer level in milliseconds.</param>
 /// <param name="AudioFrameCount">Number of audio frames detected.</param>
 /// <param name="SyncStatus">Current A/V sync status.</param>
 /// <param name="DriftMs">Current A/V drift in milliseconds.</param>
@@ -48,10 +51,6 @@ public readonly record struct ProgramMetrics(
     int PcrPid,
     int KeyframeCount,
     TimeSpan AverageGopDuration,
-    long PacketLossCount,
-    long PcrCount,
-    long PcrJitterViolations,
-    double PcrBufferMs,
     long AudioFrameCount,
     SyncStatus SyncStatus,
     double DriftMs,
@@ -61,17 +60,22 @@ public readonly record struct ProgramMetrics(
 
 /// <summary>
 /// Structured metrics for the TsIndexer.
-/// Provides all quality and status information in a strongly-typed format.
+/// Provides packet-level and program information in a strongly-typed format.
 /// </summary>
+/// <remarks>
+/// <para>
+/// TR 101 290 compliance metrics (transport errors, continuity errors, PCR jitter, etc.)
+/// are provided by TsDuck via <see cref="TsDuck.ITsDuckAnalyzer.GetMetrics"/>.
+/// </para>
+/// <para>
+/// This struct focuses on indexing-specific metrics: program structure, encryption
+/// detection, and basic packet statistics.
+/// </para>
+/// </remarks>
 /// <param name="ProgramCount">Number of programs detected.</param>
 /// <param name="ProgramsWithVideoCount">Number of programs with video.</param>
 /// <param name="TotalPacketsParsed">Total TS packets parsed.</param>
 /// <param name="TotalBytesProcessed">Total bytes processed.</param>
-/// <param name="TransportErrorCount">Packets with Transport Error Indicator.</param>
-/// <param name="TransportErrorRate">Transport error rate (0.0 to 1.0).</param>
-/// <param name="ContinuityErrorCount">Continuity counter errors.</param>
-/// <param name="ContinuityErrorRate">Continuity error rate (0.0 to 1.0).</param>
-/// <param name="PatIntervalViolations">PAT interval violations (>500ms).</param>
 /// <param name="IsEncrypted">Whether the stream is encrypted.</param>
 /// <param name="ScrambledPidCount">Number of scrambled PIDs.</param>
 /// <param name="CaSystemCount">Number of CA systems detected.</param>
@@ -82,11 +86,6 @@ public readonly record struct TsIndexerMetrics(
     int ProgramsWithVideoCount,
     long TotalPacketsParsed,
     long TotalBytesProcessed,
-    long TransportErrorCount,
-    double TransportErrorRate,
-    long ContinuityErrorCount,
-    double ContinuityErrorRate,
-    long PatIntervalViolations,
     bool IsEncrypted,
     int ScrambledPidCount,
     int CaSystemCount,

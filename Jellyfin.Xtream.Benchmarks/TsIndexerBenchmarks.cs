@@ -289,7 +289,6 @@ public class TsIndexerBenchmarks
         return _indexer!.TotalPacketsParsed
             + _indexer.TotalPacketErrors
             + _indexer.TotalContinuityErrors
-            + _indexer.PatIntervalViolations
             + _indexer.SyncByteErrors
             + _indexer.SyncRecoveries
             + _indexer.PatCrcErrors
@@ -344,11 +343,6 @@ public class TsIndexerBenchmarks
 
         // Check Priority 1 indicators
         if (_indexer!.SyncByteErrors == 0)
-        {
-            score++;
-        }
-
-        if (_indexer.PatIntervalViolations == 0)
         {
             score++;
         }

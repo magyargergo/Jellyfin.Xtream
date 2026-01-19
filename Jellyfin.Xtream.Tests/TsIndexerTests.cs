@@ -189,10 +189,11 @@ public sealed class TsIndexerTests
     }
 
     /// <summary>
-    /// Tests that Transport Error Indicator causes packet to be skipped.
+    /// Tests that packets with Transport Error Indicator are still parsed.
+    /// TEI error tracking is handled by TsDuck via TR 101 290 Priority 2.
     /// </summary>
     [Fact]
-    public void ProcessChunkTransportErrorIndicatorSkipsPacket()
+    public void ProcessChunkTransportErrorIndicatorStillParses()
     {
         var indexer = new TsIndexer(DefaultBufferSize);
         var packet = CreateTsPacket(pid: 100);
@@ -202,8 +203,10 @@ public sealed class TsIndexerTests
 
         indexer.ProcessChunk(packet, 0);
 
+        // Packet is still parsed - TsDuck handles TEI error tracking
         Assert.Equal(1, indexer.TotalPacketsParsed);
-        Assert.Equal(1, indexer.TotalPacketErrors);
+        // TsIndexer no longer tracks TEI errors - TsDuck does via TR 101 290
+        Assert.Equal(0, indexer.TotalPacketErrors);
     }
 
     /// <summary>

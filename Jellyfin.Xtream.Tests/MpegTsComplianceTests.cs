@@ -439,9 +439,10 @@ public sealed class MpegTsComplianceTests : IDisposable
     /// <summary>
     /// Tests handling of packet with Transport Error Indicator set.
     /// Per ISO/IEC 13818-1, TEI indicates uncorrectable bit errors.
+    /// TEI error tracking is now handled by TsDuck via TR 101 290 Priority 2.
     /// </summary>
     [Fact]
-    public void MalformedPacket_TransportErrorIndicator_CountedAsError()
+    public void MalformedPacket_TransportErrorIndicator_StillParsed()
     {
         var data = new byte[TsPacketSize * 5];
 
@@ -456,7 +457,10 @@ public sealed class MpegTsComplianceTests : IDisposable
 
         _indexer.ProcessChunk(data, 0);
 
-        Assert.Equal(2, _indexer.TotalPacketErrors);
+        // All packets are still parsed - TsDuck handles TEI error tracking
+        Assert.Equal(5, _indexer.TotalPacketsParsed);
+        // TsIndexer no longer tracks TEI errors - TsDuck does via TR 101 290
+        Assert.Equal(0, _indexer.TotalPacketErrors);
     }
 
     /// <summary>

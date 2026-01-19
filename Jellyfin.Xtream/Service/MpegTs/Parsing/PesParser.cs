@@ -16,8 +16,6 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Jellyfin.Xtream.Service.MpegTs.Models;
-using Jellyfin.Xtream.Service.MpegTs.UseCases;
 
 namespace Jellyfin.Xtream.Service.MpegTs.Parsing;
 

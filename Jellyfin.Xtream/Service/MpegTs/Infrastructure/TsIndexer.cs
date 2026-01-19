@@ -5,7 +5,6 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.MpegTs.Core;
 using Jellyfin.Xtream.Service.MpegTs.Models;
-using Jellyfin.Xtream.Service.MpegTs.Parsing;
 using Jellyfin.Xtream.Service.MpegTs.UseCases;
 using Microsoft.Extensions.Logging;
 
@@ -22,10 +21,12 @@ namespace Jellyfin.Xtream.Service.MpegTs.Infrastructure;
 /// </para>
 /// <list type="bullet">
 ///   <item><description><see cref="PacketStatistics"/> - Packet and byte counting</description></item>
-///   <item><description><see cref="Tr101290Monitor"/> - TR 101 290 compliance checking</description></item>
 ///   <item><description><see cref="ProgramInfoService"/> - Timing services per program</description></item>
 ///   <item><description><see cref="ITsDemuxer"/> - FFmpeg-based demuxing and packet events</description></item>
 /// </list>
+/// <para>
+/// TR 101 290 compliance checking is handled by TsDuck via <see cref="TsDuck.ITsDuckAnalyzer"/>.
+/// </para>
 /// </remarks>
 public sealed class TsIndexer : ITsQualityMonitor, IDisposable
 {
@@ -40,7 +41,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     private readonly ITsDemuxer? _demuxer;
     private readonly ProgramInfoService _programInfoService;
     private readonly PacketStatistics _statistics;
-    private readonly Tr101290Monitor _tr101290Monitor;
 
     // Multi-program support: Map of program number → ProgramInfo
     private readonly ConcurrentDictionary<int, ProgramInfo> _programs = new();
@@ -49,29 +49,21 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     private readonly ProgramInfo?[] _pidToProgram = new ProgramInfo?[8192];
     private readonly byte[] _pidType = new byte[8192];
 
-    // Continuity counter tracking per PID
-    private readonly byte[] _lastContinuityCounter = new byte[8192];
-    private readonly bool[] _continuityInitialized = new bool[8192];
-
     // Scrambled PID tracking
     private readonly ConcurrentDictionary<int, bool> _scrambledPids = new();
 
-    // CAT parsing for CA System ID detection (TR 101 290 Priority 2.6)
-    private readonly CatParser _catParser = new();
-
     // Cache for first video program
     private ProgramInfo? _cachedFirstVideoProgram;
-    private volatile ProgramInfo[] _programsCache = [];
-
-    // Packet parsing state
-    private long _currentBaseOffset;
 
     // Demuxer sampling to prevent overflow on high-bitrate streams
     // Feed data every N bytes instead of continuously to let FFmpeg catch up
     private const long DemuxerSampleIntervalBytes = 2 * 1024 * 1024; // 2MB between samples
     private const int DemuxerSampleSizeBytes = 256 * 1024; // 256KB per sample (enough for keyframe detection)
     private const int DemuxerInitSampleIntervalBytes = 16 * 1024; // 16KB during init (feed every chunk)
+    private const long ProgressLogIntervalBytes = 50 * 1024 * 1024; // 50MB between progress logs
+
     private long _lastDemuxerFeedOffset;
+    private long _lastProgressLogBytes;
 
     private bool _disposed;
 
@@ -89,8 +81,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
 
         // Initialize focused components
         _statistics = new PacketStatistics();
-        _tr101290Monitor = new Tr101290Monitor(logger);
-        _tr101290Monitor.StreamQualityViolation += OnStreamQualityViolation;
 
         _programInfoService = new ProgramInfoService(logger);
         _programInfoService.JitterViolationDetected += OnJitterViolationDetected;
@@ -105,9 +95,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     }
 
     private void OnJitterViolationDetected(object? sender, StreamQualityViolationEventArgs e) =>
-        StreamQualityViolation?.Invoke(this, e);
-
-    private void OnStreamQualityViolation(object? sender, StreamQualityViolationEventArgs e) =>
         StreamQualityViolation?.Invoke(this, e);
 
     /// <summary>
@@ -157,13 +144,12 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     public long TotalContinuityErrors => _statistics.TotalContinuityErrors;
 
     /// <summary>
-    /// Gets the number of PAT interval violations.
-    /// </summary>
-    public long PatIntervalViolations => _tr101290Monitor.PatIntervalViolations;
-
-    /// <summary>
     /// Gets the number of sync byte errors.
     /// </summary>
+    /// <remarks>
+    /// This is used internally for packet alignment. For comprehensive TR 101 290 metrics,
+    /// use <see cref="TsDuck.ITsDuckAnalyzer.GetMetrics"/>.
+    /// </remarks>
     public long SyncByteErrors => _statistics.SyncByteErrors;
 
     /// <summary>
@@ -189,34 +175,20 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     /// <summary>
     /// Gets the number of CAT CRC-32 validation failures.
     /// </summary>
-    public long CatCrcErrors => _catParser.CatCrcErrors;
+    /// <remarks>TsDuck handles CAT CRC validation via TR 101 290 Priority 2.</remarks>
+    public long CatCrcErrors => 0;
 
     /// <summary>
     /// Gets the detected Conditional Access System IDs with vendor names.
     /// </summary>
-    public IReadOnlyDictionary<int, string> CaSystemIds
-    {
-        get
-        {
-            var result = new Dictionary<int, string>();
-            foreach (var kvp in _catParser.CaSystems)
-            {
-                result[kvp.Key] = kvp.Value.VendorName;
-            }
-
-            return result;
-        }
-    }
-
-    /// <summary>
-    /// Gets detailed information about detected CA systems.
-    /// </summary>
-    public IReadOnlyDictionary<int, CaSystemInfo> CaSystemDetails => _catParser.CaSystems;
+    /// <remarks>CA system detection is handled by TsDuck. This returns an empty dictionary.</remarks>
+    public IReadOnlyDictionary<int, string> CaSystemIds => new Dictionary<int, string>();
 
     /// <summary>
     /// Gets a value indicating whether the stream is encrypted.
     /// </summary>
-    public bool IsEncrypted => !_scrambledPids.IsEmpty || _catParser.CaSystems.Count > 0;
+    /// <remarks>Based on scrambling control bits in TS packets. CA system detection is via TsDuck.</remarks>
+    public bool IsEncrypted => !_scrambledPids.IsEmpty;
 
     /// <summary>
     /// Gets all detected program numbers.
@@ -335,7 +307,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
         }
 
         _statistics.AddBytesProcessed(data.Length);
-        _currentBaseOffset = baseOffset;
 
         // Feed data to demuxer with SAMPLING to prevent overflow on high-bitrate streams.
         // At 10 Mbps, feeding all data overwhelms FFmpeg's processing capacity.
@@ -373,23 +344,39 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
 
         // Prune old keyframes
         PruneOldKeyframes(baseOffset + data.Length);
+
+        // Periodic progress logging (every 50MB) for data flow visibility
+        var totalBytes = _statistics.TotalBytesProcessed;
+        if (totalBytes - _lastProgressLogBytes >= ProgressLogIntervalBytes)
+        {
+            _lastProgressLogBytes = totalBytes;
+            var program = GetFirstProgramWithVideo();
+            var keyframeCount = program?.GetKeyframeCount() ?? 0;
+            _logger?.LogDebugIfEnabled(
+                "TsIndexer progress: {TotalMB:F1}MB processed, {PacketCount} packets, {ProgramCount} programs, {KeyframeCount} keyframes, errors: sync={SyncErrors} cc={CcErrors}",
+                totalBytes / (1024.0 * 1024.0),
+                _statistics.TotalPacketsParsed,
+                _programs.Count,
+                keyframeCount,
+                _statistics.SyncByteErrors,
+                _statistics.TotalContinuityErrors
+            );
+        }
     }
 
     /// <summary>
-    /// Minimal packet scanning for error detection and metadata extraction.
-    /// FFmpeg handles the heavy lifting; this just catches what it doesn't expose.
+    /// Minimal packet scanning for scrambling detection, discontinuity handling, and keyframe fallback.
+    /// TR 101 290 error tracking (TEI, CC, CRC) is handled by TsDuck.
     /// </summary>
     private void ScanForErrorsAndMetadata(ReadOnlySpan<byte> data, long baseOffset)
     {
         var offset = 0;
-        var packetIndex = 0;
 
         while (offset + TsConstants.PacketSize <= data.Length)
         {
-            // Check sync byte
+            // Check sync byte for packet alignment
             if (data[offset] != TsConstants.SyncByte)
             {
-                _statistics.IncrementSyncByteErrors();
                 var syncOffset = FindSyncByte(data[offset..]);
                 if (syncOffset < 0)
                 {
@@ -397,7 +384,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
                 }
 
                 offset += syncOffset;
-                _statistics.IncrementSyncRecoveries();
                 continue;
             }
 
@@ -406,78 +392,24 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
             var header2 = data[offset + 2];
             var header3 = data[offset + 3];
 
-            var tei = (header1 & 0x80) != 0;
-            var pusi = (header1 & 0x40) != 0;
             var pid = ((header1 & 0x1F) << 8) | header2;
             var scrambling = (byte)((header3 >> 6) & 0x03);
             var adaptationControl = (byte)((header3 >> 4) & 0x03);
-            var cc = (byte)(header3 & 0x0F);
 
             var hasAdaptation = (adaptationControl & 0x02) != 0;
-            var hasPayload = (adaptationControl & 0x01) != 0;
 
-            var packetCount = _statistics.IncrementPacketsParsed();
+            _ = _statistics.IncrementPacketsParsed();
 
-            // TR 101 290: Validate PCR PIDs after threshold
-            if (_tr101290Monitor.ShouldValidatePcrPids(packetCount))
-            {
-                ValidatePcrPids();
-            }
-
-            // Check Transport Error Indicator
-            if (tei)
-            {
-                _statistics.IncrementPacketErrors();
-                offset += TsConstants.PacketSize;
-                packetIndex++;
-                continue;
-            }
-
-            // Check scrambling
+            // Check scrambling for encryption detection
             if (scrambling != 0)
             {
                 _ = _scrambledPids.TryAdd(pid, value: true);
                 offset += TsConstants.PacketSize;
-                packetIndex++;
                 continue;
             }
 
-            // Handle PAT for interval monitoring
-            if (pid == TsConstants.PatPid)
-            {
-                _tr101290Monitor.MonitorPatInterval();
-            }
-
-            // Handle CAT for CA System ID detection
-            if (pid == TsConstants.CatPid && pusi)
-            {
-                var payloadStart = 4;
-                if (hasAdaptation && offset + 5 < data.Length)
-                {
-                    payloadStart = 5 + data[offset + 4];
-                }
-
-                if (payloadStart < TsConstants.PacketSize)
-                {
-                    var payload = data.Slice(offset + payloadStart, TsConstants.PacketSize - payloadStart);
-                    _ = _catParser.ParseCatSection(payload);
-                }
-            }
-
-            // Validate continuity counter for known PIDs
+            // Get known program for discontinuity/PCR/RAI handling
             var knownProgram = pid < 8192 ? _pidToProgram[pid] : null;
-            if (knownProgram != null && hasPayload)
-            {
-                if (!ValidateContinuityCounter(pid, cc))
-                {
-                    _statistics.IncrementContinuityErrors();
-                    _tr101290Monitor.HandleContinuityError(pid);
-                }
-                else
-                {
-                    _tr101290Monitor.ResetConsecutiveContinuityErrors();
-                }
-            }
 
             // Check for discontinuity indicator
             if (hasAdaptation && offset + 5 < data.Length)
@@ -539,24 +471,7 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
             }
 
             offset += TsConstants.PacketSize;
-            packetIndex++;
         }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool ValidateContinuityCounter(int pid, byte cc)
-    {
-        if (!_continuityInitialized[pid])
-        {
-            _continuityInitialized[pid] = true;
-            _lastContinuityCounter[pid] = cc;
-            return true;
-        }
-
-        var expected = (byte)((_lastContinuityCounter[pid] + 1) & 0x0F);
-        _lastContinuityCounter[pid] = cc;
-
-        return cc == expected;
     }
 
     /// <summary>
@@ -891,13 +806,10 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
 
     /// <summary>
     /// Resets timing state for a reconnection scenario.
-    /// This also resets the TR 101 290 monitor to prevent false PAT/PCR violations
-    /// caused by stale timestamps spanning the reconnection gap.
     /// </summary>
     public void ResetTimingState()
     {
         _programInfoService.ResetTimingState();
-        _tr101290Monitor.Reset();
         _logger?.LogDebugIfEnabled("Timing state reset for {ProgramCount} programs", _programs.Count);
     }
 
@@ -934,6 +846,10 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     /// </summary>
     public void Reset()
     {
+        var prevBytes = _statistics.TotalBytesProcessed;
+        var prevPackets = _statistics.TotalPacketsParsed;
+        var prevPrograms = _programs.Count;
+
         foreach (var program in _programs.Values)
         {
             program.Reset();
@@ -941,20 +857,23 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
 
         _programs.Clear();
         _programInfoService.Clear();
-        _catParser.Clear();
         _scrambledPids.Clear();
         _cachedFirstVideoProgram = null;
-        _programsCache = [];
+        _lastProgressLogBytes = 0;
 
         // Clear PID mappings
         Array.Clear(_pidToProgram);
         Array.Clear(_pidType);
-        Array.Clear(_lastContinuityCounter);
-        Array.Clear(_continuityInitialized);
 
         // Reset focused components
         _statistics.Reset();
-        _tr101290Monitor.Reset();
+
+        _logger?.LogDebugIfEnabled(
+            "TsIndexer reset: cleared {PrevMB:F1}MB, {PrevPackets} packets, {PrevPrograms} programs",
+            prevBytes / (1024.0 * 1024.0),
+            prevPackets,
+            prevPrograms
+        );
 
         // Reset demuxer on background thread to avoid blocking and potential crashes
         // if FFmpeg is still in a blocking call (avformat_open_input/avformat_find_stream_info)
@@ -973,8 +892,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
                 }
             });
         }
-
-        _currentBaseOffset = 0;
     }
 
     /// <summary>
@@ -995,7 +912,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
             }
 
             programsWithVideoCount++;
-            var pcrTiming = _programInfoService.GetOrCreatePcrTimingTracker(program.ProgramNumber);
             var syncStatus = _programInfoService.GetSyncStatus(
                 program.ProgramNumber,
                 program.HasVideo,
@@ -1014,10 +930,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
                     PcrPid: program.PcrPid,
                     KeyframeCount: program.GetKeyframeCount(),
                     AverageGopDuration: program.AverageGopDuration,
-                    PacketLossCount: program.GetTotalPacketLoss(),
-                    PcrCount: pcrTiming.PcrCount,
-                    PcrJitterViolations: pcrTiming.JitterViolations,
-                    PcrBufferMs: pcrTiming.CurrentBufferMs,
                     AudioFrameCount: program.Audio.FrameCount,
                     SyncStatus: syncStatus,
                     DriftMs: driftMs,
@@ -1027,23 +939,14 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
             );
         }
 
-        var totalParsed = TotalPacketsParsed;
-        var teiErrorRate = totalParsed > 0 ? TotalPacketErrors / (double)totalParsed : 0;
-        var ccErrorRate = totalParsed > 0 ? TotalContinuityErrors / (double)totalParsed : 0;
-
         return new TsIndexerMetrics(
             ProgramCount: ProgramCount,
             ProgramsWithVideoCount: programsWithVideoCount,
-            TotalPacketsParsed: totalParsed,
+            TotalPacketsParsed: TotalPacketsParsed,
             TotalBytesProcessed: TotalBytesProcessed,
-            TransportErrorCount: TotalPacketErrors,
-            TransportErrorRate: teiErrorRate,
-            ContinuityErrorCount: TotalContinuityErrors,
-            ContinuityErrorRate: ccErrorRate,
-            PatIntervalViolations: PatIntervalViolations,
             IsEncrypted: IsEncrypted,
             ScrambledPidCount: _scrambledPids.Count,
-            CaSystemCount: _catParser.CaSystems.Count,
+            CaSystemCount: 0, // CA system detection handled by TsDuck
             CaSystemIds: CaSystemIds,
             Programs: programMetrics
         );
@@ -1083,14 +986,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
         PtsDiscontinuityDetected?.Invoke(this, e);
     }
 
-    private void ValidatePcrPids()
-    {
-        foreach (var program in _programs.Values)
-        {
-            _tr101290Monitor.ValidatePcrPid(program.ProgramNumber, program.PcrPid, program.PcrPacketsReceived);
-        }
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void RegisterPidMapping(int pid, ProgramInfo program, byte pidType)
     {
@@ -1101,12 +996,9 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
         }
     }
 
-    private void UpdateProgramsCache()
+    private static void UpdateProgramsCache()
     {
-        var values = _programs.Values;
-        var cache = new ProgramInfo[values.Count];
-        values.CopyTo(cache, 0);
-        _programsCache = cache;
+        // No-op: program cache was removed as it was never read
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -31,5 +31,15 @@ public interface IQualityEventSource
     /// <summary>
     /// Event raised when A/V synchronization drift is detected.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Note: TsDuck analyzers (NativeTsDuckAnalyzer) do not raise this event as they don't
+    /// track PTS/DTS correlation needed for A/V sync detection.
+    /// </para>
+    /// <para>
+    /// For A/V sync drift monitoring, use <c>TsIndexer.TimestampTracker.DriftDetected</c> instead,
+    /// which provides real-time drift detection with 20ms professional broadcast threshold (EBU R37).
+    /// </para>
+    /// </remarks>
     event EventHandler<SyncDriftEventArgs>? SyncDriftDetected;
 }

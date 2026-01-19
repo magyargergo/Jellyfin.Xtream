@@ -253,8 +253,12 @@ public sealed class MpegTsQualityDegradationTests : IDisposable
     /// Tests Transport Error Indicator - Transport_error per TR 101 290 Priority 2.1.
     /// TEI flag indicates uncorrectable errors from demodulator.
     /// </summary>
+    /// <remarks>
+    /// TsDuck handles TEI tracking via TR 101 290 Priority 2. TsIndexer still parses
+    /// packets with TEI set but returns 0 for TotalPacketErrors.
+    /// </remarks>
     [Fact]
-    public void TR101290_Priority2_TransportError_DetectedWhenTeiSet()
+    public void TR101290_Priority2_TransportError_PacketStillParsedWithTeiSet()
     {
         var indexer = new TsIndexer(DefaultBufferSize);
 
@@ -264,7 +268,10 @@ public sealed class MpegTsQualityDegradationTests : IDisposable
 
         indexer.ProcessChunk(packet, 0);
 
-        Assert.Equal(1, indexer.TotalPacketErrors);
+        // Packet is still parsed
+        Assert.Equal(1, indexer.TotalPacketsParsed);
+        // TsDuck handles TEI error tracking via TR 101 290 Priority 2
+        Assert.Equal(0, indexer.TotalPacketErrors);
     }
 
     /// <summary>

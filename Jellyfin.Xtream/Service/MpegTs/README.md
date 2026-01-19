@@ -13,7 +13,7 @@ graph TB
     subgraph Infrastructure["Infrastructure Layer"]
         TsIndexer[TsIndexer]
         TimestampTracker[TimestampTracker]
-        Tr101290Monitor[Tr101290Monitor]
+        TsDuckAnalyzer[TsDuck Native Analyzer]
         PcrTimingTracker[PcrTimingTracker]
         ProgramInfoService[ProgramInfoService]
         FFmpegContext[FFmpegContext]
@@ -88,7 +88,7 @@ flowchart LR
 
     subgraph Processing["MPEG-TS Processing"]
         Indexer[TsIndexer]
-        Quality[Tr101290Monitor]
+        Quality[TsDuck Native Analyzer]
         Timing[PcrTimingTracker]
         Program[ProgramInfoService]
     end
@@ -153,15 +153,15 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant Mon as Tr101290Monitor
+    participant TsDuck as TsDuck Analyzer
     participant Trigger as ViolationSwitchTrigger
     participant Switch as ProviderSwitchService
     participant Align as AlignedStreamSwitcher
     participant Pool as PreconnectPool
     participant New as New Provider
 
-    Mon->>Mon: Detect quality violation
-    Mon->>Trigger: OnQualityViolation
+    TsDuck->>TsDuck: Detect quality violation
+    TsDuck->>Trigger: OnQualityViolation
     Trigger->>Trigger: Check threshold (3 violations/5s)
     Trigger->>Switch: TriggerSwitch(channelId)
 
@@ -253,7 +253,6 @@ MpegTs/
     ├── ProgramInfoService.cs
     ├── StopwatchClock.cs
     ├── TimestampTracker.cs
-    ├── Tr101290Monitor.cs
     ├── TsIndexer.cs
     ├── TsTimestampPatcher.cs
     └── Pooling/

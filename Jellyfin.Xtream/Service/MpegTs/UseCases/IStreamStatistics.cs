@@ -19,6 +19,11 @@ namespace Jellyfin.Xtream.Service.MpegTs.UseCases;
 /// Provides basic stream statistics including packet and byte counts.
 /// This is a focused interface following the Interface Segregation Principle.
 /// </summary>
+/// <remarks>
+/// TR 101 290 error tracking (transport errors, sync errors, etc.) is now handled by TsDuck.
+/// The error-related properties in this interface return 0 for backward compatibility.
+/// Use <see cref="TsDuck.ITsDuckAnalyzer.GetMetrics"/> for comprehensive TR 101 290 metrics.
+/// </remarks>
 public interface IStreamStatistics
 {
     /// <summary>
@@ -34,21 +39,25 @@ public interface IStreamStatistics
     /// <summary>
     /// Gets the number of times the parser had to resynchronize due to corruption.
     /// </summary>
+    /// <remarks>Returns 0. Use TsDuck for sync error tracking.</remarks>
     long ResyncCount { get; }
 
     /// <summary>
     /// Gets the total number of packets with Transport Error Indicator set.
     /// </summary>
+    /// <remarks>Returns 0. Use TsDuck TR 101 290 Priority 2 for transport error tracking.</remarks>
     long TotalPacketErrors { get; }
 
     /// <summary>
     /// Gets the number of sync byte errors detected.
     /// </summary>
+    /// <remarks>Returns 0. Use TsDuck TR 101 290 Priority 1 for sync byte error tracking.</remarks>
     long SyncByteErrors { get; }
 
     /// <summary>
     /// Gets the number of successful sync recoveries after sync byte errors.
     /// </summary>
+    /// <remarks>Returns 0. Use TsDuck for sync tracking.</remarks>
     long SyncRecoveries { get; }
 
     /// <summary>

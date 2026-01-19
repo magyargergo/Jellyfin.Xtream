@@ -16,18 +16,19 @@
 namespace Jellyfin.Xtream.Service.MpegTs.UseCases;
 
 /// <summary>
-/// Monitors MPEG-TS continuity counter errors per TR 101 290 Priority 1.
+/// Monitors MPEG-TS continuity counter errors.
 /// This is a focused interface following the Interface Segregation Principle.
 /// </summary>
+/// <remarks>
+/// Continuity counter error tracking is now handled by TsDuck via TR 101 290 Priority 1.
+/// This interface returns 0 for backward compatibility.
+/// See <see cref="TsDuck.ITsDuckAnalyzer"/> for comprehensive TR 101 290 metrics.
+/// </remarks>
 public interface IContinuityMonitor
 {
     /// <summary>
     /// Gets the total number of continuity counter discontinuities detected.
     /// </summary>
+    /// <remarks>Returns 0. Use TsDuck TR 101 290 Priority 1 for CC error tracking.</remarks>
     long TotalContinuityErrors { get; }
-
-    /// <summary>
-    /// Gets the number of PAT interval violations (interval >500ms per ISO 13818-1).
-    /// </summary>
-    long PatIntervalViolations { get; }
 }

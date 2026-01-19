@@ -20,16 +20,16 @@ namespace Jellyfin.Xtream.Service.MpegTs.Infrastructure;
 
 /// <summary>
 /// Tracks packet-level statistics for MPEG-TS streams.
-/// Thread-safe counters for packet counts, errors, and processing metrics.
+/// Thread-safe counters for packet and byte counts.
 /// </summary>
+/// <remarks>
+/// TR 101 290 error tracking (transport errors, continuity errors, sync errors, CRC errors)
+/// is handled by TsDuck. This class only tracks basic packet and byte counts.
+/// </remarks>
 public sealed class PacketStatistics : IStreamStatistics, IContinuityMonitor
 {
     private long _totalPacketsParsed;
     private long _totalBytesProcessed;
-    private long _totalPacketErrors;
-    private long _totalContinuityErrors;
-    private long _syncByteErrors;
-    private long _syncRecoveries;
 
     /// <inheritdoc />
     public long TotalPacketsParsed => Interlocked.Read(ref _totalPacketsParsed);
@@ -40,38 +40,31 @@ public sealed class PacketStatistics : IStreamStatistics, IContinuityMonitor
     /// <summary>
     /// Gets the number of times the parser had to resynchronize due to corruption.
     /// </summary>
-    /// <remarks>
-    /// Cinegy handles sync internally, so this is always 0.
-    /// </remarks>
+    /// <remarks>TsDuck handles sync error tracking via TR 101 290.</remarks>
     public long ResyncCount => 0;
 
     /// <inheritdoc />
-    public long TotalPacketErrors => Interlocked.Read(ref _totalPacketErrors);
+    /// <remarks>TsDuck handles transport error tracking via TR 101 290 Priority 2.</remarks>
+    public long TotalPacketErrors => 0;
 
     /// <inheritdoc />
-    public long TotalContinuityErrors => Interlocked.Read(ref _totalContinuityErrors);
+    /// <remarks>TsDuck handles continuity error tracking via TR 101 290 Priority 1.</remarks>
+    public long TotalContinuityErrors => 0;
 
     /// <summary>
     /// Gets the number of sync byte errors (packets not starting with 0x47).
     /// </summary>
-    public long SyncByteErrors => Interlocked.Read(ref _syncByteErrors);
+    /// <remarks>TsDuck handles sync byte error tracking via TR 101 290 Priority 1.</remarks>
+    public long SyncByteErrors => 0;
 
     /// <summary>
     /// Gets the number of successful sync recoveries.
     /// </summary>
-    public long SyncRecoveries => Interlocked.Read(ref _syncRecoveries);
-
-    /// <inheritdoc />
-    public long PatIntervalViolations { get; private set; }
+    /// <remarks>TsDuck handles sync tracking via TR 101 290.</remarks>
+    public long SyncRecoveries => 0;
 
     /// <inheritdoc />
     public int ProgramCount { get; set; }
-
-    /// <summary>
-    /// Sets the PAT interval violations count from an external source.
-    /// </summary>
-    /// <param name="count">The violation count.</param>
-    public void SetPatIntervalViolations(long count) => PatIntervalViolations = count;
 
     /// <summary>
     /// Increments the parsed packet counter.
@@ -86,37 +79,12 @@ public sealed class PacketStatistics : IStreamStatistics, IContinuityMonitor
     public void AddBytesProcessed(long bytes) => Interlocked.Add(ref _totalBytesProcessed, bytes);
 
     /// <summary>
-    /// Increments the packet error counter.
-    /// </summary>
-    public void IncrementPacketErrors() => Interlocked.Increment(ref _totalPacketErrors);
-
-    /// <summary>
-    /// Increments the continuity error counter.
-    /// </summary>
-    public void IncrementContinuityErrors() => Interlocked.Increment(ref _totalContinuityErrors);
-
-    /// <summary>
-    /// Increments the sync byte error counter.
-    /// </summary>
-    public void IncrementSyncByteErrors() => Interlocked.Increment(ref _syncByteErrors);
-
-    /// <summary>
-    /// Increments the sync recovery counter.
-    /// </summary>
-    public void IncrementSyncRecoveries() => Interlocked.Increment(ref _syncRecoveries);
-
-    /// <summary>
     /// Resets all counters to zero.
     /// </summary>
     public void Reset()
     {
         _ = Interlocked.Exchange(ref _totalPacketsParsed, 0);
         _ = Interlocked.Exchange(ref _totalBytesProcessed, 0);
-        _ = Interlocked.Exchange(ref _totalPacketErrors, 0);
-        _ = Interlocked.Exchange(ref _totalContinuityErrors, 0);
-        _ = Interlocked.Exchange(ref _syncByteErrors, 0);
-        _ = Interlocked.Exchange(ref _syncRecoveries, 0);
-        PatIntervalViolations = 0;
         ProgramCount = 0;
     }
 }
