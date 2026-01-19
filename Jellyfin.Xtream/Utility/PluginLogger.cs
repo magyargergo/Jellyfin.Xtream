@@ -71,7 +71,7 @@ public static partial class PluginLogger
     )]
     public static void LogDebugIfEnabled<T>(this ILogger<T> logger, string message, params object?[] args)
     {
-        if (!IsDebugEnabled())
+        if (!logger.IsDebugEnabled())
         {
             return;
         }
@@ -97,7 +97,7 @@ public static partial class PluginLogger
     )]
     public static void LogDebugIfEnabled(this ILogger logger, string message, params object?[] args)
     {
-        if (!IsDebugEnabled())
+        if (!logger.IsDebugEnabled())
         {
             return;
         }
@@ -130,7 +130,7 @@ public static partial class PluginLogger
         params object?[] args
     )
     {
-        if (!IsDebugEnabled())
+        if (!logger.IsDebugEnabled())
         {
             return;
         }
@@ -162,7 +162,7 @@ public static partial class PluginLogger
         params object?[] args
     )
     {
-        if (!IsDebugEnabled())
+        if (!logger.IsDebugEnabled())
         {
             return;
         }
@@ -409,7 +409,12 @@ public static partial class PluginLogger
         }
     }
 
-    private static bool IsDebugEnabled()
+    /// <summary>
+    /// Determines whether debug logging is enabled based on the plugin configuration.
+    /// </summary>
+    /// <param name="_">The logger instance (not used, parameter required for extension method).</param>
+    /// <returns>True if debug logging is enabled; otherwise, false.</returns>
+    public static bool IsDebugEnabled(this ILogger _)
     {
         // Use injected configuration provider
         if (_configProvider != null)
