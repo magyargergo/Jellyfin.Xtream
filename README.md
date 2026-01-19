@@ -57,7 +57,7 @@ graph TB
 
         subgraph Quality["Quality Monitoring"]
             TsIndexer[TsIndexer]
-            Tr101290[Tr101290Monitor]
+            TsDuck[TsDuck Native Analyzer]
             PcrTracker[PcrTimingTracker]
         end
 
@@ -92,8 +92,8 @@ graph TB
     ReadBuffer --> ClientN
 
     WriteBuffer --> TsIndexer
-    TsIndexer --> Tr101290
-    Tr101290 --> Trigger
+    TsIndexer --> TsDuck
+    TsDuck --> Trigger
     Trigger --> Switch
     Switch --> Pool
     Pool --> Provider1
@@ -107,7 +107,7 @@ graph TB
     Composite --> External
     External --> EPGSource
 
-    Tr101290 -.-> Discord
+    TsDuck -.-> Discord
 ```
 
 ### Restreaming Architecture
@@ -203,7 +203,7 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
-    participant Mon as Tr101290Monitor
+    participant TsDuck as TsDuck Analyzer
     participant Trig as ViolationSwitchTrigger
     participant Svc as ProviderSwitchService
     participant Fail as AutomaticFailoverService
@@ -212,8 +212,8 @@ sequenceDiagram
     participant Old as Current Provider
     participant New as Backup Provider
 
-    Mon->>Mon: Detect quality violation
-    Mon->>Trig: OnStreamQualityViolation
+    TsDuck->>TsDuck: Detect quality violation
+    TsDuck->>Trig: OnStreamQualityViolation
 
     Trig->>Trig: Increment violation counter
     Note over Trig: 3 violations in 5 seconds
@@ -240,7 +240,7 @@ sequenceDiagram
     Svc->>Old: Dispose connection
     Svc->>Svc: Route to new stream
 
-    Svc-->>Mon: Switch complete
+    Svc-->>TsDuck: Switch complete
 ```
 
 ### EPG Provider Chain
