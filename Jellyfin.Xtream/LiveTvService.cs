@@ -1262,12 +1262,17 @@ public class LiveTvService(
         }
         else
         {
+            // Channel name lookup is optional - use a short timeout (2s) so it doesn't
+            // consume the entire per-attempt budget. The stream can be opened without it.
             _logger.LogDebugIfEnabled("No streamName provided, looking up channel info from provider API...");
             try
             {
+                using var lookupCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                lookupCts.CancelAfter(TimeSpan.FromSeconds(2)); // Short timeout for optional lookup
+
                 var info = (
                     await StreamService
-                        .GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
+                        .GetLiveStreamsWithOverridesForProvider(provider, lookupCts.Token)
                         .ConfigureAwait(false)
                 ).FirstOrDefault(s => s.StreamId == streamId);
                 if (info != null)
@@ -1282,7 +1287,15 @@ public class LiveTvService(
             }
             catch (HttpRequestException ex)
             {
-                _logger.PluginLogWarning(ex, "Failed to look up channel name for stream {StreamId}", streamId);
+                _logger.LogDebugIfEnabled(ex, "Failed to look up channel name for stream {StreamId}", streamId);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Channel name lookup timed out (2s) - this is non-fatal, proceed without channel name
+                _logger.LogDebugIfEnabled(
+                    "Channel name lookup timed out for stream {StreamId}, proceeding without channel name",
+                    streamId
+                );
             }
         }
 
