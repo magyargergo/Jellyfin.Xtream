@@ -26,6 +26,7 @@ using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Service.MpegTs.Core;
 using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
+using Jellyfin.Xtream.Service.MpegTs.TsDuck;
 using Jellyfin.Xtream.Service.MpegTs.UseCases;
 using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
@@ -124,6 +125,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     // FFmpeg context for native demuxing support in TsIndexer
     private readonly IFFmpegContext? _ffmpegContext;
 
+    // TsDuck analyzer for TR 101 290 monitoring
+    private readonly ITsDuckAnalyzer? _tsDuckAnalyzer;
+
     // Reconnection timestamp continuity tracking
     // These track the timing state at disconnection so we can remap timestamps on reconnection
     private DateTime _lastDisconnectTime;
@@ -150,6 +154,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     // Use a longer cooldown (15 seconds) to prevent continuous re-remapping that causes A/V desync.
     private DateTime _lastDiscontinuityRemappingTime = DateTime.MinValue;
     private const int DiscontinuityRemappingCooldownMs = 15000; // 15 second cooldown between activations
+
+    // Throttled priority updates - only update every 60 seconds across all streams
+    private static DateTime _lastPriorityUpdateTime = DateTime.MinValue;
+    private static readonly object _priorityUpdateLock = new();
+    private const int PriorityUpdateIntervalSeconds = 60;
 
     /// <inheritdoc />
     public int ConsumerCount
@@ -250,10 +259,21 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _tokenSource = new CancellationTokenSource();
         _streamQuality = DetectStreamQuality(mediaSource);
         var bufferSize = GetBufferSize(_streamQuality);
-        _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory, _ffmpegContext);
+
+        // Create TsDuck analyzer for TR 101 290 monitoring
+        _tsDuckAnalyzer = TsDuckAnalyzerFactory.Create(logger: _logger);
+
+        _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory, _ffmpegContext, _tsDuckAnalyzer);
         _buffer.TsIndexer.StreamQualityViolation += OnStreamQualityViolation;
         _buffer.TsIndexer.SyncDriftDetected += OnSyncDriftDetected;
         _buffer.TsIndexer.PtsDiscontinuityDetected += OnPtsDiscontinuityDetected;
+
+        // Wire TsDuck metrics to ProviderSwitchService for combined quality monitoring
+        if (_tsDuckAnalyzer != null && _providerSwitchService != null)
+        {
+            _tsDuckAnalyzer.MetricsUpdated += OnTsDuckMetricsUpdated;
+        }
+
         _logger.PluginLogInformation(
             "Initialized stream {StreamId} ({Quality}) with automatic quality-based buffering ({BufferSizeMB}MB buffer)",
             mediaSource.Id,
@@ -1780,6 +1800,12 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _buffer.TsIndexer.SyncDriftDetected -= OnSyncDriftDetected;
         _buffer.TsIndexer.PtsDiscontinuityDetected -= OnPtsDiscontinuityDetected;
 
+        // Unsubscribe from TsDuck metrics events
+        if (_tsDuckAnalyzer != null)
+        {
+            _tsDuckAnalyzer.MetricsUpdated -= OnTsDuckMetricsUpdated;
+        }
+
         if (_tokenSource != null)
         {
             if (!_tokenSource.IsCancellationRequested)
@@ -1791,10 +1817,65 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         _buffer.Dispose();
+        _tsDuckAnalyzer?.Dispose();
         _openLock.Dispose();
         _readerPool.Dispose();
         _networkBuffer = null;
+
+        // Throttled priority update - recalculate provider priorities based on streaming performance
+        TryUpdateProviderPriorities();
+
         _logger.PluginLogInformation("Restream for channel {ChannelId} disposed", MediaSource.Id);
+    }
+
+    /// <summary>
+    /// Attempts to update provider priorities with throttling.
+    /// Only updates if enough time has passed since the last update.
+    /// </summary>
+    private void TryUpdateProviderPriorities()
+    {
+        if (_failoverService == null)
+        {
+            return;
+        }
+
+        lock (_priorityUpdateLock)
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastPriorityUpdateTime).TotalSeconds < PriorityUpdateIntervalSeconds)
+            {
+                return;
+            }
+
+            _lastPriorityUpdateTime = now;
+        }
+
+        // Fire and forget - don't block disposal
+        try
+        {
+            var updated = _failoverService.UpdateProviderPriorities();
+            if (updated)
+            {
+                _logger.LogDebugIfEnabled("Provider priorities updated after stream {ChannelId} ended", MediaSource.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebugIfEnabled(
+                ex,
+                "Failed to update provider priorities after stream {ChannelId} ended",
+                MediaSource.Id
+            );
+        }
+    }
+
+    /// <summary>
+    /// Handles TsDuck TR 101 290 metrics updates.
+    /// Forwards metrics to ProviderSwitchService for combined quality monitoring.
+    /// </summary>
+    private void OnTsDuckMetricsUpdated(object? sender, TsDuckMetricsEventArgs e)
+    {
+        _providerSwitchService?.RecordTsDuckMetrics(MediaSource.Id, e.Metrics);
     }
 
     /// <summary>
@@ -2367,6 +2448,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         // Record throughput for metrics tracking
         _failoverService.RecordThroughput(providerId, bytesDelta, (long)(intervalSeconds * 1000));
 
+        // Record throughput for ProviderSwitchService quality monitoring
+        _providerSwitchService?.RecordThroughput(MediaSource.Id, currentBytes);
+
         // Low bitrate detection: <0.5 Mbps is below minimum viable streaming
         // This catches slow providers before complete stalls (per Netflix QoE research)
         const double MinViableMbps = 0.5;
@@ -2525,13 +2609,23 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     status = "Streaming";
                 }
 
-                // Get quality metrics from TsIndexer
+                // Get quality metrics from TsIndexer and TsDuck
                 var monitor = stream._buffer.TsIndexer;
                 var packetErrors = monitor.TotalPacketErrors;
                 var continuityErrors = monitor.TotalContinuityErrors;
                 var syncErrors = monitor.SyncByteErrors;
-                var patViolations = monitor.PatIntervalViolations;
                 var crcErrors = monitor.PatCrcErrors + monitor.PmtCrcErrors + monitor.CatCrcErrors;
+
+                // Get TR 101 290 metrics from TsDuck (preferred) or fall back to basic CRC errors
+                var tsDuckMetrics = stream._buffer.TsDuckAnalyzer?.GetMetrics();
+                var patViolations = tsDuckMetrics?.Priority1.PatError ?? 0L;
+                if (tsDuckMetrics != null)
+                {
+                    // Use TsDuck's comprehensive TR 101 290 metrics
+                    syncErrors = tsDuckMetrics.Priority1.SyncByteError;
+                    continuityErrors = tsDuckMetrics.Priority1.ContinuityCountError;
+                    crcErrors = tsDuckMetrics.Priority2.CrcError;
+                }
                 var avDriftMs = monitor.GetCurrentDriftMs();
                 var syncStatus = monitor.GetSyncStatus();
 

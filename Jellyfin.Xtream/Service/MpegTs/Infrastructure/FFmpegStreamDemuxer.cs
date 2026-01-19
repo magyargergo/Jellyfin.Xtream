@@ -73,6 +73,14 @@ public sealed unsafe class FFmpegStreamDemuxer : FFmpegProcessorBase, ITsDemuxer
     private long _bytesProcessed;
     private volatile bool _initialized;
 
+    // Rate-limiting for overflow logs
+    private DateTime _lastOverflowLog = DateTime.MinValue;
+    private long _totalOverflowBytes;
+
+    // Rate-limiting for FeedData logs during init
+    private DateTime _lastFeedDataLog = DateTime.MinValue;
+    private long _totalFedBytes;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="FFmpegStreamDemuxer"/> class.
     /// </summary>
@@ -165,10 +173,19 @@ public sealed unsafe class FFmpegStreamDemuxer : FFmpegProcessorBase, ITsDemuxer
             // This is expected during high-bitrate streams and is handled gracefully
             var discardAmount = data.Length - freeSpace;
             _ = AddInputTail(discardAmount);
-            Logger?.LogDebugIfEnabled(
-                "Input buffer overflow, discarded {Bytes} bytes (expected during high-bitrate bursts)",
-                discardAmount
-            );
+            _totalOverflowBytes += discardAmount;
+
+            // Rate-limit overflow logging to once per 10 seconds to avoid spam
+            var now = DateTime.UtcNow;
+            if ((now - _lastOverflowLog).TotalSeconds >= 10.0)
+            {
+                _lastOverflowLog = now;
+                Logger?.LogDebugIfEnabled(
+                    "FFmpeg demuxer input buffer overflow: discarded {Bytes} bytes this event, {TotalKB:F0}KB total (expected during high-bitrate streams)",
+                    discardAmount,
+                    _totalOverflowBytes / 1024.0
+                );
+            }
         }
 
         // Copy data to circular buffer (may wrap around)
@@ -185,6 +202,23 @@ public sealed unsafe class FFmpegStreamDemuxer : FFmpegProcessorBase, ITsDemuxer
 
         // Publish new head position with release semantics
         _ = AddInputHead(data.Length);
+        _totalFedBytes += data.Length;
+
+        // Log data feed progress during init (once per second)
+        if (!_initialized)
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastFeedDataLog).TotalSeconds >= 1.0)
+            {
+                _lastFeedDataLog = now;
+                Logger?.LogDebugIfEnabled(
+                    "FFmpeg demuxer: FeedData progress - {TotalKB:F0}KB fed, available={AvailableKB:F0}KB, initialized={Init}",
+                    _totalFedBytes / 1024.0,
+                    AvailableBytes / 1024.0,
+                    _initialized
+                );
+            }
+        }
 
         // Signal that data is available for the background task
         try
@@ -596,6 +630,12 @@ public sealed unsafe class FFmpegStreamDemuxer : FFmpegProcessorBase, ITsDemuxer
         _ = Interlocked.Exchange(ref _processingStartedFlag, 0);
         _initialized = false;
         _bytesProcessed = 0;
+        _totalOverflowBytes = 0;
+        _lastOverflowLog = DateTime.MinValue;
+        _totalFedBytes = 0;
+        _lastFeedDataLog = DateTime.MinValue;
+        _readPacketCallCount = 0;
+        _lastReadPacketLog = DateTime.MinValue;
 
         // Reset program snapshot
         _programSnapshot = ProgramSnapshot.Empty;
@@ -793,6 +833,7 @@ public sealed unsafe class FFmpegStreamDemuxer : FFmpegProcessorBase, ITsDemuxer
             var inputFormat = ffmpeg.av_find_input_format("mpegts");
 
             // Open input - this blocks until FFmpeg reads enough data via ReadPacket
+            Logger?.LogDebugIfEnabled("FFmpeg demuxer: calling avformat_open_input (may block waiting for data)...");
             var ctx = _formatContext;
             var result = ffmpeg.avformat_open_input(&ctx, url: null, inputFormat, options: null);
             if (result < 0)
@@ -801,6 +842,8 @@ public sealed unsafe class FFmpegStreamDemuxer : FFmpegProcessorBase, ITsDemuxer
                 CleanupFFmpeg();
                 return false;
             }
+
+            Logger?.LogDebugIfEnabled("FFmpeg demuxer: avformat_open_input succeeded");
 
             _formatContext = ctx;
 
@@ -1021,8 +1064,14 @@ public sealed unsafe class FFmpegStreamDemuxer : FFmpegProcessorBase, ITsDemuxer
         return (programInfo, builder.Build());
     }
 
+    // Rate-limit ReadPacket debug logging
+    private DateTime _lastReadPacketLog = DateTime.MinValue;
+    private int _readPacketCallCount;
+
     private int ReadPacket(void* opaque, byte* buf, int bufSize)
     {
+        _readPacketCallCount++;
+
         // Check disposed first - this is the critical early exit for safe shutdown
         if (IsDisposed)
         {
@@ -1042,6 +1091,18 @@ public sealed unsafe class FFmpegStreamDemuxer : FFmpegProcessorBase, ITsDemuxer
         if (available > 0)
         {
             return ReadFromBuffer(buf, bufSize, tail, available, bufferMask);
+        }
+
+        // Log first wait and then periodically during init
+        var now = DateTime.UtcNow;
+        if (!_initialized && (now - _lastReadPacketLog).TotalSeconds >= 1.0)
+        {
+            _lastReadPacketLog = now;
+            Logger?.LogDebugIfEnabled(
+                "FFmpeg demuxer: ReadPacket waiting for data (call #{Count}, available=0, bufferSize={BufSize}KB)",
+                _readPacketCallCount,
+                bufferSize / 1024
+            );
         }
 
         // No data available immediately - use short waits with cancellation

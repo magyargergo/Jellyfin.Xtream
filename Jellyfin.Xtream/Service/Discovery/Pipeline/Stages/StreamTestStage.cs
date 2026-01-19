@@ -264,13 +264,15 @@ public sealed class StreamTestStage(IHttpClientFactory httpClientFactory, ILogge
             var indexer = new TsIndexer(StreamTestBytes);
             indexer.ProcessChunk(data, 0);
 
+            // Note: PatViolations is set to 0 because TR 101 290 monitoring requires TsDuck
+            // which isn't available during quick stream discovery tests
             var snapshot = new StreamQualitySnapshot
             {
                 PacketsParsed = (int)indexer.TotalPacketsParsed,
                 BytesProcessed = (int)indexer.TotalBytesProcessed,
                 SyncByteErrors = (int)indexer.SyncByteErrors,
                 ContinuityErrors = (int)indexer.TotalContinuityErrors,
-                PatViolations = (int)indexer.PatIntervalViolations,
+                PatViolations = 0,
                 CrcErrors = (int)(indexer.PatCrcErrors + indexer.PmtCrcErrors),
                 ProgramCount = indexer.ProgramCount,
                 IsEncrypted = indexer.IsEncrypted,

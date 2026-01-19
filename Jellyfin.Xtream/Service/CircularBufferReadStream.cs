@@ -68,6 +68,7 @@ public sealed class CircularBufferReadStream : Stream
     private const byte TsSyncByte = 71;
     private const long MinimumStartupFillBytes = 4194304L;
     private const int StartupWarmupTimeoutMs = 10000;
+    private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB read
 
     // Stall detection uses StreamingTimeoutPolicy for configurable timeouts
     // MaxStallWaitMs: 3x data stall timeout (default 30s) - allows time for reconnection
@@ -115,6 +116,8 @@ public sealed class CircularBufferReadStream : Stream
     private DateTime _lastPredictorUpdate = DateTime.MinValue;
     private DateTime _lastDiscontinuityWaitLog = DateTime.MinValue;
     private DateTime _lastDiscontinuityHandledTime = DateTime.MinValue;
+    private DateTime _lastSpsUnavailableLog = DateTime.MinValue;
+    private long _lastProgressLogBytes;
 
     /// <summary>
     /// Minimum time in seconds between processing consecutive discontinuities.
@@ -1196,6 +1199,21 @@ public sealed class CircularBufferReadStream : Stream
                     totalRead
                 );
             }
+
+            // Periodic progress logging (every 10MB) to track read throughput without spam
+            var bytesRead = TotalBytesRead;
+            if (bytesRead - _lastProgressLogBytes >= ProgressLogIntervalBytes)
+            {
+                _lastProgressLogBytes = bytesRead;
+                _logger?.LogDebugIfEnabled(
+                    "Buffer read progress [{StreamId}]: {TotalMB:F1}MB read, gap={GapKB:F0}KB ({GapPct:F1}%), overflows={OverflowCount}",
+                    _streamId,
+                    bytesRead / (1024.0 * 1024.0),
+                    gap / 1024.0,
+                    (double)gap * 100.0 / _sourceBuffer.BufferSize,
+                    OverflowCount
+                );
+            }
         }
 
         return totalRead;
@@ -1338,14 +1356,20 @@ public sealed class CircularBufferReadStream : Stream
         if (cache is not { HasSps: true, HasPps: true })
         {
             // Don't mark as injected if we don't have SPS/PPS yet - keep trying
-            _logger?.LogDebugIfEnabled(
-                "Stream {StreamId}: Parameter set injection requested but no cached SPS/PPS available (cache={CacheNull}, HasSps={HasSps}, HasPps={HasPps}). "
-                    + "Will retry on next read.",
-                _streamId,
-                cache == null ? "null" : "exists",
-                cache?.HasSps ?? false,
-                cache?.HasPps ?? false
-            );
+            // Rate-limit log to once per 5 seconds to avoid spam during initialization
+            var now = DateTime.UtcNow;
+            if ((now - _lastSpsUnavailableLog).TotalSeconds >= 5.0)
+            {
+                _lastSpsUnavailableLog = now;
+                _logger?.LogDebugIfEnabled(
+                    "Stream {StreamId}: SPS/PPS not yet available (cache={CacheNull}, HasSps={HasSps}, HasPps={HasPps}). Will retry.",
+                    _streamId,
+                    cache == null ? "null" : "exists",
+                    cache?.HasSps ?? false,
+                    cache?.HasPps ?? false
+                );
+            }
+
             return;
         }
 

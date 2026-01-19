@@ -22,10 +22,10 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Xtream.Service.MpegTs;
 using Jellyfin.Xtream.Service.MpegTs.Core;
 using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
 using Jellyfin.Xtream.Service.MpegTs.Models;
+using Jellyfin.Xtream.Service.MpegTs.TsDuck;
 using Jellyfin.Xtream.Service.MpegTs.UseCases;
 using Microsoft.Extensions.Logging;
 
@@ -61,6 +61,7 @@ public sealed class CircularBufferWriteStream : Stream
     }
 
     private const int NonTemporalThreshold = 262144;
+    private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB
 
     private static readonly int _simdThreshold = DetermineSimdThreshold();
     private static readonly bool _avx512Supported = Avx512F.IsSupported;
@@ -68,8 +69,10 @@ public sealed class CircularBufferWriteStream : Stream
     private static readonly bool _sse2Supported = Sse2.IsSupported;
     private static readonly int _prefetchDistance = DeterminePrefetchDistance();
 
+    private readonly ILogger<CircularBufferWriteStream>? _logger;
     private readonly bool _isPowerOfTwo;
     private readonly long _bufferMask;
+    private long _lastProgressLogBytes;
 
     private CacheLinePadded _totalBytesWritten;
     private CacheLinePadded _lastDiscontinuityOffset;
@@ -88,6 +91,9 @@ public sealed class CircularBufferWriteStream : Stream
     // FFmpeg demuxer for program detection - owned by this stream, passed to TsIndexer
     private readonly FFmpegStreamDemuxer? _demuxer;
 
+    // TSDuck analyzer for broadcast-grade TR 101 290 monitoring (optional)
+    private readonly ITsDuckAnalyzer? _tsDuckAnalyzer;
+
     /// <summary>
     /// Gets the maximal size in bytes of read/write chunks.
     /// </summary>
@@ -97,6 +103,12 @@ public sealed class CircularBufferWriteStream : Stream
     /// Gets the MPEG-TS indexer for keyframe detection.
     /// </summary>
     public TsIndexer TsIndexer { get; }
+
+    /// <summary>
+    /// Gets the TsDuck analyzer for broadcast-grade TR 101 290 monitoring.
+    /// Returns null if TsDuck is not available or was not configured.
+    /// </summary>
+    public ITsDuckAnalyzer? TsDuckAnalyzer => _tsDuckAnalyzer;
 
     /// <summary>
     /// Gets the internal buffer.
@@ -185,6 +197,13 @@ public sealed class CircularBufferWriteStream : Stream
     {
         _ = Interlocked.Exchange(ref _lastReaderPosition.Value, position);
         LastReaderDisconnectTime = DateTime.UtcNow;
+
+        _logger?.LogDebugIfEnabled(
+            "Reader disconnected: position={PositionMB:F2}MB, writeHead={WriteHeadMB:F2}MB, lag={LagKB:F0}KB",
+            position / (1024.0 * 1024.0),
+            TotalBytesWritten / (1024.0 * 1024.0),
+            (TotalBytesWritten - position) / 1024.0
+        );
     }
 
     /// <summary>
@@ -205,6 +224,11 @@ public sealed class CircularBufferWriteStream : Stream
         var age = DateTime.UtcNow - LastReaderDisconnectTime;
         if (age.TotalMilliseconds > maxAgeMs)
         {
+            _logger?.LogDebugIfEnabled(
+                "Reader position too old: age={AgeMs:F0}ms > maxAge={MaxAgeMs}ms",
+                age.TotalMilliseconds,
+                maxAgeMs
+            );
             return -1;
         }
 
@@ -214,11 +238,23 @@ public sealed class CircularBufferWriteStream : Stream
 
         if (position < minValidOffset || position > totalWritten)
         {
+            _logger?.LogDebugIfEnabled(
+                "Reader position out of range: position={PositionMB:F2}MB, validRange=[{MinMB:F2}MB, {MaxMB:F2}MB]",
+                position / (1024.0 * 1024.0),
+                minValidOffset / (1024.0 * 1024.0),
+                totalWritten / (1024.0 * 1024.0)
+            );
             return -1;
         }
 
         // Clear the position so it's only used once
         _ = Interlocked.Exchange(ref _lastReaderPosition.Value, 0);
+
+        _logger?.LogDebugIfEnabled(
+            "Reader position consumed: position={PositionMB:F2}MB, age={AgeMs:F0}ms",
+            position / (1024.0 * 1024.0),
+            age.TotalMilliseconds
+        );
         return position;
     }
 
@@ -301,13 +337,16 @@ public sealed class CircularBufferWriteStream : Stream
     /// <param name="bufferSize">Size in bytes of the internal buffer.</param>
     /// <param name="loggerFactory">Optional logger factory for creating loggers.</param>
     /// <param name="ffmpegContext">Optional FFmpeg context for program detection. If null, uses the default adapter.</param>
+    /// <param name="tsDuckAnalyzer">Optional TSDuck analyzer for broadcast-grade TR 101 290 monitoring.</param>
     public CircularBufferWriteStream(
         int bufferSize,
         ILoggerFactory? loggerFactory = null,
-        IFFmpegContext? ffmpegContext = null
+        IFFmpegContext? ffmpegContext = null,
+        ITsDuckAnalyzer? tsDuckAnalyzer = null
     )
     {
         BufferSize = bufferSize;
+        _tsDuckAnalyzer = tsDuckAnalyzer;
         _isPowerOfTwo = (bufferSize & (bufferSize - 1)) == 0;
         _bufferMask = bufferSize - 1;
 
@@ -315,7 +354,8 @@ public sealed class CircularBufferWriteStream : Stream
         ffmpegContext ??= FFmpegContextAdapter.Instance;
 
         // Create FFmpeg demuxer for program detection if available
-        var logger = loggerFactory?.CreateLogger<CircularBufferWriteStream>();
+        _logger = loggerFactory?.CreateLogger<CircularBufferWriteStream>();
+        var logger = _logger;
         var ffmpegAvailable = ffmpegContext.IsAvailable;
         logger?.PluginLogInformation(
             "CircularBufferWriteStream: FFmpegContext.IsAvailable={IsAvailable}, FFmpegPath={Path}",
@@ -455,8 +495,25 @@ public sealed class CircularBufferWriteStream : Stream
         }
 
         TsIndexer.ProcessChunk(source, startOffsetForIndexer);
+
+        // Feed data to TSDuck analyzer for TR 101 290 monitoring (if available)
+        // TsDuckAnalyzer handles sampling internally to prevent overwhelming the subprocess
+        _tsDuckAnalyzer?.FeedData(source);
+
         _ = Interlocked.Exchange(ref _totalBytesWritten.Value, localWriteHead);
         LastWriteTime = DateTime.UtcNow;
+
+        // Periodic progress logging (every 10MB) to track data flow without spam
+        if (localWriteHead - _lastProgressLogBytes >= ProgressLogIntervalBytes)
+        {
+            _lastProgressLogBytes = localWriteHead;
+            _logger?.LogDebugIfEnabled(
+                "Buffer write progress: {TotalMB:F1}MB written, position={Position}, discontinuities={DiscontinuityCount}",
+                localWriteHead / (1024.0 * 1024.0),
+                Position,
+                DiscontinuityCount
+            );
+        }
     }
 
     /// <summary>
@@ -674,7 +731,11 @@ public sealed class CircularBufferWriteStream : Stream
     /// </summary>
     public void Reset()
     {
+        var previousBytes = TotalBytesWritten;
+        var previousDiscontinuities = DiscontinuityCount;
+
         TsIndexer.Reset();
+        _tsDuckAnalyzer?.Reset();
         _ = Interlocked.Exchange(ref _totalBytesWritten.Value, 0L);
         _ = Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, 0L);
         _ = Interlocked.Exchange(ref _discontinuityCount.Value, 0);
@@ -683,6 +744,13 @@ public sealed class CircularBufferWriteStream : Stream
         LastWriteTime = default;
         _isSourceConnected = false;
         _isReconnecting = false;
+        _lastProgressLogBytes = 0;
+
+        _logger?.LogDebugIfEnabled(
+            "Buffer reset: cleared {PreviousMB:F1}MB, {PreviousDiscontinuities} discontinuities",
+            previousBytes / (1024.0 * 1024.0),
+            previousDiscontinuities
+        );
     }
 
     /// <summary>
@@ -695,8 +763,14 @@ public sealed class CircularBufferWriteStream : Stream
     {
         var currentOffset = Volatile.Read(ref _totalBytesWritten.Value);
         _ = Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, currentOffset);
-        _ = Interlocked.Increment(ref _discontinuityCount.Value);
+        var newCount = Interlocked.Increment(ref _discontinuityCount.Value);
         _lastDiscontinuityTime = DateTime.UtcNow;
+
+        _logger?.LogDebugIfEnabled(
+            "Discontinuity #{Count} marked at offset {OffsetMB:F2}MB",
+            newCount,
+            currentOffset / (1024.0 * 1024.0)
+        );
     }
 
     /// <summary>
@@ -758,6 +832,12 @@ public sealed class CircularBufferWriteStream : Stream
         _isSourceConnected = true;
         _isReconnecting = false;
         LastWriteTime = DateTime.UtcNow;
+
+        _logger?.LogDebugIfEnabled(
+            "Source connected: totalWritten={TotalMB:F2}MB, reconnectionAttempts={Attempts}",
+            TotalBytesWritten / (1024.0 * 1024.0),
+            ReconnectionAttempts
+        );
     }
 
     /// <summary>
@@ -768,13 +848,28 @@ public sealed class CircularBufferWriteStream : Stream
     {
         _isReconnecting = true;
         _isSourceConnected = false;
-        _ = Interlocked.Increment(ref _reconnectionAttempts.Value);
+        var attempts = Interlocked.Increment(ref _reconnectionAttempts.Value);
+
+        _logger?.LogDebugIfEnabled(
+            "Source reconnecting: attempt #{Attempts}, totalWritten={TotalMB:F2}MB",
+            attempts,
+            TotalBytesWritten / (1024.0 * 1024.0)
+        );
     }
 
     /// <summary>
     /// Signals that the source has disconnected (EOF, error, or intentional close).
     /// </summary>
-    public void SignalSourceDisconnected() => _isSourceConnected = false;
+    public void SignalSourceDisconnected()
+    {
+        _isSourceConnected = false;
+
+        _logger?.LogDebugIfEnabled(
+            "Source disconnected: totalWritten={TotalMB:F2}MB, discontinuities={Count}",
+            TotalBytesWritten / (1024.0 * 1024.0),
+            DiscontinuityCount
+        );
+    }
 
     /// <inheritdoc />
     protected override void Dispose(bool disposing)
