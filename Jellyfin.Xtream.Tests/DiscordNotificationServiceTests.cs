@@ -18,6 +18,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.MpegTs.Models;
+using Jellyfin.Xtream.Service.MpegTs.TsDuck;
 using Jellyfin.Xtream.Service.ProviderManagement;
 using Xunit;
 
@@ -296,7 +297,8 @@ public sealed class DiscordNotificationServiceTests
         public Task SendTsIndexerMetricsAsync(
             string streamId,
             string channelName,
-            TsIndexerMetrics metrics,
+            TsIndexerMetrics indexerMetrics,
+            TsDuckMetrics? tsDuckMetrics = null,
             CancellationToken cancellationToken = default
         ) => Task.CompletedTask;
 

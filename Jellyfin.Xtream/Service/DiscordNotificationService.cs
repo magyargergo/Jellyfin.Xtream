@@ -24,6 +24,7 @@ using Discord.Webhook;
 using Jellyfin.Xtream.Service.Discord;
 using Jellyfin.Xtream.Service.MpegTs.Core;
 using Jellyfin.Xtream.Service.MpegTs.Models;
+using Jellyfin.Xtream.Service.MpegTs.TsDuck;
 using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
@@ -444,7 +445,8 @@ public sealed class DiscordNotificationService(ILogger<DiscordNotificationServic
     public async Task SendTsIndexerMetricsAsync(
         string streamId,
         string channelName,
-        TsIndexerMetrics metrics,
+        TsIndexerMetrics indexerMetrics,
+        TsDuckMetrics? tsDuckMetrics = null,
         CancellationToken cancellationToken = default
     )
     {
@@ -456,22 +458,23 @@ public sealed class DiscordNotificationService(ILogger<DiscordNotificationServic
 
         var now = DateTime.UtcNow;
 
-        // Determine health status based on error rates
-        var hasSignificantErrors = metrics.ContinuityErrorRate > 0.0001; // > 0.01%
-        var hasTransportErrors = metrics.TransportErrorRate > 0;
-        var isEncrypted = metrics.IsEncrypted;
+        // Determine health status based on TsDuck TR 101 290 metrics
+        var p1Errors = tsDuckMetrics?.Priority1.TotalErrors ?? 0;
+        var p2Errors = tsDuckMetrics?.Priority2.TotalErrors ?? 0;
+        var qualityScore = tsDuckMetrics?.CalculateQualityScore() ?? 100;
+        var isEncrypted = indexerMetrics.IsEncrypted;
 
         Color color;
         string statusEmoji;
         string healthStatus;
 
-        if (hasTransportErrors || hasSignificantErrors)
+        if (qualityScore < 50 || p1Errors > 100)
         {
             color = Color.Red;
             statusEmoji = "🔴";
             healthStatus = "DEGRADED";
         }
-        else if (metrics.ContinuityErrorRate > 0 || isEncrypted)
+        else if (qualityScore < 80 || p1Errors > 0 || isEncrypted)
         {
             color = Color.Orange;
             statusEmoji = "⚠️";
@@ -486,27 +489,23 @@ public sealed class DiscordNotificationService(ILogger<DiscordNotificationServic
 
         // Format data processed
         var bytesProcessed =
-            metrics.TotalBytesProcessed >= 1024 * 1024
+            indexerMetrics.TotalBytesProcessed >= 1024 * 1024
                 ? string.Format(
                     CultureInfo.InvariantCulture,
                     "{0:N1} MB",
-                    metrics.TotalBytesProcessed / (1024.0 * 1024.0)
+                    indexerMetrics.TotalBytesProcessed / (1024.0 * 1024.0)
                 )
-                : string.Format(CultureInfo.InvariantCulture, "{0:N0} KB", metrics.TotalBytesProcessed / 1024.0);
+                : string.Format(CultureInfo.InvariantCulture, "{0:N0} KB", indexerMetrics.TotalBytesProcessed / 1024.0);
 
-        // Format error rates
-        var transportErrors = string.Format(
-            CultureInfo.InvariantCulture,
-            "{0:N0} ({1:F4}%)",
-            metrics.TransportErrorCount,
-            metrics.TransportErrorRate * 100
-        );
-        var continuityErrors = string.Format(
-            CultureInfo.InvariantCulture,
-            "{0:N0} ({1:F4}%)",
-            metrics.ContinuityErrorCount,
-            metrics.ContinuityErrorRate * 100
-        );
+        // Format TR 101 290 error counts (from TsDuck)
+        var transportErrors =
+            tsDuckMetrics != null
+                ? string.Format(CultureInfo.InvariantCulture, "{0:N0}", tsDuckMetrics.Priority2.TransportError)
+                : "N/A";
+        var continuityErrors =
+            tsDuckMetrics != null
+                ? string.Format(CultureInfo.InvariantCulture, "{0:N0}", tsDuckMetrics.Priority1.ContinuityCountError)
+                : "N/A";
 
         var embed = new EmbedBuilder()
             .WithAuthor("Jellyfin.Xtream", JellyfinIconUrl)
@@ -517,43 +516,37 @@ public sealed class DiscordNotificationService(ILogger<DiscordNotificationServic
             .AddField("📊 Status", $"{statusEmoji} {healthStatus}", inline: true)
             .AddField(
                 "📺 Programs",
-                $"{metrics.ProgramsWithVideoCount}/{metrics.ProgramCount} with video",
+                $"{indexerMetrics.ProgramsWithVideoCount}/{indexerMetrics.ProgramCount} with video",
                 inline: true
             )
             .AddField(
                 "📦 Packets Parsed",
-                string.Format(CultureInfo.InvariantCulture, "{0:N0}", metrics.TotalPacketsParsed),
+                string.Format(CultureInfo.InvariantCulture, "{0:N0}", indexerMetrics.TotalPacketsParsed),
                 inline: true
             )
             .AddField("💾 Data Processed", bytesProcessed, inline: true)
             .AddField(
                 "🔐 Encrypted",
-                metrics.IsEncrypted ? $"Yes ({metrics.ScrambledPidCount} PIDs)" : "No",
+                indexerMetrics.IsEncrypted ? $"Yes ({indexerMetrics.ScrambledPidCount} PIDs)" : "No",
                 inline: true
             )
             .AddField("❌ Transport Errors", transportErrors, inline: true)
-            .AddField("⚠️ Continuity Errors", continuityErrors, inline: true)
-            .AddField(
-                "📋 PAT Violations",
-                metrics.PatIntervalViolations.ToString(CultureInfo.InvariantCulture),
-                inline: true
-            );
+            .AddField("⚠️ CC Errors", continuityErrors, inline: true);
+
+        // Add TsDuck quality score if available
+        if (tsDuckMetrics != null)
+        {
+            _ = embed.AddField("📈 Quality Score", $"{qualityScore}/100", inline: true);
+        }
 
         // Add first program's details if available
-        if (metrics.Programs.Count > 0)
+        if (indexerMetrics.Programs.Count > 0)
         {
-            var prog = metrics.Programs[0];
+            var prog = indexerMetrics.Programs[0];
             var avgGop =
                 prog.AverageGopDuration > TimeSpan.Zero
                     ? string.Format(CultureInfo.InvariantCulture, "{0:F2}s", prog.AverageGopDuration.TotalSeconds)
                     : "N/A";
-            var pcrStatus = string.Format(
-                CultureInfo.InvariantCulture,
-                "{0} PCRs, {1} jitter violations, buffer: {2:F0}ms",
-                prog.PcrCount,
-                prog.PcrJitterViolations,
-                prog.PcrBufferMs
-            );
             var syncInfo = FormatSyncStatus(prog.SyncStatus, prog.DriftMs);
 
             _ = embed
@@ -561,16 +554,27 @@ public sealed class DiscordNotificationService(ILogger<DiscordNotificationServic
                 .AddField("⏱️ PCR PID", prog.PcrPid.ToString(CultureInfo.InvariantCulture), inline: true)
                 .AddField("🔑 Keyframes", prog.KeyframeCount.ToString(CultureInfo.InvariantCulture), inline: true)
                 .AddField("📐 Avg GOP", avgGop, inline: true)
-                .AddField("📉 Packet Loss", $"{prog.PacketLossCount} discontinuities", inline: true)
-                .AddField("🔊 A/V Sync", syncInfo, inline: true)
-                .AddField(
+                .AddField("🔊 A/V Sync", syncInfo, inline: true);
+
+            // Add TsDuck PCR analysis if available
+            if (tsDuckMetrics?.PcrAnalysis != null)
+            {
+                var pcr = tsDuckMetrics.PcrAnalysis.Value;
+                var pcrStatus = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Jitter: {0:F1}µs, Interval: {1:F1}ms",
+                    pcr.PcrJitterUs,
+                    pcr.PcrIntervalMs
+                );
+                _ = embed.AddField(
                     "🕰️ PCR Status",
                     pcrStatus.Length > 100 ? $"{pcrStatus.AsSpan(0, 97)}..." : pcrStatus,
                     inline: false
                 );
+            }
         }
 
-        _ = embed.WithTimestamp(now).WithFooter("MPEG-TS Indexer Diagnostics (ISO/IEC 13818-1, TR 101 290)");
+        _ = embed.WithTimestamp(now).WithFooter("MPEG-TS Diagnostics (TsDuck TR 101 290)");
 
         _ = await SendDiscordMessageAsync(embed.Build(), cancellationToken).ConfigureAwait(false);
     }
