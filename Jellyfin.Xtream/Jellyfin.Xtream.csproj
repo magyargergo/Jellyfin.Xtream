@@ -12,6 +12,14 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <!-- Native library build configuration -->
+  <!-- Set BuildNativeLibrary=false to skip Docker build (e.g., on CI without Docker) -->
+  <PropertyGroup>
+    <BuildNativeLibrary Condition="'$(BuildNativeLibrary)' == ''">true</BuildNativeLibrary>
+    <NativeLibraryOutputDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\native\tsduck_interop\output'))</NativeLibraryOutputDir>
+    <NativeLibraryDockerfile>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\native\tsduck_interop'))</NativeLibraryDockerfile>
+  </PropertyGroup>
+
   <!-- Expose internals to test and benchmark projects -->
   <ItemGroup>
     <InternalsVisibleTo Include="Jellyfin.Xtream.Tests" />
@@ -54,4 +62,98 @@
     <None Remove="Configuration\Web\**" />
     <EmbeddedResource Include="Configuration\Web\**" />
   </ItemGroup>
+
+  <!-- Native TsDuck interop library for Linux deployments -->
+  <!-- The library is built separately via Docker and placed in runtimes/ -->
+  <ItemGroup Condition="Exists('..\native\tsduck_interop\output\libtsduck_interop.so')">
+    <None
+      Include="..\native\tsduck_interop\output\libtsduck_interop.so"
+      Link="runtimes\linux-x64\native\libtsduck_interop.so"
+      CopyToOutputDirectory="PreserveNewest"
+      Pack="true"
+      PackagePath="runtimes/linux-x64/native"
+    />
+  </ItemGroup>
+
+  <!-- Also include bundled TsDuck core library (libtscore.so) if present -->
+  <!-- libtsduck.so depends on libtscore.so, so it must be included -->
+  <ItemGroup Condition="Exists('..\native\tsduck_interop\output\libtscore.so')">
+    <None
+      Include="..\native\tsduck_interop\output\libtscore.so*"
+      Link="runtimes\linux-x64\native\%(Filename)%(Extension)"
+      CopyToOutputDirectory="PreserveNewest"
+      Pack="true"
+      PackagePath="runtimes/linux-x64/native"
+    />
+  </ItemGroup>
+
+  <!-- Also include bundled TsDuck TS processing library (libtsduck.so) if present -->
+  <ItemGroup Condition="Exists('..\native\tsduck_interop\output\libtsduck.so')">
+    <None
+      Include="..\native\tsduck_interop\output\libtsduck.so*"
+      Link="runtimes\linux-x64\native\%(Filename)%(Extension)"
+      CopyToOutputDirectory="PreserveNewest"
+      Pack="true"
+      PackagePath="runtimes/linux-x64/native"
+    />
+  </ItemGroup>
+
+  <!-- Build native TsDuck interop library via Docker -->
+  <Target
+    Name="BuildNativeTsDuckLibrary"
+    BeforeTargets="BeforeBuild"
+    Condition="'$(BuildNativeLibrary)' == 'true' AND '$(TargetFramework)' != ''"
+  >
+    <!-- Check if Docker is available -->
+    <Exec
+      Command="docker --version"
+      IgnoreExitCode="true"
+      StandardOutputImportance="low"
+      StandardErrorImportance="low"
+      ConsoleToMSBuild="true"
+    >
+      <Output TaskParameter="ExitCode" PropertyName="DockerExitCode" />
+    </Exec>
+    <!-- Build native library if Docker is available -->
+    <Message
+      Condition="'$(DockerExitCode)' == '0'"
+      Importance="high"
+      Text="Building native TsDuck interop library via Docker..."
+    />
+    <Exec
+      Condition="'$(DockerExitCode)' == '0'"
+      Command="docker build --target artifacts --progress=plain -o type=local,dest=&quot;$(NativeLibraryOutputDir)&quot; &quot;$(NativeLibraryDockerfile)&quot;"
+      WorkingDirectory="$(NativeLibraryDockerfile)"
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="low"
+      EnvironmentVariables="DOCKER_BUILDKIT=1"
+    />
+    <Message
+      Condition="'$(DockerExitCode)' == '0'"
+      Importance="high"
+      Text="Native TsDuck library built successfully to $(NativeLibraryOutputDir)"
+    />
+    <!-- Warn if Docker is not available -->
+    <Warning
+      Condition="'$(DockerExitCode)' != '0'"
+      Text="Docker not available. Skipping native TsDuck library build. The plugin will use the fallback analyzer on Linux."
+    />
+  </Target>
+
+  <!-- Copy native libraries to output directory after build -->
+  <Target
+    Name="CopyNativeLibrariesToOutput"
+    AfterTargets="Build"
+    Condition="Exists('$(NativeLibraryOutputDir)\libtsduck_interop.so')"
+  >
+    <ItemGroup>
+      <NativeLibraries Include="$(NativeLibraryOutputDir)\*.so*" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(NativeLibraries)"
+      DestinationFolder="$(OutputPath)runtimes\linux-x64\native"
+      SkipUnchangedFiles="true"
+    />
+    <Message Importance="normal" Text="Copied native libraries to $(OutputPath)runtimes\linux-x64\native" />
+  </Target>
 </Project>
