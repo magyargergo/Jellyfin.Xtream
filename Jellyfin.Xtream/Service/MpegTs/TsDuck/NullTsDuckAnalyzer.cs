@@ -54,20 +54,6 @@ public sealed class NullTsDuckAnalyzer : ITsDuckAnalyzer
     }
 
     /// <inheritdoc/>
-    /// <remarks>
-    /// Not raised. For A/V sync drift monitoring, use <c>TsIndexer.TimestampTracker.DriftDetected</c>.
-    /// </remarks>
-    public event EventHandler<SyncDriftEventArgs>? SyncDriftDetected
-    {
-        add
-        { /* No-op - use TsIndexer.TimestampTracker.DriftDetected instead */
-        }
-        remove
-        { /* No-op - use TsIndexer.TimestampTracker.DriftDetected instead */
-        }
-    }
-
-    /// <inheritdoc/>
     public event EventHandler<TsDuckMetricsEventArgs>? MetricsUpdated
     {
         add
@@ -81,6 +67,10 @@ public sealed class NullTsDuckAnalyzer : ITsDuckAnalyzer
     /// <inheritdoc/>
     /// <returns>Always returns null since no analysis is performed.</returns>
     public TsDuckMetrics? GetMetrics() => null;
+
+    /// <inheritdoc/>
+    /// <returns>Always returns null since no analysis is performed.</returns>
+    public Native.AvSyncAnalysis? GetAvSyncAnalysis() => null;
 
     /// <inheritdoc/>
     /// <returns>Always returns null since no metrics are available.</returns>

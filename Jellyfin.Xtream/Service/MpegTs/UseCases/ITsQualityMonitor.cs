@@ -31,16 +31,18 @@ namespace Jellyfin.Xtream.Service.MpegTs.UseCases;
 ///   <item><description><see cref="IContinuityMonitor"/> - Continuity counter errors</description></item>
 ///   <item><description><see cref="ICrcMonitor"/> - CRC-32 validation errors</description></item>
 ///   <item><description><see cref="IEncryptionDetector"/> - Scrambling detection</description></item>
-///   <item><description><see cref="ISyncMonitor"/> - A/V synchronization</description></item>
 ///   <item><description><see cref="IQualityEventSource"/> - Quality violation events</description></item>
 /// </list>
+/// <para>
+/// Note: A/V sync monitoring is now handled by <see cref="TsDuck.ITsDuckAnalyzer"/>.
+/// Use the analyzer's GetAvSyncAnalysis() method for drift detection.
+/// </para>
 /// </remarks>
 public interface ITsQualityMonitor
     : IStreamStatistics,
         IContinuityMonitor,
         ICrcMonitor,
         IEncryptionDetector,
-        ISyncMonitor,
         IQualityEventSource
 {
     /// <summary>

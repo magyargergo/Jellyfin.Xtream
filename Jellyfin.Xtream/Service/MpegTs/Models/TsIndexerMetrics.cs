@@ -29,6 +29,10 @@ namespace Jellyfin.Xtream.Service.MpegTs.Models;
 /// by TsDuck via <see cref="TsDuck.ITsDuckAnalyzer.GetMetrics"/>. This struct focuses
 /// on indexing-specific metrics needed for seeking and playback.
 /// </para>
+/// <para>
+/// A/V sync and PCR timing metrics are now provided by the native TsDuck analyzer.
+/// Use <see cref="TsDuck.ITsDuckAnalyzer.GetAvSyncAnalysis"/> for sync monitoring.
+/// </para>
 /// </remarks>
 /// <param name="ProgramNumber">The program number.</param>
 /// <param name="VideoPid">The video PID, or -1 if no video.</param>
@@ -38,10 +42,6 @@ namespace Jellyfin.Xtream.Service.MpegTs.Models;
 /// <param name="KeyframeCount">Number of keyframes indexed.</param>
 /// <param name="AverageGopDuration">Average GOP duration.</param>
 /// <param name="AudioFrameCount">Number of audio frames detected.</param>
-/// <param name="SyncStatus">Current A/V sync status.</param>
-/// <param name="DriftMs">Current A/V drift in milliseconds.</param>
-/// <param name="ClockStatus">Clock synchronization status.</param>
-/// <param name="ClockDriftPpm">Clock drift in parts per million.</param>
 [StructLayout(LayoutKind.Auto)]
 public readonly record struct ProgramMetrics(
     int ProgramNumber,
@@ -51,11 +51,7 @@ public readonly record struct ProgramMetrics(
     int PcrPid,
     int KeyframeCount,
     TimeSpan AverageGopDuration,
-    long AudioFrameCount,
-    SyncStatus SyncStatus,
-    double DriftMs,
-    ClockStatus ClockStatus,
-    double ClockDriftPpm
+    long AudioFrameCount
 );
 
 /// <summary>

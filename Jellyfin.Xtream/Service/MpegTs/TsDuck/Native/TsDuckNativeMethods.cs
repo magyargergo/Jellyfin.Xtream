@@ -546,4 +546,165 @@ internal static partial class TsDuckNativeMethods
         ViolationCallbackDelegate? callback,
         nint userData
     );
+
+    // =========================================================================
+    // A/V Sync Analysis (Phase 3 - Restamping)
+    // =========================================================================
+
+    /// <summary>
+    /// Gets A/V synchronization analysis.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_analyzer_get_av_sync_analysis")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool AnalyzerGetAvSyncAnalysis(nint analyzer, out AvSyncAnalysisNative analysis);
+
+    /// <summary>
+    /// Gets the number of PTS/DTS samples currently buffered.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_analyzer_get_pts_sample_count")]
+    internal static partial int AnalyzerGetPtsSampleCount(nint analyzer);
+
+    /// <summary>
+    /// Gets recent PTS/DTS samples for detailed analysis.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_analyzer_get_pts_samples")]
+    internal static partial int AnalyzerGetPtsSamples(nint analyzer, nint outSamples, int maxSamples);
+
+    /// <summary>
+    /// Maximum PTS sample count to prevent unbounded allocation.
+    /// </summary>
+    private const int MaxPtsSampleCount = 128;
+
+    /// <summary>
+    /// Gets PTS/DTS samples using a managed array.
+    /// </summary>
+    internal static unsafe PtsDtsSample[] GetPtsSamples(nint analyzer, int maxSamples = MaxPtsSampleCount)
+    {
+        int count = AnalyzerGetPtsSampleCount(analyzer);
+        if (count <= 0)
+        {
+            return [];
+        }
+
+        count = Math.Min(count, Math.Min(maxSamples, MaxPtsSampleCount));
+
+        var nativeArray = ArrayPool<PtsDtsSampleNative>.Shared.Rent(count);
+        try
+        {
+            int actualCount;
+            fixed (PtsDtsSampleNative* ptr = nativeArray)
+            {
+                actualCount = AnalyzerGetPtsSamples(analyzer, (nint)ptr, count);
+            }
+
+            if (actualCount <= 0)
+            {
+                return [];
+            }
+
+            var result = new PtsDtsSample[actualCount];
+            for (int i = 0; i < actualCount; i++)
+            {
+                result[i] = nativeArray[i].ToManaged();
+            }
+
+            return result;
+        }
+        finally
+        {
+            ArrayPool<PtsDtsSampleNative>.Shared.Return(nativeArray);
+        }
+    }
+
+    // =========================================================================
+    // Restamper Lifecycle (Phase 3 - Restamping)
+    // =========================================================================
+
+    /// <summary>
+    /// Creates a restamper attached to an analyzer.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_create")]
+    internal static partial nint RestamperCreate(nint analyzer, in RestampingConfigNative config);
+
+    /// <summary>
+    /// Creates restamper with default configuration.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_create")]
+    internal static partial nint RestamperCreateDefault(nint analyzer, nint config);
+
+    /// <summary>
+    /// Destroys a restamper and frees its resources.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_destroy")]
+    internal static partial void RestamperDestroy(nint restamper);
+
+    /// <summary>
+    /// Checks if the restamper is initialized and ready.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_is_initialized")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool RestamperIsInitialized(nint restamper);
+
+    /// <summary>
+    /// Configures restamping behavior.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_configure")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool RestamperConfigure(nint restamper, in RestampingConfigNative config);
+
+    // =========================================================================
+    // Restamper Data Processing (Phase 3 - Restamping)
+    // =========================================================================
+
+    /// <summary>
+    /// Processes MPEG-TS data and applies timestamp corrections in-place.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_process")]
+    internal static partial int RestamperProcess(nint restamper, nint data, int length);
+
+    /// <summary>
+    /// Processes MPEG-TS data using Span (modifies data in-place).
+    /// </summary>
+    internal static unsafe int RestamperProcess(nint restamper, Span<byte> data)
+    {
+        fixed (byte* ptr = data)
+        {
+            return RestamperProcess(restamper, (nint)ptr, data.Length);
+        }
+    }
+
+    /// <summary>
+    /// Notifies restamper of a provider switch.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_handle_switch")]
+    internal static partial void RestamperHandleSwitch(nint restamper, long lastOutputPts, long newInputFirstPts);
+
+    /// <summary>
+    /// Gets restamping statistics.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_get_statistics")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool RestamperGetStatistics(nint restamper, out RestampingStatisticsNative stats);
+
+    /// <summary>
+    /// Resets restamper state for a new stream.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_reset")]
+    internal static partial void RestamperReset(nint restamper);
+
+    /// <summary>
+    /// Delegate for correction callbacks.
+    /// </summary>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate void CorrectionCallbackDelegate(double correctionMs, nint correctionType, nint userData);
+
+    /// <summary>
+    /// Sets the correction callback.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_restamper_set_correction_callback")]
+    internal static partial void RestamperSetCorrectionCallback(
+        nint restamper,
+        CorrectionCallbackDelegate? callback,
+        nint userData
+    );
 }

@@ -47,6 +47,16 @@ public interface ITsDuckAnalyzer : IQualityEventSource, IDisposable
     TsDuckMetrics? GetMetrics();
 
     /// <summary>
+    /// Gets the current A/V synchronization analysis.
+    /// </summary>
+    /// <remarks>
+    /// Provides real-time drift detection with 20ms professional broadcast threshold (EBU R37).
+    /// Returns null if not enough data has been collected yet or if native library is unavailable.
+    /// </remarks>
+    /// <returns>The A/V sync analysis, or null if unavailable.</returns>
+    Native.AvSyncAnalysis? GetAvSyncAnalysis();
+
+    /// <summary>
     /// Gets the age of the most recent metrics, or null if no metrics available.
     /// </summary>
     /// <remarks>

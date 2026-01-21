@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.MpegTs.Core;
 using Jellyfin.Xtream.Service.MpegTs.Models;
@@ -21,11 +23,10 @@ namespace Jellyfin.Xtream.Service.MpegTs.Infrastructure;
 /// </para>
 /// <list type="bullet">
 ///   <item><description><see cref="PacketStatistics"/> - Packet and byte counting</description></item>
-///   <item><description><see cref="ProgramInfoService"/> - Timing services per program</description></item>
 ///   <item><description><see cref="ITsDemuxer"/> - FFmpeg-based demuxing and packet events</description></item>
 /// </list>
 /// <para>
-/// TR 101 290 compliance checking is handled by TsDuck via <see cref="TsDuck.ITsDuckAnalyzer"/>.
+/// TR 101 290 compliance checking and PCR timing are handled by TsDuck via <see cref="TsDuck.ITsDuckAnalyzer"/>.
 /// </para>
 /// </remarks>
 public sealed class TsIndexer : ITsQualityMonitor, IDisposable
@@ -39,7 +40,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     private readonly int _bufferSize;
     private readonly ILogger<TsIndexer>? _logger;
     private readonly ITsDemuxer? _demuxer;
-    private readonly ProgramInfoService _programInfoService;
     private readonly PacketStatistics _statistics;
 
     // Multi-program support: Map of program number → ProgramInfo
@@ -82,9 +82,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
         // Initialize focused components
         _statistics = new PacketStatistics();
 
-        _programInfoService = new ProgramInfoService(logger);
-        _programInfoService.JitterViolationDetected += OnJitterViolationDetected;
-
         // Subscribe to demuxer events if available
         if (_demuxer != null)
         {
@@ -94,24 +91,18 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
         }
     }
 
-    private void OnJitterViolationDetected(object? sender, StreamQualityViolationEventArgs e) =>
-        StreamQualityViolation?.Invoke(this, e);
-
     /// <summary>
     /// Event raised when a TR 101 290 stream quality violation is detected.
     /// </summary>
-    public event EventHandler<StreamQualityViolationEventArgs>? StreamQualityViolation;
-
-    /// <summary>
-    /// Event raised when A/V synchronization drift is detected.
-    /// </summary>
-    public event EventHandler<SyncDriftEventArgs>? SyncDriftDetected;
-
-    /// <summary>
-    /// Event raised when a PTS discontinuity is detected in the source stream.
-    /// This indicates a timestamp jump that could cause playback issues.
-    /// </summary>
-    public event EventHandler<PtsDiscontinuityEventArgs>? PtsDiscontinuityDetected;
+    /// <remarks>
+    /// Quality monitoring is now handled by the native TsDuck analyzer.
+    /// This event is kept for interface compatibility but is not raised.
+    /// </remarks>
+    public event EventHandler<StreamQualityViolationEventArgs>? StreamQualityViolation
+    {
+        add { }
+        remove { }
+    }
 
     /// <summary>
     /// Gets the count of programs detected in the stream.
@@ -424,33 +415,10 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
 
                     if (discontinuity && knownProgram != null)
                     {
-                        var pcrTiming = _programInfoService.GetOrCreatePcrTimingTracker(knownProgram.ProgramNumber);
-                        pcrTiming.Reset();
                         _logger?.LogDebugIfEnabled(
                             "Discontinuity indicator detected for program {ProgramNumber}",
                             knownProgram.ProgramNumber
                         );
-                    }
-
-                    // Extract PCR if present
-                    var pcrFlag = (adaptationFlags & 0x10) != 0;
-                    if (pcrFlag && adaptationLength >= 7 && knownProgram != null)
-                    {
-                        var pcrData = data.Slice(offset + 6, 6);
-                        var pcrBase =
-                            ((ulong)pcrData[0] << 25)
-                            | ((ulong)pcrData[1] << 17)
-                            | ((ulong)pcrData[2] << 9)
-                            | ((ulong)pcrData[3] << 1)
-                            | ((ulong)(pcrData[4] >> 7) & 0x01);
-                        var pcrExt = ((pcrData[4] & 0x01) << 8) | pcrData[5];
-                        var pcr = (long)((pcrBase * 300) + (ulong)pcrExt);
-
-                        var pcrTiming = _programInfoService.GetOrCreatePcrTimingTracker(knownProgram.ProgramNumber);
-                        if (pcrTiming.ProcessPcr(pcr))
-                        {
-                            knownProgram.PcrPacketsReceived++;
-                        }
                     }
 
                     // RAI-based keyframe fallback: when FFmpeg can't detect keyframes (missing SPS/PPS),
@@ -492,24 +460,16 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
             AddKeyframe(program, e.BytePosition);
         }
 
-        // Track PTS for A/V sync (FFmpeg already converted to 90kHz)
+        // Track packet counts and audio frames
+        // A/V sync tracking is now handled by the native TsDuck analyzer
         if (e.Pts > 0)
         {
-            var tracker = _programInfoService.GetOrCreateTimestampTracker(program.ProgramNumber);
-            if (tracker.VideoSampleCount == 0 && tracker.AudioSampleCount == 0)
-            {
-                tracker.DriftDetected += OnSyncDriftDetected;
-                tracker.PtsDiscontinuityDetected += OnPtsDiscontinuityDetected;
-            }
-
             if (e.IsVideo)
             {
                 program.VideoPacketCount++;
-                tracker.RecordVideoPts(e.Pts, e.BytePosition);
             }
             else if (e.IsAudio)
             {
-                tracker.RecordAudioPts(e.Pts, e.BytePosition);
                 program.Audio.RecordFrame(e.BytePosition, e.Pts);
             }
         }
@@ -726,22 +686,8 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
             return null;
         }
 
-        if (program.HasAudio)
-        {
-            var tracker = _programInfoService.GetOrCreateTimestampTracker(program.ProgramNumber);
-
-            // CRITICAL: Don't search BEFORE minValidOffset - that's stale data from the old connection!
-            // Only search forward from the keyframe to find a safe audio start point
-            var minOffset = Math.Max(keyframeOffset, minValidOffset);
-            var maxOffset = keyframeOffset + (256 * 1024);
-
-            var syncPoint = tracker.FindBestSyncPoint(minOffset, maxOffset);
-            if (syncPoint.HasValue && syncPoint.Value.Offset >= minValidOffset)
-            {
-                return syncPoint;
-            }
-        }
-
+        // Return sync point at keyframe offset
+        // A/V sync tracking is now handled by the native TsDuck analyzer
         return new SyncPoint(
             keyframeOffset,
             new StreamTimestamp(0, keyframeOffset),
@@ -751,65 +697,14 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     }
 
     /// <summary>
-    /// Gets the current A/V sync status for a program.
-    /// </summary>
-    public SyncStatus GetSyncStatus(int programNumber = -1)
-    {
-        var program = programNumber <= 0 ? GetFirstProgramWithVideo() : _programs.GetValueOrDefault(programNumber);
-
-        return program == null
-            ? SyncStatus.Unknown
-            : _programInfoService.GetSyncStatus(program.ProgramNumber, program.HasVideo, program.HasAudio);
-    }
-
-    /// <summary>
-    /// Gets the current A/V drift in milliseconds.
-    /// </summary>
-    public double GetCurrentDriftMs(int programNumber = -1)
-    {
-        var program = programNumber <= 0 ? GetFirstProgramWithVideo() : _programs.GetValueOrDefault(programNumber);
-
-        return program == null ? 0 : _programInfoService.GetCurrentDriftMs(program.ProgramNumber);
-    }
-
-    /// <summary>
-    /// Gets the peak A/V drift observed in milliseconds.
-    /// </summary>
-    public double GetPeakDriftMs(int programNumber = -1)
-    {
-        var program = programNumber <= 0 ? GetFirstProgramWithVideo() : _programs.GetValueOrDefault(programNumber);
-
-        if (program == null)
-        {
-            return 0;
-        }
-
-        var tracker = _programInfoService.GetOrCreateTimestampTracker(program.ProgramNumber);
-        return tracker.PeakDriftMs;
-    }
-
-    /// <summary>
-    /// Gets the number of A/V drift violations detected.
-    /// </summary>
-    public long GetDriftViolationCount(int programNumber = -1)
-    {
-        var program = programNumber <= 0 ? GetFirstProgramWithVideo() : _programs.GetValueOrDefault(programNumber);
-
-        if (program == null)
-        {
-            return 0;
-        }
-
-        var tracker = _programInfoService.GetOrCreateTimestampTracker(program.ProgramNumber);
-        return tracker.DriftViolationCount;
-    }
-
-    /// <summary>
     /// Resets timing state for a reconnection scenario.
     /// </summary>
+    /// <remarks>
+    /// PCR timing is now handled by the native TsDuck analyzer.
+    /// This method is kept for API compatibility.
+    /// </remarks>
     public void ResetTimingState()
     {
-        _programInfoService.ResetTimingState();
         _logger?.LogDebugIfEnabled("Timing state reset for {ProgramCount} programs", _programs.Count);
     }
 
@@ -821,25 +716,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     /// <returns>Always returns null as NAL unit parsing is handled by FFmpeg.</returns>
     [Obsolete("Parameter set caching is no longer supported with FFmpeg-based demuxing.")]
     public static byte[]? GetCachedParameterSets(int programNumber = -1) => null;
-
-    /// <summary>
-    /// Gets the current timing state for the first video program.
-    /// Returns video PTS, audio PTS, and PCR for use in timestamp remapping.
-    /// </summary>
-    /// <returns>Tuple of (videoPts, audioPts, pcr) in 90kHz/27MHz, or zeros if not available.</returns>
-    public (long VideoPts, long AudioPts, long Pcr) GetCurrentTimingState()
-    {
-        var program = GetFirstProgramWithVideo();
-        if (program == null)
-        {
-            return (0, 0, 0);
-        }
-
-        var tracker = _programInfoService.GetOrCreateTimestampTracker(program.ProgramNumber);
-        var pcrService = _programInfoService.GetOrCreatePcrTimingTracker(program.ProgramNumber);
-
-        return (tracker.LastVideoPts.Value, tracker.LastAudioPts.Value, pcrService.EstimatedPcrTime);
-    }
 
     /// <summary>
     /// Resets the indexer state for a new stream session.
@@ -856,7 +732,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
         }
 
         _programs.Clear();
-        _programInfoService.Clear();
         _scrambledPids.Clear();
         _cachedFirstVideoProgram = null;
         _lastProgressLogBytes = 0;
@@ -898,6 +773,10 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     /// Gets structured metrics about the indexer state.
     /// Use this for programmatic access to quality metrics.
     /// </summary>
+    /// <remarks>
+    /// Note: A/V sync metrics (SyncStatus, DriftMs) are deprecated here.
+    /// Use ITsDuckAnalyzer.GetAvSyncAnalysis() for A/V sync monitoring.
+    /// </remarks>
     /// <returns>Structured metrics record.</returns>
     public TsIndexerMetrics GetMetrics()
     {
@@ -912,14 +791,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
             }
 
             programsWithVideoCount++;
-            var syncStatus = _programInfoService.GetSyncStatus(
-                program.ProgramNumber,
-                program.HasVideo,
-                program.HasAudio
-            );
-            var driftMs = _programInfoService.GetCurrentDriftMs(program.ProgramNumber);
-            var clockStatus = _programInfoService.GetClockStatus(program.ProgramNumber);
-            var clockDriftPpm = _programInfoService.GetClockDriftPpm(program.ProgramNumber);
 
             programMetrics.Add(
                 new ProgramMetrics(
@@ -930,11 +801,7 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
                     PcrPid: program.PcrPid,
                     KeyframeCount: program.GetKeyframeCount(),
                     AverageGopDuration: program.AverageGopDuration,
-                    AudioFrameCount: program.Audio.FrameCount,
-                    SyncStatus: syncStatus,
-                    DriftMs: driftMs,
-                    ClockStatus: clockStatus,
-                    ClockDriftPpm: clockDriftPpm
+                    AudioFrameCount: program.Audio.FrameCount
                 )
             );
         }
@@ -969,21 +836,6 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
         _disposed = true;
 
         GC.SuppressFinalize(this);
-    }
-
-    private void OnSyncDriftDetected(object? sender, SyncDriftEventArgs e) => SyncDriftDetected?.Invoke(this, e);
-
-    private void OnPtsDiscontinuityDetected(object? sender, PtsDiscontinuityEventArgs e)
-    {
-        _logger?.PluginLogWarning(
-            "PTS discontinuity detected: {Direction} jump of {DeltaMs:F1}ms (PTS: {PrevPts} -> {NewPts}) at offset {Offset}",
-            e.IsBackwardJump ? "BACKWARD" : "FORWARD",
-            e.AbsoluteDeltaMs,
-            e.PreviousPts,
-            e.NewPts,
-            e.Offset
-        );
-        PtsDiscontinuityDetected?.Invoke(this, e);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1079,28 +931,139 @@ public sealed class TsIndexer : ITsQualityMonitor, IDisposable
     }
 
     /// <summary>
-    /// Finds the next sync byte in the data.
+    /// Finds the next sync byte in the data using SIMD acceleration when available.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int FindSyncByte(ReadOnlySpan<byte> data)
     {
-        for (var i = 0; i < data.Length; i++)
+        // Use vectorized search for larger buffers
+        if (Vector256.IsHardwareAccelerated && data.Length >= Vector256<byte>.Count)
         {
-            if (data[i] == TsConstants.SyncByte)
+            return FindSyncByteVector256(data);
+        }
+
+        if (Vector128.IsHardwareAccelerated && data.Length >= Vector128<byte>.Count)
+        {
+            return FindSyncByteVector128(data);
+        }
+
+        return FindSyncByteScalar(data);
+    }
+
+    /// <summary>
+    /// AVX2/AVX-512 vectorized sync byte search (32 bytes at a time).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int FindSyncByteVector256(ReadOnlySpan<byte> data)
+    {
+        var syncVector = Vector256.Create(TsConstants.SyncByte);
+        var i = 0;
+        var vectorLength = Vector256<byte>.Count;
+
+        // Process 32 bytes at a time
+        while (i <= data.Length - vectorLength)
+        {
+            var chunk = Vector256.Create(data.Slice(i, vectorLength));
+            var matches = Vector256.Equals(chunk, syncVector);
+
+            if (matches != Vector256<byte>.Zero)
             {
-                // Verify it's a real sync by checking next packet
-                if (i + TsConstants.PacketSize < data.Length)
+                // Found potential sync byte(s) - extract mask and find first
+                var mask = matches.ExtractMostSignificantBits();
+                var bitPos = BitOperations.TrailingZeroCount(mask);
+                var candidate = i + bitPos;
+
+                // Verify by checking next packet sync
+                if (VerifySyncByte(data, candidate))
                 {
-                    if (data[i + TsConstants.PacketSize] == TsConstants.SyncByte)
-                    {
-                        return i;
-                    }
+                    return candidate;
                 }
-                else
+
+                // False positive - continue from next position
+                i = candidate + 1;
+                continue;
+            }
+
+            i += vectorLength;
+        }
+
+        // Handle remaining bytes with scalar
+        return FindSyncByteScalarFrom(data, i);
+    }
+
+    /// <summary>
+    /// SSE2/NEON vectorized sync byte search (16 bytes at a time).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int FindSyncByteVector128(ReadOnlySpan<byte> data)
+    {
+        var syncVector = Vector128.Create(TsConstants.SyncByte);
+        var i = 0;
+        var vectorLength = Vector128<byte>.Count;
+
+        // Process 16 bytes at a time
+        while (i <= data.Length - vectorLength)
+        {
+            var chunk = Vector128.Create(data.Slice(i, vectorLength));
+            var matches = Vector128.Equals(chunk, syncVector);
+
+            if (matches != Vector128<byte>.Zero)
+            {
+                // Found potential sync byte(s) - extract mask and find first
+                var mask = matches.ExtractMostSignificantBits();
+                var bitPos = BitOperations.TrailingZeroCount(mask);
+                var candidate = i + bitPos;
+
+                // Verify by checking next packet sync
+                if (VerifySyncByte(data, candidate))
                 {
-                    // Can't verify, assume it's valid
-                    return i;
+                    return candidate;
                 }
+
+                // False positive - continue from next position
+                i = candidate + 1;
+                continue;
+            }
+
+            i += vectorLength;
+        }
+
+        // Handle remaining bytes with scalar
+        return FindSyncByteScalarFrom(data, i);
+    }
+
+    /// <summary>
+    /// Verifies a sync byte candidate by checking the next packet boundary.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool VerifySyncByte(ReadOnlySpan<byte> data, int index)
+    {
+        // Can't verify if we don't have enough data
+        if (index + TsConstants.PacketSize >= data.Length)
+        {
+            return true; // Assume valid at end of buffer
+        }
+
+        return data[index + TsConstants.PacketSize] == TsConstants.SyncByte;
+    }
+
+    /// <summary>
+    /// Scalar fallback for sync byte search.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int FindSyncByteScalar(ReadOnlySpan<byte> data) => FindSyncByteScalarFrom(data, 0);
+
+    /// <summary>
+    /// Scalar sync byte search starting from a specific index.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int FindSyncByteScalarFrom(ReadOnlySpan<byte> data, int startIndex)
+    {
+        for (var i = startIndex; i < data.Length; i++)
+        {
+            if (data[i] == TsConstants.SyncByte && VerifySyncByte(data, i))
+            {
+                return i;
             }
         }
 

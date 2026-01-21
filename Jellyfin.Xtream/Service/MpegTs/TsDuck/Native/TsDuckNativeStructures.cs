@@ -261,3 +261,404 @@ internal enum TsDuckNativeError
     NullHandle = -1,
     Ok = 0,
 }
+
+// =============================================================================
+// A/V Sync Analysis Structures (Phase 3 - Restamping)
+// =============================================================================
+
+/// <summary>
+/// A/V synchronization status.
+/// </summary>
+public enum AvSyncStatus
+{
+    /// <summary>Not enough data to determine sync status.</summary>
+    Unknown = 0,
+
+    /// <summary>Audio and video are synchronized within tolerance (±20ms).</summary>
+    Synchronized = 1,
+
+    /// <summary>Drift detected but within correctable range.</summary>
+    Drifting = 2,
+
+    /// <summary>Severe desync detected (>100ms).</summary>
+    Desync = 3,
+
+    /// <summary>No audio PTS detected in stream.</summary>
+    NoAudio = 4,
+
+    /// <summary>No video PTS detected in stream.</summary>
+    NoVideo = 5,
+}
+
+/// <summary>
+/// Native PTS/DTS sample structure.
+/// Layout must match PtsDtsSampleNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct PtsDtsSampleNative
+{
+    public int Pid;
+    public int StreamType;
+    public long Pts90Khz;
+    public long Dts90Khz;
+    public long Pcr90Khz;
+    public long PacketIndex;
+    public long ByteOffset;
+    public int IsVideo;
+    public int IsAudio;
+    public int IsKeyframe;
+    public int Reserved;
+
+    /// <summary>
+    /// Converts to managed PtsDtsSample.
+    /// </summary>
+    public readonly PtsDtsSample ToManaged() =>
+        new(
+            Pid,
+            StreamType,
+            Pts90Khz,
+            Dts90Khz,
+            Pcr90Khz,
+            PacketIndex,
+            ByteOffset,
+            IsVideo != 0,
+            IsAudio != 0,
+            IsKeyframe != 0
+        );
+}
+
+/// <summary>
+/// Native A/V synchronization analysis structure.
+/// Layout must match AvSyncAnalysisNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct AvSyncAnalysisNative
+{
+    // Current drift state
+    public double VideoAudioDriftMs;
+    public double DriftRateMsPerSec;
+    public double PeakDriftMs;
+    public double AvgDriftMs;
+
+    // PCR-PTS relationship
+    public double PcrVideoOffsetMs;
+    public double PcrAudioOffsetMs;
+
+    // Sample counts
+    public long VideoPtsCount;
+    public long AudioPtsCount;
+    public long PcrCount;
+
+    // Discontinuity tracking
+    public long VideoDiscontinuities;
+    public long AudioDiscontinuities;
+    public long PcrDiscontinuities;
+
+    // Timing
+    public long LastVideoPts;
+    public long LastAudioPts;
+    public long LastPcr;
+
+    // Status
+    public int SyncStatus;
+    public int Reserved;
+
+    /// <summary>
+    /// Converts to managed AvSyncAnalysis.
+    /// </summary>
+    public readonly AvSyncAnalysis ToManaged() =>
+        new(
+            VideoAudioDriftMs,
+            DriftRateMsPerSec,
+            PeakDriftMs,
+            AvgDriftMs,
+            PcrVideoOffsetMs,
+            PcrAudioOffsetMs,
+            VideoPtsCount,
+            AudioPtsCount,
+            PcrCount,
+            VideoDiscontinuities,
+            AudioDiscontinuities,
+            PcrDiscontinuities,
+            LastVideoPts,
+            LastAudioPts,
+            LastPcr,
+            (AvSyncStatus)SyncStatus
+        );
+}
+
+/// <summary>
+/// Restamping mode.
+/// </summary>
+public enum RestampingMode
+{
+    /// <summary>Restamping disabled.</summary>
+    Disabled = 0,
+
+    /// <summary>Monitor and detect drift but don't correct.</summary>
+    Monitor = 1,
+
+    /// <summary>Detect drift and apply corrections.</summary>
+    Correct = 2,
+}
+
+/// <summary>
+/// Native restamping configuration structure.
+/// Layout must match RestampingConfigNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal readonly struct RestampingConfigNative
+{
+    public readonly int Mode;
+    public readonly int SmoothPcr;
+    public readonly int FixDiscontinuities;
+    public readonly int Reserved;
+    public readonly double CorrectionThresholdMs;
+    public readonly double MaxCorrectionRateMs;
+    public readonly double HysteresisThresholdMs;
+    public readonly long StreamBitrateHint;
+
+    /// <summary>
+    /// Creates native config from managed configuration.
+    /// </summary>
+    public static RestampingConfigNative FromManaged(RestampingConfiguration config) =>
+        new(
+            (int)config.Mode,
+            config.SmoothPcr ? 1 : 0,
+            config.FixDiscontinuities ? 1 : 0,
+            0,
+            config.CorrectionThresholdMs,
+            config.MaxCorrectionRateMs,
+            config.HysteresisThresholdMs,
+            config.StreamBitrateHint
+        );
+
+    private RestampingConfigNative(
+        int mode,
+        int smoothPcr,
+        int fixDiscontinuities,
+        int reserved,
+        double correctionThresholdMs,
+        double maxCorrectionRateMs,
+        double hysteresisThresholdMs,
+        long streamBitrateHint
+    )
+    {
+        Mode = mode;
+        SmoothPcr = smoothPcr;
+        FixDiscontinuities = fixDiscontinuities;
+        Reserved = reserved;
+        CorrectionThresholdMs = correctionThresholdMs;
+        MaxCorrectionRateMs = maxCorrectionRateMs;
+        HysteresisThresholdMs = hysteresisThresholdMs;
+        StreamBitrateHint = streamBitrateHint;
+    }
+}
+
+/// <summary>
+/// Native restamping statistics structure.
+/// Layout must match RestampingStatisticsNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct RestampingStatisticsNative
+{
+    public long PacketsProcessed;
+    public long PcrSmoothed;
+    public long PtsCorrected;
+    public long DtsCorrected;
+    public long DiscontinuitiesFixed;
+    public double TotalCorrectionMs;
+    public double CurrentOffsetMs;
+    public long LastCorrectionTimeTicks;
+    public int CorrectionActive;
+    public int Reserved;
+
+    /// <summary>
+    /// Converts to managed RestampingStatistics.
+    /// </summary>
+    public readonly RestampingStatistics ToManaged() =>
+        new(
+            PacketsProcessed,
+            PcrSmoothed,
+            PtsCorrected,
+            DtsCorrected,
+            DiscontinuitiesFixed,
+            TotalCorrectionMs,
+            CurrentOffsetMs,
+            LastCorrectionTimeTicks > 0 ? new DateTime(LastCorrectionTimeTicks, DateTimeKind.Utc) : null,
+            CorrectionActive != 0
+        );
+}
+
+// =============================================================================
+// Managed Record Types
+// =============================================================================
+
+/// <summary>
+/// PTS/DTS sample from stream analysis.
+/// </summary>
+/// <param name="Pid">PID carrying this timestamp.</param>
+/// <param name="StreamType">MPEG stream type.</param>
+/// <param name="Pts90Khz">Presentation timestamp (90kHz).</param>
+/// <param name="Dts90Khz">Decoding timestamp (-1 if not present).</param>
+/// <param name="Pcr90Khz">Reference PCR at sample time (-1 if N/A).</param>
+/// <param name="PacketIndex">Packet position in stream.</param>
+/// <param name="ByteOffset">Byte offset in stream.</param>
+/// <param name="IsVideo">True if video stream.</param>
+/// <param name="IsAudio">True if audio stream.</param>
+/// <param name="IsKeyframe">True if keyframe (video only).</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct PtsDtsSample(
+    int Pid,
+    int StreamType,
+    long Pts90Khz,
+    long Dts90Khz,
+    long Pcr90Khz,
+    long PacketIndex,
+    long ByteOffset,
+    bool IsVideo,
+    bool IsAudio,
+    bool IsKeyframe
+)
+{
+    /// <summary>
+    /// Gets the PTS in milliseconds.
+    /// </summary>
+    public double PtsMs => Pts90Khz / 90.0;
+
+    /// <summary>
+    /// Gets the DTS in milliseconds, or null if not present.
+    /// </summary>
+    public double? DtsMs => Dts90Khz >= 0 ? Dts90Khz / 90.0 : null;
+}
+
+/// <summary>
+/// A/V synchronization analysis result.
+/// </summary>
+/// <param name="VideoAudioDriftMs">Current A/V drift (positive = audio ahead).</param>
+/// <param name="DriftRateMsPerSec">Drift trend (positive = increasing drift).</param>
+/// <param name="PeakDriftMs">Maximum drift observed.</param>
+/// <param name="AvgDriftMs">Average drift over analysis window.</param>
+/// <param name="PcrVideoOffsetMs">PCR to video PTS offset.</param>
+/// <param name="PcrAudioOffsetMs">PCR to audio PTS offset.</param>
+/// <param name="VideoPtsCount">Video PTS samples collected.</param>
+/// <param name="AudioPtsCount">Audio PTS samples collected.</param>
+/// <param name="PcrCount">PCR samples for reference.</param>
+/// <param name="VideoDiscontinuities">Video PTS discontinuities detected.</param>
+/// <param name="AudioDiscontinuities">Audio PTS discontinuities detected.</param>
+/// <param name="PcrDiscontinuities">PCR discontinuities detected.</param>
+/// <param name="LastVideoPts">Most recent video PTS (90kHz).</param>
+/// <param name="LastAudioPts">Most recent audio PTS (90kHz).</param>
+/// <param name="LastPcr">Most recent PCR (90kHz base).</param>
+/// <param name="Status">Current sync status.</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct AvSyncAnalysis(
+    double VideoAudioDriftMs,
+    double DriftRateMsPerSec,
+    double PeakDriftMs,
+    double AvgDriftMs,
+    double PcrVideoOffsetMs,
+    double PcrAudioOffsetMs,
+    long VideoPtsCount,
+    long AudioPtsCount,
+    long PcrCount,
+    long VideoDiscontinuities,
+    long AudioDiscontinuities,
+    long PcrDiscontinuities,
+    long LastVideoPts,
+    long LastAudioPts,
+    long LastPcr,
+    AvSyncStatus Status
+)
+{
+    /// <summary>
+    /// Gets whether the stream is currently synchronized within tolerance.
+    /// </summary>
+    public bool IsSynchronized => Status == AvSyncStatus.Synchronized;
+
+    /// <summary>
+    /// Gets the absolute drift in milliseconds.
+    /// </summary>
+    public double AbsoluteDriftMs => Math.Abs(VideoAudioDriftMs);
+
+    /// <summary>
+    /// Gets a human-readable description of the sync status.
+    /// </summary>
+    public string StatusDescription =>
+        Status switch
+        {
+            AvSyncStatus.Synchronized => string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"Synchronized (drift: {VideoAudioDriftMs:F1}ms)"
+            ),
+            AvSyncStatus.Drifting => string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"Drifting ({VideoAudioDriftMs:F1}ms, rate: {DriftRateMsPerSec:F2}ms/s)"
+            ),
+            AvSyncStatus.Desync => string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"Desync ({VideoAudioDriftMs:F1}ms)"
+            ),
+            AvSyncStatus.NoAudio => "No audio",
+            AvSyncStatus.NoVideo => "No video",
+            _ => "Unknown",
+        };
+}
+
+/// <summary>
+/// Restamping configuration.
+/// </summary>
+/// <param name="Mode">Restamping mode.</param>
+/// <param name="CorrectionThresholdMs">Start correcting at this drift (default: 45ms).</param>
+/// <param name="MaxCorrectionRateMs">Max correction per second (default: 10ms).</param>
+/// <param name="HysteresisThresholdMs">Stop correcting below this (default: 20ms).</param>
+/// <param name="SmoothPcr">Enable PCR jitter smoothing.</param>
+/// <param name="FixDiscontinuities">Repair PTS discontinuities.</param>
+/// <param name="StreamBitrateHint">Hint for CBR PCR smoothing (0=auto-detect).</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct RestampingConfiguration(
+    RestampingMode Mode = RestampingMode.Monitor,
+    double CorrectionThresholdMs = 45.0,
+    double MaxCorrectionRateMs = 10.0,
+    double HysteresisThresholdMs = 20.0,
+    bool SmoothPcr = true,
+    bool FixDiscontinuities = true,
+    long StreamBitrateHint = 0
+)
+{
+    /// <summary>
+    /// Gets the default configuration (Monitor mode, standard thresholds).
+    /// </summary>
+    public static RestampingConfiguration Default => new();
+}
+
+/// <summary>
+/// Restamping statistics.
+/// </summary>
+/// <param name="PacketsProcessed">Total packets analyzed.</param>
+/// <param name="PcrSmoothed">PCRs that were smoothed.</param>
+/// <param name="PtsCorrected">PTS values corrected.</param>
+/// <param name="DtsCorrected">DTS values corrected.</param>
+/// <param name="DiscontinuitiesFixed">Discontinuities repaired.</param>
+/// <param name="TotalCorrectionMs">Cumulative correction applied.</param>
+/// <param name="CurrentOffsetMs">Current correction offset.</param>
+/// <param name="LastCorrectionTime">Time of last correction.</param>
+/// <param name="CorrectionActive">Currently applying corrections.</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct RestampingStatistics(
+    long PacketsProcessed,
+    long PcrSmoothed,
+    long PtsCorrected,
+    long DtsCorrected,
+    long DiscontinuitiesFixed,
+    double TotalCorrectionMs,
+    double CurrentOffsetMs,
+    DateTime? LastCorrectionTime,
+    bool CorrectionActive
+)
+{
+    /// <summary>
+    /// Gets the total number of timestamps modified.
+    /// </summary>
+    public long TotalModified => PcrSmoothed + PtsCorrected + DtsCorrected;
+}

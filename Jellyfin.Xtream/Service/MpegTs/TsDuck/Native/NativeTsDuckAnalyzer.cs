@@ -139,31 +139,16 @@ public sealed unsafe class NativeTsDuckAnalyzer : ITsDuckAnalyzer
     /// <inheritdoc/>
     public event EventHandler<TsDuckMetricsEventArgs>? MetricsUpdated;
 
-    /// <summary>
-    /// Event raised when A/V synchronization drift is detected.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <strong>Note:</strong> This event is NOT raised by NativeTsDuckAnalyzer.
-    /// Native TsDuck analysis does not track PTS/DTS correlation needed for A/V sync detection.
-    /// </para>
-    /// <para>
-    /// For A/V sync drift monitoring, use <c>TsIndexer.TimestampTracker.DriftDetected</c> instead,
-    /// which provides real-time drift detection with 20ms professional broadcast threshold (EBU R37).
-    /// </para>
-    /// </remarks>
-    public event EventHandler<SyncDriftEventArgs>? SyncDriftDetected
-    {
-        add
-        { /* Not implemented - use TsIndexer.TimestampTracker.DriftDetected instead */
-        }
-        remove
-        { /* Not implemented - use TsIndexer.TimestampTracker.DriftDetected instead */
-        }
-    }
-
     /// <inheritdoc/>
     public TsDuckMetrics? GetMetrics() => _latestMetrics;
+
+    /// <inheritdoc/>
+    public AvSyncAnalysis? GetAvSyncAnalysis() =>
+        !_disposed
+        && !_analyzer.IsInvalid
+        && TsDuckNativeMethods.AnalyzerGetAvSyncAnalysis(_analyzer.DangerousGetHandle(), out var native)
+            ? native.ToManaged()
+            : null;
 
     /// <inheritdoc/>
     public TimeSpan? MetricsAge => _latestMetrics?.Age;

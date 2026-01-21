@@ -21,25 +21,13 @@ namespace Jellyfin.Xtream.Service.MpegTs.UseCases;
 /// Provides stream quality violation events following TR 101 290.
 /// This is a focused interface following the Interface Segregation Principle.
 /// </summary>
+/// <remarks>
+/// For A/V sync monitoring, use <see cref="TsDuck.ITsDuckAnalyzer.GetAvSyncAnalysis"/> instead.
+/// </remarks>
 public interface IQualityEventSource
 {
     /// <summary>
     /// Event raised when a TR 101 290 stream quality violation is detected.
     /// </summary>
     event EventHandler<StreamQualityViolationEventArgs>? StreamQualityViolation;
-
-    /// <summary>
-    /// Event raised when A/V synchronization drift is detected.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Note: TsDuck analyzers (NativeTsDuckAnalyzer) do not raise this event as they don't
-    /// track PTS/DTS correlation needed for A/V sync detection.
-    /// </para>
-    /// <para>
-    /// For A/V sync drift monitoring, use <c>TsIndexer.TimestampTracker.DriftDetected</c> instead,
-    /// which provides real-time drift detection with 20ms professional broadcast threshold (EBU R37).
-    /// </para>
-    /// </remarks>
-    event EventHandler<SyncDriftEventArgs>? SyncDriftDetected;
 }
