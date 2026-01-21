@@ -24,9 +24,12 @@ using Jellyfin.Xtream.Service.MpegTs.Parsing;
 namespace Jellyfin.Xtream.Benchmarks;
 
 /// <summary>
-/// Benchmarks for MPEG-TS parsing components: PesParser, RingBuffer, TimestampTracker.
-/// Measures performance of A/V sync detection infrastructure.
+/// Benchmarks for MPEG-TS parsing components: PesParser, RingBuffer.
+/// Measures performance of parsing infrastructure.
 /// </summary>
+/// <remarks>
+/// A/V sync tracking is now handled by the native TsDuck analyzer.
+/// </remarks>
 [SimpleJob(RuntimeMoniker.Net80)]
 [MemoryDiagnoser]
 public class MpegTsParserBenchmarks
@@ -36,7 +39,6 @@ public class MpegTsParserBenchmarks
     private byte[] _audioPacketWithPts = null!;
     private byte[] _invalidPacket = null!;
     private RingBuffer<StreamTimestamp> _ringBuffer = null!;
-    private TimestampTracker _timestampTracker = null!;
     private AudioStreamInfo _audioStreamInfo = null!;
 
     /// <summary>
@@ -63,14 +65,6 @@ public class MpegTsParserBenchmarks
         for (int i = 0; i < 50; i++)
         {
             _ringBuffer.Add(new StreamTimestamp(90000 * i, i * 188));
-        }
-
-        // Pre-populated timestamp tracker
-        _timestampTracker = new TimestampTracker();
-        for (int i = 0; i < 100; i++)
-        {
-            _timestampTracker.RecordVideoPts(90000 * i, i * 188);
-            _timestampTracker.RecordAudioPts((90000 * i) + 1000, (i * 188) + 94);
         }
 
         // Pre-populated audio stream info
@@ -176,68 +170,6 @@ public class MpegTsParserBenchmarks
         }
 
         return count;
-    }
-
-    /// <summary>
-    /// Benchmark: Record video PTS (includes sync status update every 8 samples).
-    /// </summary>
-    [Benchmark(Description = "TimestampTracker.RecordVideoPts")]
-    public void TimestampTracker_RecordVideoPts()
-    {
-        _timestampTracker.RecordVideoPts(90000 * 500, 500 * 188);
-    }
-
-    /// <summary>
-    /// Benchmark: Record audio PTS.
-    /// </summary>
-    [Benchmark(Description = "TimestampTracker.RecordAudioPts")]
-    public void TimestampTracker_RecordAudioPts()
-    {
-        _timestampTracker.RecordAudioPts((90000 * 500) + 1000, (500 * 188) + 94);
-    }
-
-    /// <summary>
-    /// Benchmark: Find best sync point in offset range.
-    /// </summary>
-    /// <returns></returns>
-    [Benchmark(Description = "TimestampTracker.FindBestSyncPoint")]
-    public SyncPoint? TimestampTracker_FindBestSyncPoint()
-    {
-        return _timestampTracker.FindBestSyncPoint(0, 10000);
-    }
-
-    /// <summary>
-    /// Benchmark: Get average drift calculation.
-    /// </summary>
-    /// <returns></returns>
-    [Benchmark(Description = "TimestampTracker.GetAverageDriftMs")]
-    public double TimestampTracker_GetAverageDriftMs()
-    {
-        return _timestampTracker.GetAverageDriftMs();
-    }
-
-    /// <summary>
-    /// Benchmark: Current drift property access.
-    /// </summary>
-    /// <returns></returns>
-    [Benchmark(Description = "TimestampTracker.CurrentDriftMs")]
-    public double TimestampTracker_CurrentDriftMs()
-    {
-        return _timestampTracker.CurrentDriftMs;
-    }
-
-    /// <summary>
-    /// Benchmark: Full recording cycle (100 video + 100 audio samples).
-    /// </summary>
-    [Benchmark(Description = "TimestampTracker full cycle (200 samples)")]
-    public void TimestampTracker_FullCycle()
-    {
-        var tracker = new TimestampTracker();
-        for (int i = 0; i < 100; i++)
-        {
-            tracker.RecordVideoPts(90000 * i, i * 188);
-            tracker.RecordAudioPts((90000 * i) + 500, (i * 188) + 94);
-        }
     }
 
     /// <summary>

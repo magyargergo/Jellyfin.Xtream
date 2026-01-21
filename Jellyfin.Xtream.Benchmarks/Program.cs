@@ -92,7 +92,7 @@ public static class Program
         Console.WriteLine();
         Console.WriteLine("5. MpegTsParserBenchmarks");
         Console.WriteLine("   - PES parsing and PTS extraction");
-        Console.WriteLine("   - RingBuffer, TimestampTracker, AudioStreamInfo");
+        Console.WriteLine("   - RingBuffer, AudioStreamInfo");
         Console.WriteLine("   - Stream classification (O(1) lookup)");
         Console.WriteLine();
         Console.WriteLine("6. TsIndexerBenchmarks");
