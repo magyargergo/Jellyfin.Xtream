@@ -547,14 +547,12 @@ public sealed class DiscordNotificationService(ILogger<DiscordNotificationServic
                 prog.AverageGopDuration > TimeSpan.Zero
                     ? string.Format(CultureInfo.InvariantCulture, "{0:F2}s", prog.AverageGopDuration.TotalSeconds)
                     : "N/A";
-            var syncInfo = FormatSyncStatus(prog.SyncStatus, prog.DriftMs);
 
             _ = embed
                 .AddField("🎬 Video PID", prog.VideoPid.ToString(CultureInfo.InvariantCulture), inline: true)
                 .AddField("⏱️ PCR PID", prog.PcrPid.ToString(CultureInfo.InvariantCulture), inline: true)
                 .AddField("🔑 Keyframes", prog.KeyframeCount.ToString(CultureInfo.InvariantCulture), inline: true)
-                .AddField("📐 Avg GOP", avgGop, inline: true)
-                .AddField("🔊 A/V Sync", syncInfo, inline: true);
+                .AddField("📐 Avg GOP", avgGop, inline: true);
 
             // Add TsDuck PCR analysis if available
             if (tsDuckMetrics?.PcrAnalysis != null)
@@ -577,21 +575,6 @@ public sealed class DiscordNotificationService(ILogger<DiscordNotificationServic
         _ = embed.WithTimestamp(now).WithFooter("MPEG-TS Diagnostics (TsDuck TR 101 290)");
 
         _ = await SendDiscordMessageAsync(embed.Build(), cancellationToken).ConfigureAwait(false);
-    }
-
-    private static string FormatSyncStatus(SyncStatus status, double driftMs)
-    {
-        return status switch
-        {
-            SyncStatus.Synchronized => $"✅ In Sync ({driftMs:+0.0;-0.0;0}ms)",
-            SyncStatus.AudioAhead => $"⚠️ Audio Ahead ({driftMs:+0.0;-0.0;0}ms)",
-            SyncStatus.AudioBehind => $"⚠️ Audio Behind ({driftMs:+0.0;-0.0;0}ms)",
-            SyncStatus.Drifting => $"🔴 Drifting ({driftMs:+0.0;-0.0;0}ms)",
-            SyncStatus.NoVideo => "📵 No Video",
-            SyncStatus.NoAudio => "🔇 No Audio",
-            SyncStatus.Unknown => "❓ Unknown",
-            _ => "❓ Unknown",
-        };
     }
 
     /// <inheritdoc/>

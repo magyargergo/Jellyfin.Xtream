@@ -5,3 +5,6 @@ obj/
 .vscode/
 .history/
 artifacts
+native/tsduck_interop/output/
+native/tsduck_interop/build/
+native/tsduck_interop/tests/build_standalone/

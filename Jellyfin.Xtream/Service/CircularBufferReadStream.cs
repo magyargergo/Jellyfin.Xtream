@@ -66,8 +66,9 @@ public sealed class CircularBufferReadStream : Stream
 
     private const int TsPacketSize = 188;
     private const byte TsSyncByte = 71;
-    private const long MinimumStartupFillBytes = 4194304L;
-    private const int StartupWarmupTimeoutMs = 10000;
+    private const long MinimumStartupFillBytes = 4194304L; // 4MB minimum before checking for keyframe
+    private const long MaximumWarmupFillBytes = 16777216L; // 16MB max - handles very long GOPs (15-20 sec at 4-8 Mbps)
+    private const int StartupWarmupTimeoutMs = 15000; // 15 seconds - increased to allow keyframe detection
     private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB read
 
     // Stall detection uses StreamingTimeoutPolicy for configurable timeouts
@@ -404,34 +405,71 @@ public sealed class CircularBufferReadStream : Stream
         var currentReadHead = ReadHead;
         var gap = _sourceBuffer.TotalBytesWritten - currentReadHead;
 
-        if (TotalBytesRead == 0L && gap < MinimumStartupFillBytes)
+        // For new readers (TotalBytesRead == 0), ensure we have at least one keyframe detected
+        // before allowing playback. This applies even if buffer already has >4MB of data,
+        // which can happen during channel switches when the broadcast starts before the reader connects.
+        var hasKeyframe = _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber) > 0;
+        var demuxerInitialized = _sourceBuffer.IsDemuxerInitialized;
+        var needsWarmup =
+            TotalBytesRead == 0L && (!hasKeyframe || gap < MinimumStartupFillBytes || !demuxerInitialized);
+
+        if (needsWarmup)
         {
             _logger?.LogDebugIfEnabled(
-                "Stream {StreamId}: Warming up buffer - {CurrentKB}KB / {TargetKB}KB filled. Waiting for minimum threshold...",
+                "Stream {StreamId}: Warming up buffer - {CurrentKB}KB filled, Keyframe={HasKeyframe}, DemuxerReady={DemuxerReady}. Waiting for playback conditions...",
                 _streamId,
                 gap / 1024,
-                4096L
+                hasKeyframe,
+                demuxerInitialized
             );
             var warmupStart = DateTime.UtcNow;
             var pollCount = 0;
-            var demuxerInitialized = _sourceBuffer.IsDemuxerInitialized;
 
-            // Wait for both buffer fill AND demuxer initialization
-            // Demuxer needs to detect programs before we can find keyframes for alignment
-            while ((gap < MinimumStartupFillBytes || !demuxerInitialized) && !cancellationToken.IsCancellationRequested)
+            // Wait for buffer fill, demuxer initialization, AND keyframe detection
+            // This ensures video can start immediately without black frames
+            // - MinimumStartupFillBytes (4MB): Ensures enough data for demuxer/decoder buffers
+            // - Keyframe detection: Ensures we can align to IDR frame for instant video display
+            // - MaximumWarmupFillBytes (16MB): Cap for very long GOP streams (15-20 sec GOPs at 4-8 Mbps)
+            while (!cancellationToken.IsCancellationRequested)
             {
                 var elapsedMs = (DateTime.UtcNow - warmupStart).TotalMilliseconds;
 
-                // Timeout: if buffer is full but demuxer still not ready, proceed anyway
-                // This handles edge cases where FFmpeg can't parse the stream
+                // Check completion conditions:
+                // 1. Have enough data AND demuxer ready AND keyframe detected = ideal
+                // 2. Exceeded maximum warmup size = proceed anyway (very long GOP)
+                // 3. Timeout reached = proceed anyway (fallback)
+                var hasMinimumData = gap >= MinimumStartupFillBytes && demuxerInitialized;
+                var warmupComplete = hasMinimumData && hasKeyframe;
+
+                if (warmupComplete)
+                {
+                    break;
+                }
+
+                // Maximum data limit: proceed even without keyframe if we've buffered enough
+                // This handles streams with extremely long GOPs (>16MB between keyframes)
+                if (gap >= MaximumWarmupFillBytes)
+                {
+                    _logger?.PluginLogWarning(
+                        "Stream {StreamId}: Warmup reached max buffer ({MaxMB}MB) without keyframe. GOP may be very long. Keyframes={KeyframeCount}, Programs={ProgramCount}. Starting playback anyway.",
+                        _streamId,
+                        MaximumWarmupFillBytes / 1048576,
+                        _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber),
+                        _sourceBuffer.TsIndexer.ProgramCount
+                    );
+                    break;
+                }
+
+                // Timeout: proceed anyway to avoid infinite wait
                 if (elapsedMs > StartupWarmupTimeoutMs)
                 {
                     _logger?.PluginLogWarning(
-                        "Stream {StreamId}: Warmup timeout after {TimeMs}ms. Buffer={FilledKB}KB, DemuxerReady={DemuxerReady}. Starting playback anyway.",
+                        "Stream {StreamId}: Warmup timeout after {TimeMs}ms. Buffer={FilledKB}KB, DemuxerReady={DemuxerReady}, Keyframe={HasKeyframe}. Starting playback anyway.",
                         _streamId,
                         elapsedMs,
                         gap / 1024,
-                        demuxerInitialized
+                        demuxerInitialized,
+                        hasKeyframe
                     );
                     break;
                 }
@@ -441,16 +479,18 @@ public sealed class CircularBufferReadStream : Stream
                 currentReadHead = ReadHead;
                 gap = _sourceBuffer.TotalBytesWritten - currentReadHead;
                 demuxerInitialized = _sourceBuffer.IsDemuxerInitialized;
+                hasKeyframe = _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber) > 0;
 
                 if (pollCount % 20 == 0)
                 {
                     var fillPct = (double)gap * 100.0 / MinimumStartupFillBytes;
                     _logger?.LogDebugIfEnabled(
-                        "Stream {StreamId}: Buffering... {FillPct:F1}% ({CurrentKB}KB), DemuxerReady={DemuxerReady}",
+                        "Stream {StreamId}: Buffering... {FillPct:F1}% ({CurrentKB}KB), DemuxerReady={DemuxerReady}, Keyframe={HasKeyframe}",
                         _streamId,
                         fillPct,
                         gap / 1024,
-                        demuxerInitialized
+                        demuxerInitialized,
+                        hasKeyframe
                     );
                 }
             }
@@ -459,12 +499,14 @@ public sealed class CircularBufferReadStream : Stream
             {
                 var warmupDuration = (DateTime.UtcNow - warmupStart).TotalMilliseconds;
                 var detectedPrograms = _sourceBuffer.TsIndexer.ProgramCount;
+                var detectedKeyframes = _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber);
                 _logger?.PluginLogInformation(
-                    "Stream {StreamId}: Buffer warmup complete in {DurationMs}ms. {FilledMB:F1}MB buffered, {ProgramCount} programs detected, DemuxerReady={DemuxerReady}. Starting playback.",
+                    "Stream {StreamId}: Buffer warmup complete in {DurationMs}ms. {FilledMB:F1}MB buffered, {ProgramCount} programs, {KeyframeCount} keyframes detected, DemuxerReady={DemuxerReady}. Starting playback.",
                     _streamId,
                     warmupDuration,
                     (double)gap / 1048576.0,
                     detectedPrograms,
+                    detectedKeyframes,
                     demuxerInitialized
                 );
 
@@ -1183,7 +1225,7 @@ public sealed class CircularBufferReadStream : Stream
             // 2. Modifying audio PTS while leaving video unchanged creates inconsistency
             // 3. Players expect PCR-based timing to be coherent across all elementary streams
             //
-            // The TimestampTracker still monitors drift for diagnostics/Discord notifications.
+            // A/V sync monitoring is handled by the native TsDuck analyzer.
 
             var expectedHead = startingReadHead;
             var newHead = startingReadHead + totalRead;

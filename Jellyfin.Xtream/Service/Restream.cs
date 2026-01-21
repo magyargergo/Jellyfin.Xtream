@@ -153,7 +153,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     // Some IPTV streams have systematic PTS discontinuities (e.g., ~9 second jumps between two sources).
     // Use a longer cooldown (15 seconds) to prevent continuous re-remapping that causes A/V desync.
     private DateTime _lastDiscontinuityRemappingTime = DateTime.MinValue;
-    private const int DiscontinuityRemappingCooldownMs = 15000; // 15 second cooldown between activations
 
     // Throttled priority updates - only update every 60 seconds across all streams
     private static DateTime _lastPriorityUpdateTime = DateTime.MinValue;
@@ -265,8 +264,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory, _ffmpegContext, _tsDuckAnalyzer);
         _buffer.TsIndexer.StreamQualityViolation += OnStreamQualityViolation;
-        _buffer.TsIndexer.SyncDriftDetected += OnSyncDriftDetected;
-        _buffer.TsIndexer.PtsDiscontinuityDetected += OnPtsDiscontinuityDetected;
 
         // Wire TsDuck metrics to ProviderSwitchService for combined quality monitoring
         if (_tsDuckAnalyzer != null && _providerSwitchService != null)
@@ -1373,7 +1370,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         // The health check runs every 30s which is too late for fast-disconnecting providers
                         if (!_outputTimelineInitialized)
                         {
-                            var (videoPts, _, _) = _buffer.TsIndexer.GetCurrentTimingState();
+                            var avSync = _tsDuckAnalyzer?.GetAvSyncAnalysis();
+                            var videoPts = avSync?.LastVideoPts ?? 0;
                             if (videoPts > 0)
                             {
                                 _outputTimelineBasePts = videoPts;
@@ -1487,7 +1485,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                             // Sync timing state to provider switch service for seamless failover
                             if (_providerSwitchService != null)
                             {
-                                var (videoPts, audioPts, pcr) = _buffer.TsIndexer.GetCurrentTimingState();
+                                var avSync = _tsDuckAnalyzer?.GetAvSyncAnalysis();
+                                var videoPts = avSync?.LastVideoPts ?? 0;
+                                var audioPts = avSync?.LastAudioPts ?? 0;
+                                var pcr = (avSync?.LastPcr ?? 0) * 300; // Convert 90kHz base to 27MHz
                                 if (videoPts > 0 || audioPts > 0 || pcr > 0)
                                 {
                                     _providerSwitchService.UpdateTimingState(MediaSource.Id, videoPts, audioPts, pcr);
@@ -1797,8 +1798,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         _buffer.TsIndexer.StreamQualityViolation -= OnStreamQualityViolation;
-        _buffer.TsIndexer.SyncDriftDetected -= OnSyncDriftDetected;
-        _buffer.TsIndexer.PtsDiscontinuityDetected -= OnPtsDiscontinuityDetected;
 
         // Unsubscribe from TsDuck metrics events
         if (_tsDuckAnalyzer != null)
@@ -1956,63 +1955,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     }
 
     /// <summary>
-    /// Handles A/V synchronization drift events from the TsIndexer.
-    /// Sends Discord notifications and delegates switch evaluation to IViolationSwitchTrigger (DIP).
-    /// </summary>
-    private void OnSyncDriftDetected(object? sender, SyncDriftEventArgs e)
-    {
-        var indexer = _buffer.TsIndexer;
-        var peakDrift = indexer.GetPeakDriftMs();
-        var violationCount = indexer.GetDriftViolationCount();
-
-        // Fallback if no program detected yet
-        if (peakDrift == 0)
-        {
-            peakDrift = Math.Abs(e.DriftMs);
-        }
-
-        if (violationCount == 0)
-        {
-            violationCount = 1;
-        }
-
-        // Send Discord notification (SRP: notification is separate from switch logic)
-        _discordService.SendFireAndForget(svc =>
-            svc.NotifyAVDriftAsync(
-                MediaSource.Id,
-                MediaSource.Name ?? "Unknown Channel",
-                e.DriftMs,
-                e.Status.ToString(),
-                peakDrift,
-                violationCount
-            )
-        );
-
-        // Delegate switch evaluation to injected service (DIP/SRP)
-        if (_violationSwitchTrigger == null || _providerSwitchService == null)
-        {
-            return;
-        }
-
-        var result = _violationSwitchTrigger.RecordDrift(MediaSource.Id, e.DriftMs);
-        if (result.ShouldSwitch)
-        {
-            _logger.PluginLogWarning(
-                "Severe A/V drift detected for channel {ChannelId}: {Reason}. Attempting provider switch.",
-                MediaSource.Id,
-                result.Reason
-            );
-
-            // Capture the cancellation token before fire-and-forget to avoid race condition
-            var token = _tokenSource?.Token ?? CancellationToken.None;
-            if (!token.IsCancellationRequested)
-            {
-                _ = TryViolationBasedSwitchAsync(result.Reason ?? "A/V drift", token);
-            }
-        }
-    }
-
-    /// <summary>
     /// Captures the current timing state for reconnection timestamp continuity.
     /// Called when the HTTP connection is closed (either gracefully or via exception).
     /// </summary>
@@ -2050,8 +1992,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             return;
         }
 
-        // Fallback: Try to get timing from TsIndexer (for initial connection before output timeline is established)
-        var (videoPts, audioPts, pcr) = _buffer.TsIndexer.GetCurrentTimingState();
+        // Fallback: Try to get timing from analyzer and TsIndexer (for initial connection before output timeline is established)
+        var avSync = _tsDuckAnalyzer?.GetAvSyncAnalysis();
+        var videoPts = avSync?.LastVideoPts ?? 0;
+        var audioPts = avSync?.LastAudioPts ?? 0;
+        var pcr = (avSync?.LastPcr ?? 0) * 300; // Convert 90kHz base to 27MHz
 
         if (videoPts > 0)
         {
@@ -2099,57 +2044,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     }
 
     /// <summary>
-    /// Handles PTS discontinuity events from the TsIndexer.
-    /// When a large PTS jump is detected in the source stream, this activates timestamp remapping
-    /// to smooth out the discontinuity and prevent frame jumping/looping for viewers.
-    /// </summary>
-    private void OnPtsDiscontinuityDetected(object? sender, PtsDiscontinuityEventArgs e)
-    {
-        // Only handle if we have the remapping service available
-        if (_providerSwitchService == null)
-        {
-            return;
-        }
-
-        // Apply cooldown to prevent rapid-fire activations from streams with systematic small jumps
-        var now = DateTime.UtcNow;
-        var timeSinceLastActivation = (now - _lastDiscontinuityRemappingTime).TotalMilliseconds;
-        if (timeSinceLastActivation < DiscontinuityRemappingCooldownMs)
-        {
-            _logger.LogDebugIfEnabled(
-                "PTS discontinuity for channel {ChannelId} ignored - cooldown active ({TimeSince:F0}ms < {Cooldown}ms)",
-                MediaSource.Id,
-                timeSinceLastActivation,
-                DiscontinuityRemappingCooldownMs
-            );
-            return;
-        }
-
-        _lastDiscontinuityRemappingTime = now;
-
-        _logger.PluginLogWarning(
-            "Source stream PTS discontinuity for channel {ChannelId}: {Direction} jump of {DeltaMs:F1}ms. Activating timestamp smoothing.",
-            MediaSource.Id,
-            e.IsBackwardJump ? "BACKWARD" : "FORWARD",
-            e.AbsoluteDeltaMs
-        );
-
-        // Activate remapping IMMEDIATELY with known PTS values.
-        // This is critical - the discontinuity has already occurred in the data that was just parsed,
-        // so we need to start remapping right away. The next packets will have their timestamps adjusted.
-        // Note: The packet that triggered this event has already been written to the buffer unremapped,
-        // but all subsequent packets will be remapped correctly.
-        _providerSwitchService.ActivateDiscontinuityRemapping(MediaSource.Id, e.PreviousPts, e.NewPts);
-
-        _logger.LogDebugIfEnabled(
-            "Activated discontinuity remapping for channel {ChannelId}: baseline PTS={BaselinePts}, remapping from {NewPts}",
-            MediaSource.Id,
-            e.PreviousPts,
-            e.NewPts
-        );
-    }
-
-    /// <summary>
     /// Attempts to switch to a new provider when the current one is failing.
     /// Delegates to IProviderSwitchService following DIP (Dependency Inversion Principle).
     /// </summary>
@@ -2167,7 +2061,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         // CRITICAL: Sync timing state BEFORE the switch begins
         // The switch service needs the current PTS/PCR values to calculate remapping offsets.
         // Without this, timestamp remapping cannot produce continuous playback.
-        var (videoPts, audioPts, pcr) = _buffer.TsIndexer.GetCurrentTimingState();
+        var avSync = _tsDuckAnalyzer?.GetAvSyncAnalysis();
+        var videoPts = avSync?.LastVideoPts ?? 0;
+        var audioPts = avSync?.LastAudioPts ?? 0;
+        var pcr = (avSync?.LastPcr ?? 0) * 300; // Convert 90kHz base to 27MHz
         if (videoPts > 0 || audioPts > 0 || pcr > 0)
         {
             _providerSwitchService.UpdateTimingState(MediaSource.Id, videoPts, audioPts, pcr);
@@ -2617,7 +2514,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 var crcErrors = monitor.PatCrcErrors + monitor.PmtCrcErrors + monitor.CatCrcErrors;
 
                 // Get TR 101 290 metrics from TsDuck (preferred) or fall back to basic CRC errors
-                var tsDuckMetrics = stream._buffer.TsDuckAnalyzer?.GetMetrics();
+                var tsDuckAnalyzer = stream._buffer.TsDuckAnalyzer;
+                var tsDuckMetrics = tsDuckAnalyzer?.GetMetrics();
                 var patViolations = tsDuckMetrics?.Priority1.PatError ?? 0L;
                 if (tsDuckMetrics != null)
                 {
@@ -2626,8 +2524,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     continuityErrors = tsDuckMetrics.Priority1.ContinuityCountError;
                     crcErrors = tsDuckMetrics.Priority2.CrcError;
                 }
-                var avDriftMs = monitor.GetCurrentDriftMs();
-                var syncStatus = monitor.GetSyncStatus();
+
+                // Get A/V sync metrics from TsDuck analyzer
+                var avSyncAnalysis = tsDuckAnalyzer?.GetAvSyncAnalysis();
+                var avDriftMs = avSyncAnalysis?.VideoAudioDriftMs ?? 0.0;
+                var syncStatus = avSyncAnalysis?.Status ?? MpegTs.TsDuck.Native.AvSyncStatus.Unknown;
 
                 // Calculate quality level and issues
                 var issues = new List<string>();
