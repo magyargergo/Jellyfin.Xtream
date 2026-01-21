@@ -427,32 +427,6 @@ public sealed class TsIndexerTests
     }
 
     /// <summary>
-    /// Tests GetSyncStatus returns Unknown when no programs.
-    /// </summary>
-    [Fact]
-    public void GetSyncStatusNoProgramsReturnsUnknown()
-    {
-        var indexer = new TsIndexer(DefaultBufferSize);
-
-        var status = indexer.GetSyncStatus();
-
-        Assert.Equal(SyncStatus.Unknown, status);
-    }
-
-    /// <summary>
-    /// Tests GetCurrentDriftMs returns zero when no programs.
-    /// </summary>
-    [Fact]
-    public void GetCurrentDriftMsNoProgramsReturnsZero()
-    {
-        var indexer = new TsIndexer(DefaultBufferSize);
-
-        var drift = indexer.GetCurrentDriftMs();
-
-        Assert.Equal(0, drift);
-    }
-
-    /// <summary>
     /// Tests GetProgramInfo returns null for non-existent program.
     /// </summary>
     [Fact]

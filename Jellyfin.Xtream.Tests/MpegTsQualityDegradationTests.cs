@@ -302,8 +302,8 @@ public sealed class MpegTsQualityDegradationTests : IDisposable
     [Fact]
     public void TR101290_Priority2_PcrRepetitionError_DetectedOnLongInterval()
     {
-        // This is tracked by PcrTimingTracker, tested in PcrTimingTrackerTests
-        // Here we verify the indexer tracks PCR-related state
+        // PCR timing is now handled by the native TsDuck analyzer
+        // Here we verify the indexer tracks program state
 
         var indexer = new TsIndexer(DefaultBufferSize);
         var patPacket = CreatePatPacket(programNumber: 1, pmtPid: 256);
@@ -333,22 +333,6 @@ public sealed class MpegTsQualityDegradationTests : IDisposable
         Assert.True(result.PacketsModified > 0);
         Assert.True(result.PacketsModified <= 3);
     }
-
-    /// <summary>
-    /// Tests PCR accuracy - TR 101 290 Priority 2.5 defines 500ns for broadcast.
-    /// For IPTV, we use 50ms threshold (software decoders tolerate network jitter).
-    /// </summary>
-    [Fact]
-    public void TR101290_Priority2_PcrAccuracy_BroadcastThresholdIs500Ns() =>
-        // Verify broadcast threshold is preserved for reference
-        Assert.Equal(500, PcrTimingTracker.BroadcastJitterThresholdNs);
-
-    /// <summary>
-    /// Tests IPTV PCR accuracy threshold is 50ms.
-    /// Software decoders handle network jitter well - 50ms is appropriate for IPTV.
-    /// </summary>
-    [Fact]
-    public void IptvPcrAccuracy_ThresholdIs50Ms() => Assert.Equal(50_000_000, PcrTimingTracker.JitterThresholdNs);
 
     /// <summary>
     /// Tests CAT error detection - CAT_error per TR 101 290 Priority 2.6.
@@ -530,28 +514,6 @@ public sealed class MpegTsQualityDegradationTests : IDisposable
         Assert.True(readStream.OverflowCount >= 0 || readStream.CurrentGap < bufferSize);
     }
 
-    /// <summary>
-    /// Tests adaptive buffer sizing response to jitter.
-    /// Per TR 101 290, adaptive buffering helps absorb network jitter.
-    /// </summary>
-    [Fact]
-    public void BufferStarvation_AdaptiveBuffer_IncreasesOnJitter()
-    {
-        var clock = new TestClock();
-        var service = new PcrTimingTracker(programNumber: 1, clock);
-
-        var initialBuffer = service.CurrentBufferMs;
-
-        // Simulate high jitter to trigger buffer increase (need >50ms for IPTV threshold)
-        _ = service.ProcessPcr(27_000_000);
-        clock.AdvanceMs(40);
-        // +60ms jitter (over 50ms IPTV threshold): 60ms * 27,000 = 1,620,000 PCR units
-        _ = service.ProcessPcr(27_000_000 + (40 * 27_000) + (60 * 27_000));
-
-        Assert.True(service.JitterViolations > 0);
-        Assert.True(service.CurrentBufferMs >= initialBuffer);
-    }
-
     #endregion
 
     #region PES Reassembly Tests
@@ -726,136 +688,6 @@ public sealed class MpegTsQualityDegradationTests : IDisposable
 
     #endregion
 
-    #region Clock Recovery Tests
-
-    /// <summary>
-    /// Tests PCR-based clock recovery initialization.
-    /// </summary>
-    [Fact]
-    public void ClockRecovery_Initialization_StartsInInitializingState()
-    {
-        var clock = new TestClock();
-        var service = new PcrTimingTracker(programNumber: 1, clock);
-
-        Assert.Equal(ClockStatus.Initializing, service.ClockStatus);
-        Assert.Equal(0, service.PcrCount);
-    }
-
-    /// <summary>
-    /// Tests PCR-based clock recovery locking.
-    /// </summary>
-    [Fact]
-    public void ClockRecovery_Locking_TransitionsOnFirstPcr()
-    {
-        var clock = new TestClock();
-        var service = new PcrTimingTracker(programNumber: 1, clock);
-
-        _ = service.ProcessPcr(27_000_000);
-
-        Assert.Equal(ClockStatus.Locking, service.ClockStatus);
-        Assert.Equal(1, service.PcrCount);
-    }
-
-    /// <summary>
-    /// Tests PCR-based clock recovery achieving locked state.
-    /// </summary>
-    [Fact]
-    public void ClockRecovery_Locked_AchievedWithStablePcr()
-    {
-        var clock = new TestClock();
-        var service = new PcrTimingTracker(programNumber: 1, clock);
-
-        // Process enough stable PCRs to achieve lock
-        _ = service.ProcessPcr(27_000_000);
-        for (var i = 1; i <= 25; i++)
-        {
-            clock.AdvanceMs(40);
-            _ = service.ProcessPcr(27_000_000 + (i * 40L * 27_000));
-        }
-
-        Assert.Equal(ClockStatus.Locked, service.ClockStatus);
-    }
-
-    /// <summary>
-    /// Tests PCR drift detection.
-    /// For IPTV, we use 10,000 PPM threshold (1%) vs broadcast 30 PPM.
-    /// </summary>
-    [Fact]
-    public void ClockRecovery_DriftDetection_TriggersOnExcessiveDrift()
-    {
-        var clock = new TestClock();
-        var service = new PcrTimingTracker(programNumber: 1, clock);
-
-        _ = service.ProcessPcr(27_000_000);
-
-        // Simulate 50,000 PPM drift (5% - well above 1% IPTV threshold)
-        for (var i = 1; i <= 25; i++)
-        {
-            clock.AdvanceMs(40);
-            var expectedPcr = 27_000_000 + (i * 40L * 27_000);
-            var driftPcr = (long)(i * 40L * 27_000 * 50_000 / 1_000_000.0);
-            _ = service.ProcessPcr(expectedPcr + driftPcr);
-        }
-
-        Assert.Equal(ClockStatus.Drifting, service.ClockStatus);
-        Assert.True(service.AccumulatedDriftPpm > 10_000);
-    }
-
-    #endregion
-
-    #region A/V Sync Tests
-
-    /// <summary>
-    /// Tests A/V sync tracking initialization.
-    /// </summary>
-    [Fact]
-    public void AvSync_Initialization_StartsInUnknownState()
-    {
-        var tracker = new TimestampTracker();
-
-        Assert.Equal(SyncStatus.Unknown, tracker.Status);
-        Assert.Equal(0, tracker.VideoSampleCount);
-        Assert.Equal(0, tracker.AudioSampleCount);
-    }
-
-    /// <summary>
-    /// Tests A/V sync drift calculation.
-    /// Per EBU R37, ±20ms is acceptable for broadcast.
-    /// </summary>
-    [Fact]
-    public void AvSync_DriftCalculation_AccurateToMillisecond()
-    {
-        var tracker = new TimestampTracker();
-
-        // Record video and audio with 100ms drift
-        tracker.RecordVideoPts(90000, offset: 0); // 1 second in PTS
-        tracker.RecordAudioPts(90000 + 9000, offset: 188); // 1.1 seconds (100ms ahead)
-
-        var drift = tracker.CurrentDriftMs;
-
-        Assert.InRange(drift, 99, 101);
-    }
-
-    /// <summary>
-    /// Tests A/V sync status transitions.
-    /// </summary>
-    [Fact]
-    public void AvSync_StatusTransition_AudioAheadWhenPtsHigher()
-    {
-        var tracker = new TimestampTracker();
-
-        // Record multiple samples with audio ahead
-        for (var i = 0; i < 5; i++)
-        {
-            tracker.RecordVideoPts(90000 + (i * 3000), offset: i * 188);
-            tracker.RecordAudioPts(90000 + 4500 + (i * 3000), offset: (i * 188) + 94); // 50ms ahead
-        }
-
-        Assert.Equal(SyncStatus.AudioAhead, tracker.Status);
-    }
-
-    #endregion
-
     #region Stream Quality Event Tests
 
     /// <summary>
@@ -868,33 +700,6 @@ public sealed class MpegTsQualityDegradationTests : IDisposable
 
         Assert.Equal("PCR_accuracy_error", eventArgs.ViolationType);
         Assert.Contains("500ns", eventArgs.Details);
-    }
-
-    /// <summary>
-    /// Tests sync drift event raising.
-    /// </summary>
-    [Fact]
-    public void QualityEvent_SyncDriftRaised_ContainsDriftValue()
-    {
-        var tracker = new TimestampTracker();
-        var eventRaised = false;
-        double reportedDrift = 0;
-
-        tracker.DriftDetected += (sender, e) =>
-        {
-            eventRaised = true;
-            reportedDrift = e.DriftMs;
-        };
-
-        // Record with severe drift (150ms)
-        for (var i = 0; i < 5; i++)
-        {
-            tracker.RecordVideoPts(90000 + (i * 3000), offset: i * 188);
-            tracker.RecordAudioPts(90000 + 13500 + (i * 3000), offset: (i * 188) + 94); // 150ms ahead
-        }
-
-        // Event may or may not be raised depending on implementation
-        Assert.True(eventRaised || tracker.DriftViolationCount > 0);
     }
 
     #endregion
