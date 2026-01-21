@@ -1,0 +1,345 @@
+# Multi-stage Dockerfile for building and testing libtsduck_interop
+# Extends the main Dockerfile with GoogleTest support for CI/CD testing
+#
+# Usage:
+#   # Run all tests:
+#   docker build -f Dockerfile.test --target test-runner .
+#
+#   # Run tests and output JUnit XML:
+#   docker build -f Dockerfile.test --target test-runner -o type=local,dest=./test-results .
+#
+#   # Run only unit tests (no TSDuck dependency):
+#   docker build -f Dockerfile.test --target unit-tests .
+#
+#   # Run integration tests (require TSDuck):
+#   docker build -f Dockerfile.test --target integration-tests .
+
+# TSDuck version to use (update as needed)
+ARG TSDUCK_VERSION=3.43-4549
+
+# =============================================================================
+# Stage 1: Build TsDuck from source with minimal dependencies
+# (Identical to main Dockerfile)
+# =============================================================================
+FROM ubuntu:24.04 AS tsduck-builder
+
+ARG TSDUCK_VERSION
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    dos2unix \
+    ca-certificates \
+    python3 \
+    locales \
+    libssl-dev \
+    zlib1g-dev \
+    && locale-gen en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+WORKDIR /tsduck-src
+RUN git clone --depth 1 --branch v${TSDUCK_VERSION} https://github.com/tsduck/tsduck.git .
+
+ENV TSDUCK_BUILD_FLAGS="NODEKTEC=1 NOHIDES=1 NOVATEK=1 NOCURL=1 NOPCSC=1 NOSRT=1 NORIST=1 NOEDITLINE=1 NOUSB=1 NOJAVA=1 NOPYTHON=1 NOTEST=1"
+
+RUN make -j$(nproc) $TSDUCK_BUILD_FLAGS
+RUN make install $TSDUCK_BUILD_FLAGS NODOC=1 SYSPREFIX=/opt/tsduck
+
+# =============================================================================
+# Stage 2: Build the native interop library
+# =============================================================================
+FROM ubuntu:24.04 AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tsduck-builder /opt/tsduck /opt/tsduck
+
+ENV PKG_CONFIG_PATH="/opt/tsduck/share/pkgconfig"
+ENV LD_LIBRARY_PATH="/opt/tsduck/lib"
+
+WORKDIR /build
+COPY include/ include/
+COPY src/ src/
+COPY CMakeLists.txt .
+
+RUN cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH=/opt/tsduck \
+    && cmake --build build --parallel $(nproc) \
+    && cmake --install build --prefix /install
+
+# =============================================================================
+# Stage 3: Test environment with GoogleTest
+# =============================================================================
+FROM ubuntu:24.04 AS test-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    git \
+    ca-certificates \
+    libssl-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TSDuck and built interop library
+COPY --from=tsduck-builder /opt/tsduck /opt/tsduck
+COPY --from=builder /install /install
+
+ENV PKG_CONFIG_PATH="/opt/tsduck/share/pkgconfig"
+ENV LD_LIBRARY_PATH="/opt/tsduck/lib:/install/lib"
+ENV CPATH="/install/include"
+ENV LIBRARY_PATH="/install/lib"
+
+# Copy source and test files
+WORKDIR /build
+COPY include/ include/
+COPY src/ src/
+COPY tests/ tests/
+COPY CMakeLists.txt .
+
+# Create CMakeLists.txt for tests that includes both unit and integration tests
+RUN cat > tests/CMakeLists.txt << 'EOF'
+# Copyright (C) 2025  Gergo Magyar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Full test build with TSDuck integration tests
+
+cmake_minimum_required(VERSION 3.16)
+project(tsduck_interop_tests VERSION 1.0.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Fetch GoogleTest
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG        v1.14.0
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+enable_testing()
+find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(TSDUCK REQUIRED tsduck)
+
+# Find our interop library
+find_library(TSDUCK_INTEROP_LIB tsduck_interop PATHS /install/lib REQUIRED)
+
+# Source directories
+set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+set(INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+
+# Unit tests (no TSDuck dependency)
+set(UNIT_TESTS
+    test_seqlock
+    test_packet_utils
+    test_pid_tracker
+    test_pcr_analyzer
+    test_iat_analyzer
+)
+
+foreach(test ${UNIT_TESTS})
+    add_executable(${test} unit/${test}.cpp)
+    target_include_directories(${test} PRIVATE ${SRC_DIR} ${INCLUDE_DIR})
+    target_link_libraries(${test} GTest::gtest_main Threads::Threads)
+endforeach()
+
+# Integration tests (require TSDuck and our interop library)
+set(INTEGRATION_TESTS
+    test_analyzer_integration
+    test_restamper_integration
+)
+
+foreach(test ${INTEGRATION_TESTS})
+    add_executable(${test} integration/${test}.cpp)
+    target_include_directories(${test} PRIVATE
+        ${SRC_DIR}
+        ${INCLUDE_DIR}
+        ${TSDUCK_INCLUDE_DIRS}
+        /install/include
+    )
+    target_link_libraries(${test}
+        GTest::gtest_main
+        Threads::Threads
+        ${TSDUCK_INTEROP_LIB}
+        ${TSDUCK_LIBRARIES}
+    )
+    target_link_directories(${test} PRIVATE ${TSDUCK_LIBRARY_DIRS} /install/lib)
+    target_compile_options(${test} PRIVATE ${TSDUCK_CFLAGS_OTHER})
+endforeach()
+
+include(GoogleTest)
+
+# Discover all tests
+foreach(test ${UNIT_TESTS})
+    gtest_discover_tests(${test}
+        PROPERTIES LABELS "unit"
+        XML_OUTPUT_DIR ${CMAKE_BINARY_DIR}/test-results
+    )
+endforeach()
+
+foreach(test ${INTEGRATION_TESTS})
+    gtest_discover_tests(${test}
+        PROPERTIES LABELS "integration"
+        XML_OUTPUT_DIR ${CMAKE_BINARY_DIR}/test-results
+    )
+endforeach()
+EOF
+
+# Build tests
+RUN cd tests && \
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH=/opt/tsduck \
+    && cmake --build build --parallel $(nproc)
+
+# =============================================================================
+# Stage 4: Run unit tests only (no TSDuck runtime needed)
+# =============================================================================
+FROM ubuntu:24.04 AS unit-tests
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tests
+COPY --from=test-builder /build/tests/build/test_seqlock .
+COPY --from=test-builder /build/tests/build/test_packet_utils .
+COPY --from=test-builder /build/tests/build/test_pid_tracker .
+COPY --from=test-builder /build/tests/build/test_pcr_analyzer .
+COPY --from=test-builder /build/tests/build/test_iat_analyzer .
+
+# Run all unit tests
+RUN echo "=== Running Unit Tests ===" && \
+    ./test_seqlock --gtest_output=xml:test_seqlock.xml && \
+    ./test_packet_utils --gtest_output=xml:test_packet_utils.xml && \
+    ./test_pid_tracker --gtest_output=xml:test_pid_tracker.xml && \
+    ./test_pcr_analyzer --gtest_output=xml:test_pcr_analyzer.xml && \
+    ./test_iat_analyzer --gtest_output=xml:test_iat_analyzer.xml && \
+    echo "=== All Unit Tests Passed ==="
+
+# =============================================================================
+# Stage 5: Run integration tests (require TSDuck)
+# =============================================================================
+FROM ubuntu:24.04 AS integration-tests
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    zlib1g \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TSDuck libraries and our interop library
+COPY --from=tsduck-builder /opt/tsduck/lib/*.so* /usr/local/lib/
+COPY --from=builder /install/lib/*.so* /usr/local/lib/
+
+WORKDIR /tests
+COPY --from=test-builder /build/tests/build/test_analyzer_integration .
+COPY --from=test-builder /build/tests/build/test_restamper_integration .
+
+# Update library cache
+RUN ldconfig
+
+ENV LD_LIBRARY_PATH="/usr/local/lib"
+
+# Run integration tests
+RUN echo "=== Running Integration Tests ===" && \
+    ./test_analyzer_integration --gtest_output=xml:test_analyzer_integration.xml && \
+    ./test_restamper_integration --gtest_output=xml:test_restamper_integration.xml && \
+    echo "=== All Integration Tests Passed ==="
+
+# =============================================================================
+# Stage 6: Full test runner (all tests)
+# =============================================================================
+FROM ubuntu:24.04 AS test-runner
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    zlib1g \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TSDuck libraries and our interop library
+COPY --from=tsduck-builder /opt/tsduck/lib/*.so* /usr/local/lib/
+COPY --from=builder /install/lib/*.so* /usr/local/lib/
+
+WORKDIR /tests
+
+# Copy all test binaries
+COPY --from=test-builder /build/tests/build/test_seqlock .
+COPY --from=test-builder /build/tests/build/test_packet_utils .
+COPY --from=test-builder /build/tests/build/test_pid_tracker .
+COPY --from=test-builder /build/tests/build/test_pcr_analyzer .
+COPY --from=test-builder /build/tests/build/test_iat_analyzer .
+COPY --from=test-builder /build/tests/build/test_analyzer_integration .
+COPY --from=test-builder /build/tests/build/test_restamper_integration .
+
+RUN ldconfig
+
+ENV LD_LIBRARY_PATH="/usr/local/lib"
+
+# Create test runner script
+RUN printf '%s\n' '#!/bin/bash' \
+    'set -e' \
+    '' \
+    'echo "=========================================="' \
+    'echo "  TSDuck Interop Library Test Suite"' \
+    'echo "=========================================="' \
+    'echo ""' \
+    '' \
+    'FAILED=0' \
+    'mkdir -p /tests/results' \
+    '' \
+    'run_test() {' \
+    '    local name=$1' \
+    '    echo "Running: $name"' \
+    '    if ./$name --gtest_output=xml:results/${name}.xml; then' \
+    '        echo "  PASSED: $name"' \
+    '    else' \
+    '        echo "  FAILED: $name"' \
+    '        FAILED=$((FAILED + 1))' \
+    '    fi' \
+    '    echo ""' \
+    '}' \
+    '' \
+    'echo "=== Unit Tests ==="' \
+    'run_test test_seqlock' \
+    'run_test test_packet_utils' \
+    'run_test test_pid_tracker' \
+    'run_test test_pcr_analyzer' \
+    'run_test test_iat_analyzer' \
+    '' \
+    'echo "=== Integration Tests ==="' \
+    'run_test test_analyzer_integration' \
+    'run_test test_restamper_integration' \
+    '' \
+    'echo "=========================================="' \
+    'if [ $FAILED -eq 0 ]; then' \
+    '    echo "  All tests passed!"' \
+    '    exit 0' \
+    'else' \
+    '    echo "  $FAILED test(s) failed"' \
+    '    exit 1' \
+    'fi' > run_tests.sh && chmod +x run_tests.sh
+
+CMD ["./run_tests.sh"]
+
+# =============================================================================
+# Stage 7: Extract test results (for CI/CD)
+# =============================================================================
+FROM scratch AS test-results
+
+COPY --from=test-runner /tests/results/ /
