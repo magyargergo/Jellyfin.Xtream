@@ -140,6 +140,114 @@ typedef struct {
     int32_t is_audio;               // Audio PID (1=yes, 0=no)
 } TsDuckPidInfoExtended;
 
+// =============================================================================
+// A/V Sync Analysis Structures (Phase 3 - Restamping)
+// =============================================================================
+
+// Sync status enumeration
+typedef enum {
+    AVSYNC_STATUS_UNKNOWN = 0,      // Not enough data
+    AVSYNC_STATUS_SYNCHRONIZED = 1, // Within tolerance (±20ms)
+    AVSYNC_STATUS_DRIFTING = 2,     // Drift detected but correctable
+    AVSYNC_STATUS_DESYNC = 3,       // Severe desync (>100ms)
+    AVSYNC_STATUS_NO_AUDIO = 4,     // No audio PTS detected
+    AVSYNC_STATUS_NO_VIDEO = 5,     // No video PTS detected
+} AvSyncStatus;
+
+// PTS/DTS sample for detailed analysis (blittable)
+typedef struct {
+    int32_t pid;                    // PID carrying this timestamp
+    int32_t stream_type;            // 0x02=video, 0x03/0x04=audio, etc.
+    int64_t pts_90khz;              // Presentation timestamp (90kHz)
+    int64_t dts_90khz;              // Decoding timestamp (-1 if not present)
+    int64_t pcr_90khz;              // Reference PCR at sample time (-1 if N/A)
+    int64_t packet_index;           // Packet position in stream
+    int64_t byte_offset;            // Byte offset in stream
+    int32_t is_video;               // 1=video, 0=other
+    int32_t is_audio;               // 1=audio, 0=other
+    int32_t is_keyframe;            // 1=keyframe/RAP, 0=other (video only)
+    int32_t reserved;               // Padding for alignment
+} PtsDtsSampleNative;
+
+// A/V synchronization analysis result (blittable)
+typedef struct {
+    // Current drift state
+    double video_audio_drift_ms;    // Current A/V drift (+ = audio ahead)
+    double drift_rate_ms_per_sec;   // Drift trend (+ = increasing drift)
+    double peak_drift_ms;           // Maximum drift observed
+    double avg_drift_ms;            // Average drift over window
+
+    // PCR-PTS relationship
+    double pcr_video_offset_ms;     // PCR to video PTS offset
+    double pcr_audio_offset_ms;     // PCR to audio PTS offset
+
+    // Sample counts
+    int64_t video_pts_count;        // Video PTS samples collected
+    int64_t audio_pts_count;        // Audio PTS samples collected
+    int64_t pcr_count;              // PCR samples for reference
+
+    // Discontinuity tracking
+    int64_t video_discontinuities;  // Video PTS jumps detected
+    int64_t audio_discontinuities;  // Audio PTS jumps detected
+    int64_t pcr_discontinuities;    // PCR discontinuities detected
+
+    // Timing
+    int64_t last_video_pts;         // Most recent video PTS (90kHz)
+    int64_t last_audio_pts;         // Most recent audio PTS (90kHz)
+    int64_t last_pcr;               // Most recent PCR (90kHz base)
+
+    // Status
+    int32_t sync_status;            // AvSyncStatus enum value
+    int32_t reserved;               // Padding for alignment
+} AvSyncAnalysisNative;
+
+// Restamping mode enumeration
+typedef enum {
+    RESTAMP_MODE_DISABLED = 0,      // No restamping
+    RESTAMP_MODE_MONITOR = 1,       // Detect but don't correct
+    RESTAMP_MODE_CORRECT = 2,       // Detect and apply corrections
+} RestampingMode;
+
+// Restamping configuration (blittable)
+typedef struct {
+    int32_t mode;                   // RestampingMode enum value
+    int32_t smooth_pcr;             // 1=enable PCR jitter smoothing
+    int32_t fix_discontinuities;    // 1=repair PTS discontinuities
+    int32_t reserved;               // Padding
+
+    double correction_threshold_ms; // Start correcting at this drift (default: 45ms)
+    double max_correction_rate_ms;  // Max correction per second (default: 10ms)
+    double hysteresis_threshold_ms; // Stop correcting below this (default: 20ms)
+
+    int64_t stream_bitrate_hint;    // Hint for CBR PCR smoothing (0=auto-detect)
+} RestampingConfigNative;
+
+// Restamping statistics (blittable)
+typedef struct {
+    int64_t packets_processed;      // Total packets analyzed
+    int64_t pcr_smoothed;           // PCRs that were smoothed
+    int64_t pts_corrected;          // PTS values corrected
+    int64_t dts_corrected;          // DTS values corrected
+    int64_t discontinuities_fixed;  // Discontinuities repaired
+
+    double total_correction_ms;     // Cumulative correction applied
+    double current_offset_ms;       // Current correction offset
+
+    int64_t last_correction_time;   // Timestamp of last correction (.NET ticks)
+    int32_t correction_active;      // 1=currently applying corrections
+    int32_t reserved;               // Padding
+} RestampingStatisticsNative;
+
+// Opaque handle for restamper
+typedef struct TsDuckRestamper* TsDuckRestamperHandle;
+
+// Callback for correction events
+typedef void (*TsDuckCorrectionCallback)(
+    double correction_ms,           // Amount corrected
+    const char* correction_type,    // "pcr", "video_pts", "audio_pts", "dts"
+    void* user_data
+);
+
 // Callback for metrics updates (called from analyzer thread)
 typedef void (*TsDuckMetricsCallback)(const TsDuckMetricsNative* metrics, void* user_data);
 
@@ -334,6 +442,121 @@ TSDUCK_API void tsduck_analyzer_set_metrics_callback(
 TSDUCK_API void tsduck_analyzer_set_violation_callback(
     TsDuckAnalyzerHandle analyzer,
     TsDuckViolationCallback callback,
+    void* user_data
+);
+
+// =============================================================================
+// A/V Sync Analysis (Phase 3 - Restamping)
+// =============================================================================
+
+/// Get A/V synchronization analysis.
+/// Provides drift measurement, trend analysis, and sync status.
+/// @param analyzer The analyzer handle.
+/// @param out_analysis Pointer to structure to receive analysis.
+/// @return true if analysis data is available, false otherwise.
+TSDUCK_API bool tsduck_analyzer_get_av_sync_analysis(
+    TsDuckAnalyzerHandle analyzer,
+    AvSyncAnalysisNative* out_analysis
+);
+
+/// Get recent PTS/DTS samples for detailed analysis.
+/// Returns samples in chronological order (oldest first).
+/// @param analyzer The analyzer handle.
+/// @param out_samples Array to receive samples.
+/// @param max_samples Maximum number of samples to return.
+/// @return Number of samples returned, or negative error code.
+TSDUCK_API int32_t tsduck_analyzer_get_pts_samples(
+    TsDuckAnalyzerHandle analyzer,
+    PtsDtsSampleNative* out_samples,
+    int32_t max_samples
+);
+
+/// Get the number of PTS/DTS samples currently buffered.
+/// @param analyzer The analyzer handle.
+/// @return Number of samples available.
+TSDUCK_API int32_t tsduck_analyzer_get_pts_sample_count(
+    TsDuckAnalyzerHandle analyzer
+);
+
+// =============================================================================
+// Restamper Lifecycle (Phase 3 - Restamping)
+// =============================================================================
+
+/// Create a restamper attached to an analyzer.
+/// The restamper uses the analyzer's timing data for correction decisions.
+/// @param analyzer The analyzer handle (required for timing reference).
+/// @param config Configuration options. If NULL, defaults are used.
+/// @return Restamper handle, or NULL on failure.
+TSDUCK_API TsDuckRestamperHandle tsduck_restamper_create(
+    TsDuckAnalyzerHandle analyzer,
+    const RestampingConfigNative* config
+);
+
+/// Destroy a restamper and free its resources.
+/// Safe to call with NULL handle.
+TSDUCK_API void tsduck_restamper_destroy(TsDuckRestamperHandle restamper);
+
+/// Check if the restamper is initialized and ready.
+TSDUCK_API bool tsduck_restamper_is_initialized(TsDuckRestamperHandle restamper);
+
+/// Configure restamping behavior.
+/// Can be called at any time to change settings.
+/// @param restamper The restamper handle.
+/// @param config New configuration.
+/// @return true if configuration was applied, false on error.
+TSDUCK_API bool tsduck_restamper_configure(
+    TsDuckRestamperHandle restamper,
+    const RestampingConfigNative* config
+);
+
+// =============================================================================
+// Restamper Data Processing (Phase 3 - Restamping)
+// =============================================================================
+
+/// Process MPEG-TS data and apply timestamp corrections in-place.
+/// This is the main hot-path function for restamping.
+/// @param restamper The restamper handle.
+/// @param data MPEG-TS data to process (will be modified in-place).
+/// @param length Number of bytes to process.
+/// @return Number of timestamps modified, or negative error code.
+TSDUCK_API int32_t tsduck_restamper_process(
+    TsDuckRestamperHandle restamper,
+    uint8_t* data,
+    int32_t length
+);
+
+/// Notify restamper of a provider switch.
+/// Calculates offset needed for timestamp continuity.
+/// @param restamper The restamper handle.
+/// @param last_output_pts Last PTS written to output (90kHz).
+/// @param new_input_first_pts First PTS from new provider (90kHz).
+TSDUCK_API void tsduck_restamper_handle_switch(
+    TsDuckRestamperHandle restamper,
+    int64_t last_output_pts,
+    int64_t new_input_first_pts
+);
+
+/// Get restamping statistics.
+/// @param restamper The restamper handle.
+/// @param out_stats Pointer to structure to receive statistics.
+/// @return true if statistics were retrieved, false on error.
+TSDUCK_API bool tsduck_restamper_get_statistics(
+    TsDuckRestamperHandle restamper,
+    RestampingStatisticsNative* out_stats
+);
+
+/// Reset restamper state for a new stream.
+/// Clears all accumulated offsets and statistics.
+TSDUCK_API void tsduck_restamper_reset(TsDuckRestamperHandle restamper);
+
+/// Set callback for correction events.
+/// Useful for logging/debugging correction behavior.
+/// @param restamper The restamper handle.
+/// @param callback Callback function, or NULL to disable.
+/// @param user_data User data passed to callback.
+TSDUCK_API void tsduck_restamper_set_correction_callback(
+    TsDuckRestamperHandle restamper,
+    TsDuckCorrectionCallback callback,
     void* user_data
 );
 
