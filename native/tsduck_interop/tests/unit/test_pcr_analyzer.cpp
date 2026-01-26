@@ -83,18 +83,20 @@ TEST_F(PcrAnalyzerTest, CalculatesPcrInterval) {
 
 TEST_F(PcrAnalyzerTest, HandlesPcrWraparound) {
     int64_t time1 = now_ns();
-    uint64_t pcr1 = (1ULL << 42) - 1000000;  // Near max
+    // PCR wraps at ts::PCR_SCALE (2^33 * 300 = 2,576,980,377,600)
+    uint64_t pcr1 = static_cast<uint64_t>(ts::PCR_SCALE) - 2700000;  // Near max (~100us before wrap)
     analyzer.process(pcr1, 0, time1);
 
-    // Wrap around
-    int64_t time2 = time1 + 37037037;  // ~37ms
-    uint64_t pcr2 = 1000000;  // Wrapped value
+    // Wrap around: 2700000 ticks past the first + wrapped portion
+    int64_t time2 = time1 + 200000;  // 200us later
+    uint64_t pcr2 = 2700000;  // Wrapped value (same interval total = ~5400000 ticks = 200ms equivalent? No)
     analyzer.process(pcr2, 100, time2);
 
     PcrAnalysisNative data;
     analyzer.get(&data);
 
-    // Should handle wraparound correctly
+    // Should handle wraparound correctly: interval = (PCR_SCALE - pcr1 + pcr2) / 27MHz
+    // = (2700000 + 2700000) / 27000000 * 1000 = 5400000/27000000*1000 = 0.2ms
     EXPECT_GT(data.pcr_interval_ms, 0);
     EXPECT_LT(data.pcr_interval_ms, 1000);  // Should be reasonable
 }
@@ -234,7 +236,7 @@ TEST_F(PcrAnalyzerTest, ResetClearsAllState) {
 
 TEST_F(PcrAnalyzerTest, LastPcrBase90khzConvertsCorrectly) {
     // Before any PCR
-    EXPECT_EQ(analyzer.lastPcrBase90khz(), -1);
+    EXPECT_EQ(analyzer.last_pcr_base_90khz(), -1);
 
     // Process a PCR (27MHz value)
     int64_t time = now_ns();
@@ -242,7 +244,7 @@ TEST_F(PcrAnalyzerTest, LastPcrBase90khzConvertsCorrectly) {
     analyzer.process(pcr_27mhz, 0, time);
 
     // Should convert to 90kHz (divide by 300)
-    int64_t pcr_90khz = analyzer.lastPcrBase90khz();
+    int64_t pcr_90khz = analyzer.last_pcr_base_90khz();
     EXPECT_EQ(pcr_90khz, 90000);  // 1 second in 90kHz
 }
 
@@ -258,10 +260,13 @@ TEST_F(PcrAnalyzerTest, ConcurrentReadWrite) {
     std::thread writer([&]() {
         int64_t time = now_ns();
         uint64_t pcr = 0;
-        for (int i = 0; i < 10000 && !stop.load(); i++) {
+        for (int i = 0; i < 100000 && !stop.load(); i++) {
             pcr += 270000;  // 10ms intervals
             time += 10000000;
             analyzer.process(pcr, i * 10, time);
+            if (i % 100 == 0) {
+                std::this_thread::yield();  // Give reader a chance to run
+            }
         }
         stop.store(true);
     });
@@ -276,6 +281,7 @@ TEST_F(PcrAnalyzerTest, ConcurrentReadWrite) {
                     successful_reads.fetch_add(1);
                 }
             }
+            std::this_thread::yield();
         }
     });
 

@@ -10,8 +10,7 @@
 #include "bit_ops.hpp"
 #include "../core/constants.hpp"
 
-namespace tsduck_interop {
-namespace platform {
+namespace tsduck_interop::platform {
 
 // ============================================================================
 // SIMD-Accelerated Sync Byte Search
@@ -24,11 +23,10 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
 
 #if defined(TSDUCK_HAS_AVX2)
     if (CpuFeatures::instance().avx2 && length >= 32) {
-        __m256i syncVec = _mm256_set1_epi8(static_cast<char>(TS_SYNC_BYTE));
+        __m256i syncVec = _mm256_set1_epi8(static_cast<char>(ts::SYNC_BYTE));
 
         while (i <= length - 32) {
-            __m256i chunk = _mm256_loadu_si256(
-                reinterpret_cast<const __m256i*>(data + i));
+            __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
             __m256i cmp = _mm256_cmpeq_epi8(chunk, syncVec);
             int mask = _mm256_movemask_epi8(cmp);
 
@@ -37,8 +35,8 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
                 int candidate = i + bitPos;
 
                 // Verify sync byte at next packet boundary
-                if (candidate + TS_PACKET_SIZE >= length ||
-                    data[candidate + TS_PACKET_SIZE] == TS_SYNC_BYTE) {
+                if (candidate + static_cast<int>(ts::PKT_SIZE) >= length ||
+                    data[candidate + ts::PKT_SIZE] == ts::SYNC_BYTE) {
                     return candidate;
                 }
 
@@ -54,11 +52,10 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
 
 #if defined(TSDUCK_HAS_SSE2)
     if (CpuFeatures::instance().sse2 && length >= 16) {
-        __m128i syncVec = _mm_set1_epi8(static_cast<char>(TS_SYNC_BYTE));
+        __m128i syncVec = _mm_set1_epi8(static_cast<char>(ts::SYNC_BYTE));
 
         while (i <= length - 16) {
-            __m128i chunk = _mm_loadu_si128(
-                reinterpret_cast<const __m128i*>(data + i));
+            __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
             __m128i cmp = _mm_cmpeq_epi8(chunk, syncVec);
             int mask = _mm_movemask_epi8(cmp);
 
@@ -66,8 +63,8 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
                 int bitPos = ctz32(static_cast<unsigned int>(mask));
                 int candidate = i + bitPos;
 
-                if (candidate + TS_PACKET_SIZE >= length ||
-                    data[candidate + TS_PACKET_SIZE] == TS_SYNC_BYTE) {
+                if (candidate + static_cast<int>(ts::PKT_SIZE) >= length ||
+                    data[candidate + ts::PKT_SIZE] == ts::SYNC_BYTE) {
                     return candidate;
                 }
 
@@ -82,7 +79,7 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
 
 #if defined(TSDUCK_HAS_NEON)
     if (CpuFeatures::instance().neon && length >= 16) {
-        uint8x16_t syncVec = vdupq_n_u8(TS_SYNC_BYTE);
+        uint8x16_t syncVec = vdupq_n_u8(ts::SYNC_BYTE);
 
         while (i <= length - 16) {
             uint8x16_t chunk = vld1q_u8(data + i);
@@ -93,10 +90,10 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
             if (vgetq_lane_u64(cmp64, 0) != 0 || vgetq_lane_u64(cmp64, 1) != 0) {
                 // Find first match using scalar for simplicity
                 for (int j = 0; j < 16 && i + j < length; j++) {
-                    if (data[i + j] == TS_SYNC_BYTE) {
+                    if (data[i + j] == ts::SYNC_BYTE) {
                         int candidate = i + j;
-                        if (candidate + TS_PACKET_SIZE >= length ||
-                            data[candidate + TS_PACKET_SIZE] == TS_SYNC_BYTE) {
+                        if (candidate + static_cast<int>(ts::PKT_SIZE) >= length ||
+                            data[candidate + ts::PKT_SIZE] == ts::SYNC_BYTE) {
                             return candidate;
                         }
                     }
@@ -110,9 +107,8 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
 
     // Scalar fallback
     for (; i < length; i++) {
-        if (data[i] == TS_SYNC_BYTE) {
-            if (i + TS_PACKET_SIZE >= length ||
-                data[i + TS_PACKET_SIZE] == TS_SYNC_BYTE) {
+        if (data[i] == ts::SYNC_BYTE) {
+            if (i + static_cast<int>(ts::PKT_SIZE) >= length || data[i + ts::PKT_SIZE] == ts::SYNC_BYTE) {
                 return i;
             }
         }
@@ -128,7 +124,7 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
 // Validate all sync bytes in a packet-aligned buffer
 // Returns count of valid sync bytes (packets with 0x47 at expected positions)
 inline int validateSyncBytes(const uint8_t* data, int length) noexcept {
-    int packets = length / TS_PACKET_SIZE;
+    int packets = length / static_cast<int>(ts::PKT_SIZE);
     int validCount = 0;
 
 #if defined(TSDUCK_HAS_AVX2)
@@ -139,13 +135,12 @@ inline int validateSyncBytes(const uint8_t* data, int length) noexcept {
         for (int batch = 0; batch <= packets - 32; batch += 32) {
             // Gather sync bytes
             for (int j = 0; j < 32; j++) {
-                syncBytes[j] = data[(batch + j) * TS_PACKET_SIZE];
+                syncBytes[j] = data[(batch + j) * ts::PKT_SIZE];
             }
 
             // Compare all 32 at once
-            __m256i gathered = _mm256_load_si256(
-                reinterpret_cast<const __m256i*>(syncBytes));
-            __m256i syncVec = _mm256_set1_epi8(static_cast<char>(TS_SYNC_BYTE));
+            __m256i gathered = _mm256_load_si256(reinterpret_cast<const __m256i*>(syncBytes));
+            __m256i syncVec = _mm256_set1_epi8(static_cast<char>(ts::SYNC_BYTE));
             __m256i cmp = _mm256_cmpeq_epi8(gathered, syncVec);
             int mask = _mm256_movemask_epi8(cmp);
 
@@ -154,7 +149,7 @@ inline int validateSyncBytes(const uint8_t* data, int length) noexcept {
 
         // Handle remaining packets
         for (int i = (packets / 32) * 32; i < packets; i++) {
-            if (data[i * TS_PACKET_SIZE] == TS_SYNC_BYTE) {
+            if (data[i * ts::PKT_SIZE] == ts::SYNC_BYTE) {
                 validCount++;
             }
         }
@@ -165,7 +160,7 @@ inline int validateSyncBytes(const uint8_t* data, int length) noexcept {
 
     // Scalar fallback
     for (int i = 0; i < packets; i++) {
-        if (data[i * TS_PACKET_SIZE] == TS_SYNC_BYTE) {
+        if (data[i * ts::PKT_SIZE] == ts::SYNC_BYTE) {
             validCount++;
         }
     }
@@ -173,7 +168,6 @@ inline int validateSyncBytes(const uint8_t* data, int length) noexcept {
     return validCount;
 }
 
-}  // namespace platform
-}  // namespace tsduck_interop
+}  // namespace tsduck_interop::platform
 
 #endif  // TSDUCK_INTEROP_PLATFORM_SIMD_SEARCH_HPP

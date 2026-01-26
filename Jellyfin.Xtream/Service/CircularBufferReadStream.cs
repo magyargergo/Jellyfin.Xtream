@@ -25,10 +25,6 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Xtream.Service.MpegTs;
-using Jellyfin.Xtream.Service.MpegTs.Core;
-using Jellyfin.Xtream.Service.MpegTs.Models;
-using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
@@ -64,18 +60,15 @@ public sealed class CircularBufferReadStream : Stream
         public int Value;
     }
 
-    private const int TsPacketSize = 188;
-    private const byte TsSyncByte = 71;
-    private const long MinimumStartupFillBytes = 4194304L; // 4MB minimum before checking for keyframe
-    private const long MaximumWarmupFillBytes = 16777216L; // 16MB max - handles very long GOPs (15-20 sec at 4-8 Mbps)
-    private const int StartupWarmupTimeoutMs = 15000; // 15 seconds - increased to allow keyframe detection
+    private const long MinimumStartupFillBytes = 4194304L; // 4MB minimum before allowing reads
+    private const int StartupWarmupTimeoutMs = 15000; // 15 seconds
     private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB read
 
-    // Stall detection uses StreamingTimeoutPolicy for configurable timeouts
-    // MaxStallWaitMs: 3x data stall timeout (default 30s) - allows time for reconnection
-    // ReconnectionWaitMs: extra grace period during active reconnection (10s)
-    private static int MaxStallWaitMs => StreamingTimeoutPolicy.GetDataStallTimeoutMs() * 3;
-    private static int ReconnectionWaitMs => StreamingTimeoutPolicy.DefaultBlacklistDurationMs / 3;
+    // Stall detection constants
+    // MaxStallWaitMs: 30 seconds - allows time for reconnection
+    // ReconnectionWaitMs: extra grace period during active reconnection (10 seconds)
+    private const int MaxStallWaitMs = 30000;
+    private const int ReconnectionWaitMs = 10000;
 
     private static readonly int _simdThreshold = DetermineSimdThreshold();
     private static readonly bool _avx512Supported = Avx512F.IsSupported;
@@ -100,7 +93,6 @@ public sealed class CircularBufferReadStream : Stream
     private readonly long _initialReadHead;
     private readonly bool _isPowerOfTwo;
     private readonly long _bufferMask;
-    private readonly int _programNumber;
     private readonly DateTime _startTime = DateTime.UtcNow;
 
     private CacheLinePadded _readHead;
@@ -109,7 +101,6 @@ public sealed class CircularBufferReadStream : Stream
     private long _lastSeenWriteHead;
     private int _stallDetectionCount;
     private int _lastSeenDiscontinuityCount;
-    private bool _isAligned;
     private bool _isDisposed;
     private DateTime _lastOverflowLog = DateTime.MinValue;
     private DateTime _lastStallLog = DateTime.MinValue;
@@ -117,7 +108,6 @@ public sealed class CircularBufferReadStream : Stream
     private DateTime _lastPredictorUpdate = DateTime.MinValue;
     private DateTime _lastDiscontinuityWaitLog = DateTime.MinValue;
     private DateTime _lastDiscontinuityHandledTime = DateTime.MinValue;
-    private DateTime _lastSpsUnavailableLog = DateTime.MinValue;
     private long _lastProgressLogBytes;
 
     /// <summary>
@@ -128,16 +118,6 @@ public sealed class CircularBufferReadStream : Stream
 
     // Overflow prediction for proactive warning
     private readonly OverflowPredictor _overflowPredictor;
-
-    // Prefix buffer for injecting SPS/PPS parameter sets before first read
-    // This ensures decoders receive required NAL units even if they're not in the circular buffer
-    private byte[]? _prefixBuffer;
-    private int _prefixBufferOffset;
-
-    // Deferred parameter set injection - set when reader aligns to keyframe but SPS/PPS not yet cached
-    // Will attempt injection on first read when parameter sets become available
-    private bool _needsParameterSetInjection;
-    private bool _parameterSetsInjected;
 
     /// <summary>
     /// Gets the virtual position in the source buffer.
@@ -206,14 +186,12 @@ public sealed class CircularBufferReadStream : Stream
     /// <param name="streamId">Optional stream identifier for logging.</param>
     /// <param name="channelName">Optional channel name for notifications.</param>
     /// <param name="discordService">Optional Discord notification service.</param>
-    /// <param name="programNumber">The program number to read (for MPTS support). Use 0 for first/default program.</param>
     public CircularBufferReadStream(
         CircularBufferWriteStream sourceBuffer,
         ILogger? logger = null,
         string streamId = "unknown",
         string? channelName = null,
-        IDiscordNotificationService? discordService = null,
-        int programNumber = 0
+        IDiscordNotificationService? discordService = null
     )
     {
         _sourceBuffer = sourceBuffer;
@@ -221,149 +199,35 @@ public sealed class CircularBufferReadStream : Stream
         _streamId = streamId;
         _channelName = channelName ?? streamId;
         _discordService = discordService;
-        _programNumber = programNumber;
         var bufSize = sourceBuffer.BufferSize;
         _isPowerOfTwo = (bufSize & (bufSize - 1)) == 0;
         _bufferMask = bufSize - 1;
         var totalWritten = sourceBuffer.TotalBytesWritten;
         long bufferSize = sourceBuffer.BufferSize;
 
-        // First, check if there's a recent reader position we can continue from
+        // Check if there's a recent reader position we can continue from
         // This enables seamless handoff from FFprobe to FFmpeg
         var continuationPosition = sourceBuffer.ConsumeLastReaderPosition(10000);
 
         if (continuationPosition > 0)
         {
-            // Continue from where the previous reader left off
-            // Find next keyframe from that position for clean video start
-            var keyframeOffset = sourceBuffer.TsIndexer.GetBestStartOffset(continuationPosition, _programNumber);
-
-            if (keyframeOffset != -1 && keyframeOffset >= continuationPosition && keyframeOffset <= totalWritten)
-            {
-                _initialReadHead = keyframeOffset;
-                _logger?.PluginLogInformation(
-                    "Reader for stream {StreamId} continuing from previous reader at keyframe {Offset} ({GapMB:F1}MB behind live)",
-                    _streamId,
-                    keyframeOffset,
-                    (double)(totalWritten - keyframeOffset) / 1048576.0
-                );
-                _isAligned = true;
-                InjectCachedParameterSets();
-            }
-            else
-            {
-                _initialReadHead = continuationPosition;
-                _logger?.PluginLogInformation(
-                    "Reader for stream {StreamId} continuing from previous reader position {Offset} ({GapMB:F1}MB behind live)",
-                    _streamId,
-                    continuationPosition,
-                    (double)(totalWritten - continuationPosition) / 1048576.0
-                );
-            }
-
-            // Reset PCR timing state to avoid false jitter from position continuity
-            sourceBuffer.TsIndexer.ResetTimingState();
-        }
-        else if (totalWritten > bufferSize)
-        {
-            var targetLagBytes = Math.Min(bufferSize / 4, 4194304L);
-            var targetOffset = totalWritten - targetLagBytes;
-            var minValidOffset = totalWritten - bufferSize + 524288;
-
-            if (targetOffset < minValidOffset)
-            {
-                targetOffset = minValidOffset;
-            }
-
-            var syncPoint = sourceBuffer.TsIndexer.GetBestSyncPoint(targetOffset, _programNumber);
-
-            if (syncPoint.HasValue && syncPoint.Value.Offset >= minValidOffset)
-            {
-                _initialReadHead = syncPoint.Value.Offset;
-                _logger?.LogDebugIfEnabled(
-                    "Reader for stream {StreamId} (program {ProgramNumber}) aligned to SYNC POINT at {Offset} ({GapMB:F1}MB behind live, drift: {DriftMs:F1}ms)",
-                    _streamId,
-                    _programNumber,
-                    syncPoint.Value.Offset,
-                    (double)(totalWritten - syncPoint.Value.Offset) / 1048576.0,
-                    syncPoint.Value.DriftMs
-                );
-                _isAligned = true;
-                InjectCachedParameterSets();
-            }
-            else
-            {
-                var keyframeOffset = sourceBuffer.TsIndexer.GetBestStartOffset(targetOffset, _programNumber);
-
-                if (keyframeOffset != -1 && keyframeOffset >= minValidOffset)
-                {
-                    _initialReadHead = keyframeOffset;
-                    _logger?.LogDebugIfEnabled(
-                        "Reader for stream {StreamId} (program {ProgramNumber}) aligned to KEYFRAME at {Offset} ({GapMB:F1}MB behind live)",
-                        _streamId,
-                        _programNumber,
-                        keyframeOffset,
-                        (double)(totalWritten - keyframeOffset) / 1048576.0
-                    );
-                    _isAligned = true;
-                    InjectCachedParameterSets();
-                }
-                else
-                {
-                    var safetyMargin = Math.Max(524288L, bufferSize / 32);
-                    var startGap = Math.Min(targetLagBytes, bufferSize - safetyMargin);
-                    _initialReadHead = totalWritten - startGap;
-                    _logger?.PluginLogWarning(
-                        "Reader for stream {StreamId} (program {ProgramNumber}) could not find keyframe (video PID: {VideoPid}). Falling back to byte alignment at {GapMB:F1}MB behind.",
-                        _streamId,
-                        _programNumber,
-                        sourceBuffer.TsIndexer.GetVideoPid(_programNumber),
-                        (double)startGap / 1048576.0
-                    );
-                }
-            }
-        }
-        else if (totalWritten > 0)
-        {
-            // Buffer has data but hasn't wrapped yet - start near current position
-            // to avoid re-reading old data that previous consumers already read
-            var targetLagBytes = Math.Min(totalWritten / 2, 2097152L); // Up to 2MB behind
-            var targetOffset = Math.Max(0L, totalWritten - targetLagBytes);
-
-            // Try to align to a keyframe if possible
-            var keyframeOffset = sourceBuffer.TsIndexer.GetBestStartOffset(targetOffset, _programNumber);
-
-            if (keyframeOffset != -1 && keyframeOffset <= totalWritten)
-            {
-                _initialReadHead = keyframeOffset;
-                _logger?.LogDebugIfEnabled(
-                    "Reader for stream {StreamId} aligned to keyframe at {Offset} ({GapMB:F1}MB behind, buffer {Pct:F0}% full)",
-                    _streamId,
-                    keyframeOffset,
-                    (double)(totalWritten - keyframeOffset) / 1048576.0,
-                    (double)totalWritten * 100.0 / bufferSize
-                );
-                _isAligned = true;
-                InjectCachedParameterSets();
-            }
-            else
-            {
-                _initialReadHead = targetOffset;
-                _logger?.LogDebugIfEnabled(
-                    "Reader for stream {StreamId} initialized at {Offset} ({GapMB:F1}MB behind, buffer {Pct:F0}% full)",
-                    _streamId,
-                    targetOffset,
-                    (double)(totalWritten - targetOffset) / 1048576.0,
-                    (double)totalWritten * 100.0 / bufferSize
-                );
-            }
+            _initialReadHead = continuationPosition;
+            _logger?.PluginLogInformation(
+                "Reader for stream {StreamId} continuing from previous reader position {Offset} ({GapMB:F1}MB behind live)",
+                _streamId,
+                continuationPosition,
+                (double)(totalWritten - continuationPosition) / 1048576.0
+            );
         }
         else
         {
-            _initialReadHead = 0L;
+            // Start at 1/4 buffer behind live to give a comfortable read margin
+            _initialReadHead = Math.Max(0, totalWritten - bufferSize / 4);
             _logger?.LogDebugIfEnabled(
-                "Reader for stream {StreamId} initialized at buffer start (empty buffer)",
-                _streamId
+                "Reader for stream {StreamId} initialized at {Offset} ({GapMB:F1}MB behind live)",
+                _streamId,
+                _initialReadHead,
+                (double)(totalWritten - _initialReadHead) / 1048576.0
             );
         }
 
@@ -390,10 +254,11 @@ public sealed class CircularBufferReadStream : Stream
     }
 
     /// <inheritdoc />
-    public override int Read(byte[] buffer, int offset, int count) => ReadSpan(new Span<byte>(buffer, offset, count));
+    public override int Read(byte[] buffer, int offset, int count) =>
+        ReadFromCircularBuffer(new Span<byte>(buffer, offset, count));
 
     /// <inheritdoc />
-    public override int Read(Span<byte> buffer) => ReadSpan(buffer);
+    public override int Read(Span<byte> buffer) => ReadFromCircularBuffer(buffer);
 
     /// <inheritdoc />
     public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
@@ -405,58 +270,26 @@ public sealed class CircularBufferReadStream : Stream
         var currentReadHead = ReadHead;
         var gap = _sourceBuffer.TotalBytesWritten - currentReadHead;
 
-        // For new readers (TotalBytesRead == 0), ensure we have at least one keyframe detected
-        // before allowing playback. This applies even if buffer already has >4MB of data,
-        // which can happen during channel switches when the broadcast starts before the reader connects.
-        var hasKeyframe = _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber) > 0;
-        var demuxerInitialized = _sourceBuffer.IsDemuxerInitialized;
-        var needsWarmup =
-            TotalBytesRead == 0L && (!hasKeyframe || gap < MinimumStartupFillBytes || !demuxerInitialized);
+        // Simple warmup: wait until we have enough data available after our read position
+        var needsWarmup = TotalBytesRead == 0L && gap < MinimumStartupFillBytes;
 
         if (needsWarmup)
         {
             _logger?.LogDebugIfEnabled(
-                "Stream {StreamId}: Warming up buffer - {CurrentKB}KB filled, Keyframe={HasKeyframe}, DemuxerReady={DemuxerReady}. Waiting for playback conditions...",
+                "Stream {StreamId}: Warming up buffer - {CurrentKB}KB filled. Waiting for {RequiredMB}MB...",
                 _streamId,
                 gap / 1024,
-                hasKeyframe,
-                demuxerInitialized
+                MinimumStartupFillBytes / 1048576
             );
             var warmupStart = DateTime.UtcNow;
             var pollCount = 0;
 
-            // Wait for buffer fill, demuxer initialization, AND keyframe detection
-            // This ensures video can start immediately without black frames
-            // - MinimumStartupFillBytes (4MB): Ensures enough data for demuxer/decoder buffers
-            // - Keyframe detection: Ensures we can align to IDR frame for instant video display
-            // - MaximumWarmupFillBytes (16MB): Cap for very long GOP streams (15-20 sec GOPs at 4-8 Mbps)
             while (!cancellationToken.IsCancellationRequested)
             {
                 var elapsedMs = (DateTime.UtcNow - warmupStart).TotalMilliseconds;
 
-                // Check completion conditions:
-                // 1. Have enough data AND demuxer ready AND keyframe detected = ideal
-                // 2. Exceeded maximum warmup size = proceed anyway (very long GOP)
-                // 3. Timeout reached = proceed anyway (fallback)
-                var hasMinimumData = gap >= MinimumStartupFillBytes && demuxerInitialized;
-                var warmupComplete = hasMinimumData && hasKeyframe;
-
-                if (warmupComplete)
+                if (gap >= MinimumStartupFillBytes)
                 {
-                    break;
-                }
-
-                // Maximum data limit: proceed even without keyframe if we've buffered enough
-                // This handles streams with extremely long GOPs (>16MB between keyframes)
-                if (gap >= MaximumWarmupFillBytes)
-                {
-                    _logger?.PluginLogWarning(
-                        "Stream {StreamId}: Warmup reached max buffer ({MaxMB}MB) without keyframe. GOP may be very long. Keyframes={KeyframeCount}, Programs={ProgramCount}. Starting playback anyway.",
-                        _streamId,
-                        MaximumWarmupFillBytes / 1048576,
-                        _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber),
-                        _sourceBuffer.TsIndexer.ProgramCount
-                    );
                     break;
                 }
 
@@ -464,12 +297,10 @@ public sealed class CircularBufferReadStream : Stream
                 if (elapsedMs > StartupWarmupTimeoutMs)
                 {
                     _logger?.PluginLogWarning(
-                        "Stream {StreamId}: Warmup timeout after {TimeMs}ms. Buffer={FilledKB}KB, DemuxerReady={DemuxerReady}, Keyframe={HasKeyframe}. Starting playback anyway.",
+                        "Stream {StreamId}: Warmup timeout after {TimeMs}ms. Buffer={FilledKB}KB. Starting playback anyway.",
                         _streamId,
                         elapsedMs,
-                        gap / 1024,
-                        demuxerInitialized,
-                        hasKeyframe
+                        gap / 1024
                     );
                     break;
                 }
@@ -478,19 +309,15 @@ public sealed class CircularBufferReadStream : Stream
                 pollCount++;
                 currentReadHead = ReadHead;
                 gap = _sourceBuffer.TotalBytesWritten - currentReadHead;
-                demuxerInitialized = _sourceBuffer.IsDemuxerInitialized;
-                hasKeyframe = _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber) > 0;
 
                 if (pollCount % 20 == 0)
                 {
                     var fillPct = (double)gap * 100.0 / MinimumStartupFillBytes;
                     _logger?.LogDebugIfEnabled(
-                        "Stream {StreamId}: Buffering... {FillPct:F1}% ({CurrentKB}KB), DemuxerReady={DemuxerReady}, Keyframe={HasKeyframe}",
+                        "Stream {StreamId}: Buffering... {FillPct:F1}% ({CurrentKB}KB)",
                         _streamId,
                         fillPct,
-                        gap / 1024,
-                        demuxerInitialized,
-                        hasKeyframe
+                        gap / 1024
                     );
                 }
             }
@@ -498,89 +325,12 @@ public sealed class CircularBufferReadStream : Stream
             if (gap >= MinimumStartupFillBytes)
             {
                 var warmupDuration = (DateTime.UtcNow - warmupStart).TotalMilliseconds;
-                var detectedPrograms = _sourceBuffer.TsIndexer.ProgramCount;
-                var detectedKeyframes = _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber);
                 _logger?.PluginLogInformation(
-                    "Stream {StreamId}: Buffer warmup complete in {DurationMs}ms. {FilledMB:F1}MB buffered, {ProgramCount} programs, {KeyframeCount} keyframes detected, DemuxerReady={DemuxerReady}. Starting playback.",
+                    "Stream {StreamId}: Buffer warmup complete in {DurationMs}ms. {FilledMB:F1}MB buffered. Starting playback.",
                     _streamId,
                     warmupDuration,
-                    (double)gap / 1048576.0,
-                    detectedPrograms,
-                    detectedKeyframes,
-                    demuxerInitialized
+                    (double)gap / 1048576.0
                 );
-
-                if (!_isAligned)
-                {
-                    var totalWritten = _sourceBuffer.TotalBytesWritten;
-                    long targetLagBytes = Math.Min(_sourceBuffer.BufferSize / 4, 4194304);
-                    var targetOffset = totalWritten - targetLagBytes;
-                    var minValidOffset = totalWritten - _sourceBuffer.BufferSize + 524288;
-
-                    if (targetOffset < minValidOffset)
-                    {
-                        targetOffset = minValidOffset;
-                    }
-
-                    var keyframeOffset = _sourceBuffer.TsIndexer.GetBestStartOffset(targetOffset, _programNumber);
-
-                    if (keyframeOffset != -1 && keyframeOffset >= minValidOffset)
-                    {
-                        _ = Interlocked.Exchange(ref _readHead.Value, keyframeOffset);
-                        currentReadHead = keyframeOffset;
-                        gap = totalWritten - currentReadHead;
-                        _isAligned = true;
-                        InjectCachedParameterSets();
-                        _logger?.PluginLogInformation(
-                            "Stream {StreamId}: Post-warmup KEYFRAME alignment successful at offset {Offset} ({GapMB:F1}MB behind live). Video should now be visible.",
-                            _streamId,
-                            keyframeOffset,
-                            (double)gap / 1048576.0
-                        );
-                    }
-                    else
-                    {
-                        var videoPid = _sourceBuffer.TsIndexer.GetVideoPid(_programNumber);
-                        var keyframeCount = _sourceBuffer.TsIndexer.GetKeyframeCount(_programNumber);
-                        var programCount = _sourceBuffer.TsIndexer.ProgramCount;
-                        var packetsParsed = _sourceBuffer.TsIndexer.TotalPacketsParsed;
-                        var patCrcErrors = _sourceBuffer.TsIndexer.PatCrcErrors;
-                        var pmtCrcErrors = _sourceBuffer.TsIndexer.PmtCrcErrors;
-
-                        _logger?.PluginLogWarning(
-                            "Stream {StreamId}: Post-warmup keyframe alignment failed. VideoPID={VideoPid}, KeyframeCount={KeyframeCount}, Programs={ProgramCount}, PacketsParsed={PacketsParsed}, PAT_CRC_Errors={PatCrcErrors}, PMT_CRC_Errors={PmtCrcErrors}. Video may not display correctly.",
-                            _streamId,
-                            videoPid,
-                            keyframeCount,
-                            programCount,
-                            packetsParsed,
-                            patCrcErrors,
-                            pmtCrcErrors
-                        );
-
-                        // Log program details if any were detected
-                        if (programCount > 0)
-                        {
-                            var programs = _sourceBuffer.TsIndexer.GetProgramNumbers();
-                            foreach (var pn in programs)
-                            {
-                                var pInfo = _sourceBuffer.TsIndexer.GetProgramInfo(pn);
-                                if (pInfo != null)
-                                {
-                                    _logger?.PluginLogWarning(
-                                        "Stream {StreamId}: Program {ProgramNumber}: VideoPid={VideoPid}, PcrPid={PcrPid}, AudioPid={AudioPid}, PMT_Version={PmtVersion}",
-                                        _streamId,
-                                        pn,
-                                        pInfo.VideoPid,
-                                        pInfo.PcrPid,
-                                        pInfo.Audio.Pid,
-                                        pInfo.PmtVersion
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
 
@@ -754,66 +504,17 @@ public sealed class CircularBufferReadStream : Stream
             }
         }
 
-        return ReadSpan(buffer.Span);
+        return ReadFromCircularBuffer(buffer.Span);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-    private unsafe int ReadSpan(Span<byte> destination)
+    private unsafe int ReadFromCircularBuffer(Span<byte> destination)
     {
         if (destination.IsEmpty)
         {
             return 0;
         }
 
-        // Check for deferred parameter set injection
-        // This handles the case where reader connected before SPS/PPS were cached
-        if (_needsParameterSetInjection && !_parameterSetsInjected)
-        {
-            InjectCachedParameterSets();
-        }
-
-        // First, consume any prefix buffer data (injected SPS/PPS parameter sets)
-        if (_prefixBuffer != null && _prefixBufferOffset < _prefixBuffer.Length)
-        {
-            var prefixRemaining = _prefixBuffer.Length - _prefixBufferOffset;
-            var prefixToCopy = Math.Min(prefixRemaining, destination.Length);
-
-            _logger?.PluginLogInformation(
-                "Stream {StreamId}: Serving {Bytes} bytes from prefix buffer (SPS/PPS injection), {Remaining} bytes remaining",
-                _streamId,
-                prefixToCopy,
-                prefixRemaining - prefixToCopy
-            );
-
-            _prefixBuffer.AsSpan(_prefixBufferOffset, prefixToCopy).CopyTo(destination);
-            _prefixBufferOffset += prefixToCopy;
-
-            // If we've consumed the entire prefix buffer, clear it
-            if (_prefixBufferOffset >= _prefixBuffer.Length)
-            {
-                _logger?.PluginLogInformation("Stream {StreamId}: Prefix buffer (SPS/PPS) fully consumed", _streamId);
-                _prefixBuffer = null;
-                _prefixBufferOffset = 0;
-            }
-
-            // If we filled the destination from prefix alone, return
-            if (prefixToCopy == destination.Length)
-            {
-                return prefixToCopy;
-            }
-
-            // Otherwise, continue reading from circular buffer into remaining space
-            destination = destination[prefixToCopy..];
-            var circularRead = ReadFromCircularBuffer(destination);
-            return prefixToCopy + circularRead;
-        }
-
-        return ReadFromCircularBuffer(destination);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-    private unsafe int ReadFromCircularBuffer(Span<byte> destination)
-    {
         var currentReadHead = Volatile.Read(ref _readHead.Value);
         var totalWritten = _sourceBuffer.TotalBytesWritten;
         Thread.MemoryBarrier();
@@ -859,25 +560,13 @@ public sealed class CircularBufferReadStream : Stream
             _stallDetectionCount = 0;
         }
 
-        if (!_isAligned && TryAlignToMpegTsSync(ref currentReadHead, totalWritten))
-        {
-            _ = Interlocked.Exchange(ref _readHead.Value, currentReadHead);
-            gap = totalWritten - currentReadHead;
-            _isAligned = true;
-        }
-
         // Check for stream discontinuity (reconnection after EOF/error)
-        // We track by count, not position, because the reader might be AHEAD of the discontinuity
-        // point if it was consuming buffered data when the source disconnected. In that case,
-        // the buffered data after the discontinuity point contains OLD frames that will cause
-        // video loops when ffmpeg decodes them (timestamps jump backward).
         var currentDiscontinuityCount = _sourceBuffer.DiscontinuityCount;
         var discontinuityOffset = _sourceBuffer.LastDiscontinuityOffset;
 
         if (currentDiscontinuityCount > _lastSeenDiscontinuityCount)
         {
-            // Rate-limit discontinuity processing to prevent rapid jumping when source has
-            // multiple inherent discontinuities (e.g., ad insertion, multi-source multiplexing)
+            // Rate-limit discontinuity processing to prevent rapid jumping
             var now = DateTime.UtcNow;
             var timeSinceLastHandled = (now - _lastDiscontinuityHandledTime).TotalSeconds;
             if (
@@ -885,8 +574,6 @@ public sealed class CircularBufferReadStream : Stream
                 && _lastDiscontinuityHandledTime != DateTime.MinValue
             )
             {
-                // Too soon after last discontinuity - suppress this one but update the count
-                // to prevent reprocessing on every read
                 _lastSeenDiscontinuityCount = currentDiscontinuityCount;
                 _logger?.LogDebugIfEnabled(
                     "Stream {StreamId}: Suppressing rapid discontinuity #{Count} ({TimeSince:F1}s since last, minimum {MinInterval:F0}s)",
@@ -895,7 +582,6 @@ public sealed class CircularBufferReadStream : Stream
                     timeSinceLastHandled,
                     MinDiscontinuityIntervalSeconds
                 );
-                // Don't return - continue reading normally to avoid stalling
             }
             else
             {
@@ -903,16 +589,12 @@ public sealed class CircularBufferReadStream : Stream
                 _lastDiscontinuityHandledTime = now;
                 var oldReadHead = currentReadHead;
 
-                // CRITICAL: We must wait for fresh data to arrive AFTER the discontinuity point.
-                // The discontinuity offset marks where new data STARTS being written after reconnection.
-                // We need at least 1MB of fresh data before we can safely resume reading.
+                // Wait for fresh data to arrive after the discontinuity point
                 const long MinFreshDataBytes = 1048576; // 1MB minimum fresh data
                 var freshDataAvailable = totalWritten - discontinuityOffset;
 
                 if (freshDataAvailable < MinFreshDataBytes)
                 {
-                    // Not enough fresh data yet - return 0 to make reader wait
-                    // Only log once per second to avoid log spam during the wait
                     if ((now - _lastDiscontinuityWaitLog).TotalSeconds >= 1.0)
                     {
                         _lastDiscontinuityWaitLog = now;
@@ -925,43 +607,12 @@ public sealed class CircularBufferReadStream : Stream
                         );
                     }
 
-                    // Reset the count so we check again next read
                     _lastSeenDiscontinuityCount = currentDiscontinuityCount - 1;
                     return 0;
                 }
 
-                // CRITICAL: Only consider sync points from FRESH data (after discontinuityOffset).
-                // Data indexed before the discontinuity point is from the OLD HTTP connection
-                // and contains stale data that causes video/audio loops when read.
-                // Using GetBestSyncPoint instead of GetBestStartOffset ensures both audio AND video
-                // start at clean boundaries - this prevents audio from repeating after reconnections.
-                var minValidOffset = discontinuityOffset;
-                var syncPoint = _sourceBuffer.TsIndexer.GetBestSyncPoint(totalWritten, _programNumber, minValidOffset);
-
-                if (syncPoint.HasValue && syncPoint.Value.Offset >= minValidOffset)
-                {
-                    currentReadHead = syncPoint.Value.Offset;
-                }
-                else
-                {
-                    // No sync point found, fall back to video keyframe only
-                    var keyframeOffset = _sourceBuffer.TsIndexer.GetBestStartOffset(
-                        totalWritten,
-                        _programNumber,
-                        minValidOffset
-                    );
-
-                    if (keyframeOffset != -1 && keyframeOffset >= minValidOffset)
-                    {
-                        currentReadHead = keyframeOffset;
-                    }
-                    else
-                    {
-                        // No keyframe found in fresh data, use the discontinuity offset as fallback
-                        // This ensures we start reading from fresh data even without keyframe alignment
-                        currentReadHead = discontinuityOffset;
-                    }
-                }
+                // Jump directly to the discontinuity offset
+                currentReadHead = discontinuityOffset;
 
                 // Ensure we don't go past write head
                 if (currentReadHead > totalWritten)
@@ -971,11 +622,6 @@ public sealed class CircularBufferReadStream : Stream
 
                 _ = Interlocked.Exchange(ref _readHead.Value, currentReadHead);
                 gap = totalWritten - currentReadHead;
-
-                // Reset injection state after discontinuity to reinject SPS/PPS for new provider
-                _parameterSetsInjected = false;
-                _needsParameterSetInjection = true;
-                InjectCachedParameterSets();
 
                 var skippedMB = (double)(currentReadHead - oldReadHead) / 1048576.0;
                 _logger?.PluginLogInformation(
@@ -988,42 +634,12 @@ public sealed class CircularBufferReadStream : Stream
                     skippedMB >= 0 ? "forward" : "backward",
                     freshDataAvailable / 1048576.0
                 );
-
-                // CRITICAL: Return 0 to force the next Read() call to serve the prefix buffer (SPS/PPS)
-                // before reading from the circular buffer. Without this, FFmpeg continues reading
-                // from the new position without receiving the parameter sets, causing decoder errors
-                // like "non-existing PPS 0 referenced".
-                if (_prefixBuffer is { Length: > 0 })
-                {
-                    return 0;
-                }
             }
         }
         else if (discontinuityOffset > 0 && currentReadHead < discontinuityOffset)
         {
             // Reader is behind discontinuity point - skip forward to avoid reading stale data
-            // CRITICAL: Only consider sync points from FRESH data (after discontinuityOffset)
-            // Using GetBestSyncPoint ensures both audio and video start at clean boundaries
-            var syncPoint = _sourceBuffer.TsIndexer.GetBestSyncPoint(totalWritten, _programNumber, discontinuityOffset);
-
-            if (syncPoint.HasValue && syncPoint.Value.Offset >= discontinuityOffset)
-            {
-                currentReadHead = syncPoint.Value.Offset;
-            }
-            else
-            {
-                // Fall back to video keyframe only
-                var keyframeOffset = _sourceBuffer.TsIndexer.GetBestStartOffset(
-                    totalWritten,
-                    _programNumber,
-                    discontinuityOffset
-                );
-
-                currentReadHead =
-                    keyframeOffset != -1 && keyframeOffset >= discontinuityOffset
-                        ? keyframeOffset
-                        : discontinuityOffset;
-            }
+            currentReadHead = discontinuityOffset;
 
             if (currentReadHead > totalWritten)
             {
@@ -1033,23 +649,11 @@ public sealed class CircularBufferReadStream : Stream
             _ = Interlocked.Exchange(ref _readHead.Value, currentReadHead);
             gap = totalWritten - currentReadHead;
 
-            // Reset injection state and reinject SPS/PPS after skipping past discontinuity
-            _parameterSetsInjected = false;
-            _needsParameterSetInjection = true;
-            InjectCachedParameterSets();
-
             _logger?.PluginLogInformation(
-                "Stream {StreamId}: Skipped past discontinuity from {OldOffset} to {NewOffset} to avoid stale data",
+                "Stream {StreamId}: Skipped past discontinuity to {NewOffset} to avoid stale data",
                 _streamId,
-                Volatile.Read(ref _readHead.Value),
                 currentReadHead
             );
-
-            // CRITICAL: Return 0 to force the next Read() call to serve the prefix buffer (SPS/PPS)
-            if (_prefixBuffer is { Length: > 0 })
-            {
-                return 0;
-            }
         }
 
         // Update overflow predictor periodically (every 500ms)
@@ -1078,20 +682,6 @@ public sealed class CircularBufferReadStream : Stream
             long safetyMargin = Math.Max(524288, _sourceBuffer.BufferSize >> 4);
             var safeGap = _sourceBuffer.BufferSize - safetyMargin;
             var newReadHead = totalWritten - safeGap;
-            var syncPoint = _sourceBuffer.TsIndexer.GetBestSyncPoint(newReadHead, _programNumber);
-
-            if (syncPoint.HasValue && syncPoint.Value.Offset > newReadHead - safetyMargin)
-            {
-                newReadHead = syncPoint.Value.Offset;
-            }
-            else
-            {
-                var keyframeOffset = _sourceBuffer.TsIndexer.GetBestStartOffset(newReadHead, _programNumber);
-                if (keyframeOffset != -1 && keyframeOffset > newReadHead - safetyMargin)
-                {
-                    newReadHead = keyframeOffset;
-                }
-            }
 
             var originalHead = Interlocked.CompareExchange(ref _readHead.Value, newReadHead, currentReadHead);
 
@@ -1217,16 +807,6 @@ public sealed class CircularBufferReadStream : Stream
 
         if (totalRead > 0)
         {
-            // NOTE: We intentionally do NOT modify PTS timestamps here.
-            // IPTV streams should be passed through unchanged - the player (Jellyfin client)
-            // has sophisticated A/V sync algorithms that work best with original timestamps.
-            // Server-side PTS modification can cause sync issues because:
-            // 1. We only see one direction of the stream (can't detect encoder clock drift)
-            // 2. Modifying audio PTS while leaving video unchanged creates inconsistency
-            // 3. Players expect PCR-based timing to be coherent across all elementary streams
-            //
-            // A/V sync monitoring is handled by the native TsDuck analyzer.
-
             var expectedHead = startingReadHead;
             var newHead = startingReadHead + totalRead;
             var actualHead = Interlocked.CompareExchange(ref _readHead.Value, newHead, expectedHead);
@@ -1377,242 +957,6 @@ public sealed class CircularBufferReadStream : Stream
             : 25;
     }
 
-    /// <summary>
-    /// Injects cached SPS/PPS parameter sets into the stream.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This method retrieves cached parameter sets from the FFmpegStreamDemuxer (via CircularBufferWriteStream)
-    /// and prepends them to the stream as MPEG-TS packets. This ensures decoders receive the necessary
-    /// SPS/PPS NAL units even after mid-stream connections or provider switches.
-    /// </para>
-    /// <para>
-    /// The parameter sets are stored in a prefix buffer that is consumed before reading from the
-    /// circular buffer, ensuring they are the first data seen by the decoder.
-    /// </para>
-    /// </remarks>
-    private void InjectCachedParameterSets()
-    {
-        // Try to get cached parameter sets from the source buffer
-        var cache = _sourceBuffer.GetCachedParameterSets(_programNumber);
-        if (cache is not { HasSps: true, HasPps: true })
-        {
-            // Don't mark as injected if we don't have SPS/PPS yet - keep trying
-            // Rate-limit log to once per 5 seconds to avoid spam during initialization
-            var now = DateTime.UtcNow;
-            if ((now - _lastSpsUnavailableLog).TotalSeconds >= 5.0)
-            {
-                _lastSpsUnavailableLog = now;
-                _logger?.LogDebugIfEnabled(
-                    "Stream {StreamId}: SPS/PPS not yet available (cache={CacheNull}, HasSps={HasSps}, HasPps={HasPps}). Will retry.",
-                    _streamId,
-                    cache == null ? "null" : "exists",
-                    cache?.HasSps ?? false,
-                    cache?.HasPps ?? false
-                );
-            }
-
-            return;
-        }
-
-        // Only mark as complete once we actually have and inject the parameter sets
-        _parameterSetsInjected = true;
-        _needsParameterSetInjection = false;
-
-        // Get video PID for packet construction
-        var videoPid = GetVideoPid();
-        if (videoPid < 0)
-        {
-            _logger?.LogDebugIfEnabled(
-                "Stream {StreamId}: Cannot inject parameter sets - video PID not detected yet.",
-                _streamId
-            );
-            return;
-        }
-
-        // Build MPEG-TS packets containing the parameter sets
-        var continuityCounter = 0;
-        var videoPackets = cache.BuildInjectionPackets(videoPid, ref continuityCounter);
-
-        // Also build an audio discontinuity packet to signal FFmpeg's audio decoder to reset
-        // Without this, FFmpeg may replay buffered audio from before the discontinuity
-        var audioPid = GetAudioPid();
-        byte[]? audioDiscontinuityPacket = null;
-        if (audioPid > 0)
-        {
-            audioDiscontinuityPacket = BuildDiscontinuityPacket(audioPid, continuityCounter: 0);
-        }
-
-        // Combine video packets with audio discontinuity packet
-        var totalLength = videoPackets.Length + (audioDiscontinuityPacket?.Length ?? 0);
-        if (totalLength > 0)
-        {
-            var combinedPackets = new byte[totalLength];
-            var offset = 0;
-
-            // Audio discontinuity first (so decoder resets audio before processing video)
-            if (audioDiscontinuityPacket != null)
-            {
-                audioDiscontinuityPacket.CopyTo(combinedPackets, offset);
-                offset += audioDiscontinuityPacket.Length;
-            }
-
-            // Then video SPS/PPS packets
-            if (videoPackets.Length > 0)
-            {
-                videoPackets.CopyTo(combinedPackets, offset);
-            }
-
-            _prefixBuffer = combinedPackets;
-            _prefixBufferOffset = 0;
-
-            _logger?.PluginLogInformation(
-                "Stream {StreamId}: Injecting {PacketCount} MPEG-TS packets ({Bytes} bytes) with SPS/PPS for video PID {VideoPid} and audio discontinuity for PID {AudioPid}. "
-                    + "SPS={SpsLen}B, PPS={PpsLen}B, VPS={VpsLen}B, Total NAL={TotalNal}B",
-                _streamId,
-                totalLength / TsPacketSize,
-                totalLength,
-                videoPid,
-                audioPid,
-                cache.Sps?.Length ?? 0,
-                cache.Pps?.Length ?? 0,
-                cache.Vps?.Length ?? 0,
-                cache.GetTotalSize()
-            );
-        }
-    }
-
-    /// <summary>
-    /// Gets the video PID from the TsIndexer or demuxer.
-    /// </summary>
-    /// <returns>The video PID, or -1 if not available.</returns>
-    private int GetVideoPid()
-    {
-        // Try to get from TsIndexer first
-        var indexer = _sourceBuffer.TsIndexer;
-        var programNumbers = indexer.GetProgramNumbers();
-
-        if (programNumbers.Length > 0)
-        {
-            // Use specified program number or first available
-            var targetProgram =
-                _programNumber >= 0 && programNumbers.Contains(_programNumber) ? _programNumber : programNumbers[0];
-
-            var programInfo = indexer.GetProgramInfo(targetProgram);
-            if (programInfo != null)
-            {
-                return programInfo.VideoPid;
-            }
-        }
-
-        return -1;
-    }
-
-    /// <summary>
-    /// Gets the audio PID from the TsIndexer.
-    /// </summary>
-    /// <returns>The audio PID, or -1 if not available.</returns>
-    private int GetAudioPid()
-    {
-        var indexer = _sourceBuffer.TsIndexer;
-        var programNumbers = indexer.GetProgramNumbers();
-
-        if (programNumbers.Length > 0)
-        {
-            var targetProgram =
-                _programNumber >= 0 && programNumbers.Contains(_programNumber) ? _programNumber : programNumbers[0];
-
-            var programInfo = indexer.GetProgramInfo(targetProgram);
-            if (programInfo?.Audio.HasAudio == true)
-            {
-                return programInfo.Audio.Pid;
-            }
-        }
-
-        return -1;
-    }
-
-    /// <summary>
-    /// Builds an MPEG-TS null packet with discontinuity indicator for a specific PID.
-    /// This signals decoders to reset their buffers for that PID.
-    /// </summary>
-    /// <param name="pid">The PID to signal discontinuity for.</param>
-    /// <param name="continuityCounter">The continuity counter for this PID.</param>
-    /// <returns>A 188-byte MPEG-TS packet with discontinuity indicator set.</returns>
-    private static byte[] BuildDiscontinuityPacket(int pid, int continuityCounter)
-    {
-        var packet = new byte[TsPacketSize];
-
-        // Fill with stuffing bytes
-        Array.Fill(packet, (byte)0xFF);
-
-        // TS header (4 bytes)
-        packet[0] = 0x47; // Sync byte
-        packet[1] = (byte)((pid >> 8) & 0x1F); // PID high bits (no PUSI, no TEI, no priority)
-        packet[2] = (byte)(pid & 0xFF); // PID low bits
-
-        // Adaptation field control: 10 = adaptation field only, no payload
-        // This is a "null" packet for this PID that just signals discontinuity
-        packet[3] = (byte)(0x20 | (continuityCounter & 0x0F));
-
-        // Adaptation field length (183 bytes = rest of packet after header + length byte)
-        packet[4] = 183;
-
-        // Adaptation field flags:
-        // Bit 7: discontinuity_indicator = 1
-        // Bit 6: random_access_indicator = 1 (for good measure)
-        // All other flags = 0
-        packet[5] = 0xC0;
-
-        // Rest is stuffing (already filled with 0xFF)
-
-        return packet;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryAlignToMpegTsSync(ref long readHead, long totalWritten)
-    {
-        var available = totalWritten - readHead;
-
-        if (available < 564)
-        {
-            return false;
-        }
-
-        var maxScan = (int)Math.Min(8192L, available - 376);
-
-        if (maxScan <= 0)
-        {
-            return false;
-        }
-
-        var buffer = _sourceBuffer.Buffer;
-        var bufSize = _sourceBuffer.BufferSize;
-
-        for (var offset = 0; offset < maxScan; offset++)
-        {
-            var p0 = (int)(_isPowerOfTwo ? ((readHead + offset) & _bufferMask) : ((readHead + offset) % bufSize));
-            var p1 = (int)(
-                _isPowerOfTwo
-                    ? ((readHead + offset + TsPacketSize) & _bufferMask)
-                    : ((readHead + offset + TsPacketSize) % bufSize)
-            );
-            var p2 = (int)(
-                _isPowerOfTwo
-                    ? ((readHead + offset + (TsPacketSize * 2)) & _bufferMask)
-                    : ((readHead + offset + (TsPacketSize * 2)) % bufSize)
-            );
-
-            if (buffer[p0] == TsSyncByte && buffer[p1] == TsSyncByte && buffer[p2] == TsSyncByte)
-            {
-                readHead += offset;
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     /// <inheritdoc />
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
@@ -1671,7 +1015,7 @@ public sealed class CircularBufferReadStream : Stream
         var overflowBytes = Volatile.Read(ref _totalOverflowBytes.Value);
         var overflowRate = totalWritten > 0 ? (double)overflowBytes * 100.0 / (double)totalWritten : 0.0;
 
-        return $"Stream {_streamId} Diagnostics:\n  Buffer Size: {_sourceBuffer.BufferSize / 1048576}MB\n  Total Written: {totalWritten / 1048576}MB\n  Total Read: {totalRead / 1048576}MB\n  Current Gap: {gap / 1024}KB ({gapPct:F1}% of buffer)\n  Buffer Overflows: {Volatile.Read(ref _overflowCount.Value)} events\n  Data Lost: {overflowBytes / 1048576}MB ({overflowRate:F2}% of total)\n  Aligned: {_isAligned}\n  Hardware: AVX2={_avx2Supported}, SSE2={_sse2Supported}, SIMD={Vector.IsHardwareAccelerated}\n  Status: {((double)gap < (double)_sourceBuffer.BufferSize * 0.1 ? "HEALTHY" : ((double)gap > (double)_sourceBuffer.BufferSize * 0.8 ? "LAGGING" : "OK"))}";
+        return $"Stream {_streamId} Diagnostics:\n  Buffer Size: {_sourceBuffer.BufferSize / 1048576}MB\n  Total Written: {totalWritten / 1048576}MB\n  Total Read: {totalRead / 1048576}MB\n  Current Gap: {gap / 1024}KB ({gapPct:F1}% of buffer)\n  Buffer Overflows: {Volatile.Read(ref _overflowCount.Value)} events\n  Data Lost: {overflowBytes / 1048576}MB ({overflowRate:F2}% of total)\n  Hardware: AVX2={_avx2Supported}, SSE2={_sse2Supported}, SIMD={Vector.IsHardwareAccelerated}\n  Status: {((double)gap < (double)_sourceBuffer.BufferSize * 0.1 ? "HEALTHY" : ((double)gap > (double)_sourceBuffer.BufferSize * 0.8 ? "LAGGING" : "OK"))}";
     }
 
     /// <summary>
@@ -1705,92 +1049,6 @@ public sealed class CircularBufferReadStream : Stream
                 _streamId
             );
         }
-    }
-
-    /// <summary>
-    /// Gets structured MPEG-TS indexer metrics for this stream.
-    /// Includes packet loss, PCR jitter, transport errors, and program information.
-    /// </summary>
-    /// <returns>Structured metrics about the MPEG-TS stream.</returns>
-    public TsIndexerMetrics GetTsIndexerMetrics() => _sourceBuffer.TsIndexer.GetMetrics();
-
-    /// <summary>
-    /// Sends MPEG-TS indexer diagnostics to Discord.
-    /// Reports stream health metrics including packet loss, PCR jitter, and transport errors.
-    /// </summary>
-    /// <returns>A task representing the asynchronous operation.</returns>
-    public async Task SendTsIndexerDiagnosticsToDiscordAsync()
-    {
-        if (_discordService == null)
-        {
-            _logger?.PluginLogWarning(
-                "Cannot send TS indexer diagnostics to Discord: Discord service not configured for stream {StreamId}",
-                _streamId
-            );
-            return;
-        }
-
-        try
-        {
-            var metrics = GetTsIndexerMetrics();
-            await _discordService.SendTsIndexerMetricsAsync(_streamId, _channelName, metrics).ConfigureAwait(false);
-            _logger?.PluginLogInformation("MPEG-TS indexer metrics sent to Discord for stream {StreamId}", _streamId);
-        }
-        catch (Exception exception)
-        {
-            _logger?.PluginLogError(
-                exception,
-                "Failed to send TS indexer metrics to Discord for stream {StreamId}",
-                _streamId
-            );
-        }
-    }
-
-    /// <summary>
-    /// Sends MPEG-TS indexer metrics for all active streams to Discord.
-    /// Reports stream health including packet loss, PCR jitter, transport errors, and keyframe stats.
-    /// </summary>
-    /// <param name="discordService">The Discord notification service.</param>
-    /// <param name="logger">Optional logger.</param>
-    /// <returns>The number of streams for which metrics were sent.</returns>
-    public static async Task<int> SendAllTsIndexerMetricsToDiscordAsync(
-        IDiscordNotificationService discordService,
-        ILogger? logger = null
-    )
-    {
-        List<CircularBufferReadStream> activeStreams = [.. _activeStreams.Values];
-        logger?.PluginLogInformation(
-            "Sending MPEG-TS indexer metrics for {Count} active stream(s)",
-            activeStreams.Count
-        );
-        var sentCount = 0;
-
-        foreach (var stream in activeStreams)
-        {
-            try
-            {
-                var metrics = stream.GetTsIndexerMetrics();
-                await discordService
-                    .SendTsIndexerMetricsAsync(stream._streamId, stream._channelName, metrics)
-                    .ConfigureAwait(false);
-                sentCount++;
-            }
-            catch (Exception exception)
-            {
-                logger?.PluginLogError(
-                    exception,
-                    "Failed to send TS indexer metrics for stream {StreamId}",
-                    stream._streamId
-                );
-            }
-        }
-
-        logger?.PluginLogInformation(
-            "Successfully sent MPEG-TS metrics for {Sent}/{Total} stream(s)",
-            sentCount,
-            activeStreams.Count
-        );
-        return sentCount;
     }
 
     /// <summary>
@@ -1876,7 +1134,6 @@ public sealed class CircularBufferReadStream : Stream
                             OverflowCount = overflowCount,
                             OverflowBytes = overflowBytes,
                             Status = status,
-                            IsAligned = stream._isAligned,
                         }
                     );
                 }

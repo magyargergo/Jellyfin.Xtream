@@ -34,6 +34,9 @@ extern "C" {
     #define TSDUCK_API __attribute__((visibility("default")))
 #endif
 
+// Library version
+#define TSDUCK_INTEROP_VERSION "1.0.0"
+
 // Opaque handle types
 typedef struct TsDuckContext* TsDuckContextHandle;
 typedef struct TsDuckAnalyzer* TsDuckAnalyzerHandle;
@@ -86,7 +89,18 @@ typedef struct {
     int32_t metrics_interval_ms;    // Metrics update interval in milliseconds
     int32_t enable_tr101290;        // 1 = enable, 0 = disable (using int32 for ABI stability)
     int32_t sample_size_bytes;      // Max bytes to process per feed call
+    int32_t enable_auto_restamp;    // 1 = enable integrated restamping in feed()
+
+    // Integrated restamping settings (used when enable_auto_restamp=1)
+    int32_t restamp_mode;           // RestampingMode enum (0=disabled, 1=monitor, 2=correct)
+    int32_t smooth_pcr;             // 1 = enable PCR jitter smoothing
+    int32_t fix_discontinuities;    // 1 = repair PTS discontinuities
     int32_t reserved;               // Padding for alignment
+
+    double correction_threshold_ms; // Start correcting at this drift (default: 45ms)
+    double max_correction_rate_ms;  // Max correction per second (default: 10ms)
+    double hysteresis_threshold_ms; // Stop correcting below this (default: 20ms)
+    int64_t stream_bitrate_hint;    // Hint for CBR PCR smoothing (0=auto-detect)
 } TsDuckConfigNative;
 
 // PCR Analysis structure (Phase 2a - blittable)
@@ -238,9 +252,6 @@ typedef struct {
     int32_t reserved;               // Padding
 } RestampingStatisticsNative;
 
-// Opaque handle for restamper
-typedef struct TsDuckRestamper* TsDuckRestamperHandle;
-
 // Callback for correction events
 typedef void (*TsDuckCorrectionCallback)(
     double correction_ms,           // Amount corrected
@@ -269,6 +280,54 @@ TSDUCK_API const char* tsduck_get_version(void);
 /// Check if TSDuck is available on this system.
 /// Returns true if TSDuck libraries are properly installed.
 TSDUCK_API bool tsduck_is_available(void);
+
+// =============================================================================
+// Logging Configuration
+// =============================================================================
+
+/// Log level enumeration
+typedef enum {
+    TSDUCK_LOG_NONE = 0,     // No logging
+    TSDUCK_LOG_ERROR = 1,    // Errors only
+    TSDUCK_LOG_WARNING = 2,  // Warnings and errors
+    TSDUCK_LOG_INFO = 3,     // Info, warnings, and errors
+    TSDUCK_LOG_DEBUG = 4,    // All messages including debug
+    TSDUCK_LOG_TRACE = 5     // Most verbose - includes detailed tracing
+} TsDuckLogLevel;
+
+/// Callback signature for custom log handlers.
+/// @param level Log level (TsDuckLogLevel enum value)
+/// @param component Component name (e.g., "StreamPipeline", "Analyzer")
+/// @param message Formatted log message
+/// @param user_data User-provided context pointer
+typedef void (*TsDuckLogCallback)(
+    int32_t level,
+    const char* component,
+    const char* message,
+    void* user_data
+);
+
+/// Set the global log level.
+/// Messages at this level or below will be logged.
+/// Default: TSDUCK_LOG_WARNING
+/// @param level The log level to set.
+TSDUCK_API void tsduck_set_log_level(int32_t level);
+
+/// Get the current log level.
+/// @return The current log level (TsDuckLogLevel enum value).
+TSDUCK_API int32_t tsduck_get_log_level(void);
+
+/// Set a custom log callback to receive log messages.
+/// Set to NULL to use default stderr output.
+/// @param callback The callback function, or NULL for default.
+/// @param user_data User-provided context passed to callback.
+TSDUCK_API void tsduck_set_log_callback(TsDuckLogCallback callback, void* user_data);
+
+/// Check if a specific log level is enabled.
+/// Useful for avoiding expensive string formatting when logging is disabled.
+/// @param level The log level to check.
+/// @return true if the level is enabled.
+TSDUCK_API bool tsduck_is_log_enabled(int32_t level);
 
 // =============================================================================
 // Context Management
@@ -323,6 +382,19 @@ TSDUCK_API int32_t tsduck_analyzer_feed(
 /// Reset the analyzer state for a new stream.
 /// Clears all accumulated metrics and error counters.
 TSDUCK_API void tsduck_analyzer_reset(TsDuckAnalyzerHandle analyzer);
+
+/// Feed MPEG-TS data with integrated restamping.
+/// This function modifies data IN-PLACE to apply timestamp corrections,
+/// then analyzes the corrected data. Use this when auto-restamp is enabled.
+/// @param analyzer The analyzer handle.
+/// @param data Pointer to MPEG-TS data (will be MODIFIED if restamping enabled).
+/// @param length Number of bytes to process.
+/// @return Number of packets processed, or negative error code.
+TSDUCK_API int32_t tsduck_analyzer_feed_restamp(
+    TsDuckAnalyzerHandle analyzer,
+    uint8_t* data,
+    int32_t length
+);
 
 // =============================================================================
 // Metrics Retrieval
@@ -446,6 +518,51 @@ TSDUCK_API void tsduck_analyzer_set_violation_callback(
 );
 
 // =============================================================================
+// Integrated Restamping (through Analyzer)
+// =============================================================================
+
+/// Configure integrated restamping on an analyzer.
+/// This allows changing restamping settings without recreating the analyzer.
+/// @param analyzer The analyzer handle.
+/// @param mode Restamping mode (RESTAMP_MODE_*).
+/// @param smooth_pcr Enable PCR smoothing (1=yes, 0=no).
+/// @param fix_discontinuities Fix timestamp discontinuities (1=yes, 0=no).
+/// @return true if configuration was applied, false on error.
+TSDUCK_API bool tsduck_analyzer_configure_restamp(
+    TsDuckAnalyzerHandle analyzer,
+    int32_t mode,
+    int32_t smooth_pcr,
+    int32_t fix_discontinuities
+);
+
+/// Notify analyzer's integrated restamper of a provider switch.
+/// Calculates offset needed for timestamp continuity.
+/// @param analyzer The analyzer handle.
+/// @param last_output_pts Last PTS written to output (90kHz).
+/// @param new_input_first_pts First PTS from new provider (90kHz).
+TSDUCK_API void tsduck_analyzer_handle_switch(
+    TsDuckAnalyzerHandle analyzer,
+    int64_t last_output_pts,
+    int64_t new_input_first_pts
+);
+
+/// Get integrated restamping statistics from analyzer.
+/// @param analyzer The analyzer handle.
+/// @param out_stats Pointer to structure to receive statistics.
+/// @return true if statistics were retrieved (restamping enabled), false otherwise.
+TSDUCK_API bool tsduck_analyzer_get_restamp_statistics(
+    TsDuckAnalyzerHandle analyzer,
+    RestampingStatisticsNative* out_stats
+);
+
+/// Check if integrated restamping is enabled on the analyzer.
+/// @param analyzer The analyzer handle.
+/// @return true if restamping is enabled.
+TSDUCK_API bool tsduck_analyzer_is_restamping_enabled(
+    TsDuckAnalyzerHandle analyzer
+);
+
+// =============================================================================
 // A/V Sync Analysis (Phase 3 - Restamping)
 // =============================================================================
 
@@ -479,85 +596,203 @@ TSDUCK_API int32_t tsduck_analyzer_get_pts_sample_count(
 );
 
 // =============================================================================
-// Restamper Lifecycle (Phase 3 - Restamping)
+// PSI Program Information (Phase 3b - Deep TsDuck Integration)
 // =============================================================================
 
-/// Create a restamper attached to an analyzer.
-/// The restamper uses the analyzer's timing data for correction decisions.
-/// @param analyzer The analyzer handle (required for timing reference).
-/// @param config Configuration options. If NULL, defaults are used.
-/// @return Restamper handle, or NULL on failure.
-TSDUCK_API TsDuckRestamperHandle tsduck_restamper_create(
+// Program information from PAT/PMT parsing (blittable)
+typedef struct {
+    int32_t program_number;         // Program number from PAT
+    int32_t pmt_pid;                // PMT PID from PAT
+    int32_t pcr_pid;                // PCR PID from PMT
+    int32_t stream_count;           // Elementary streams in this program
+    int32_t has_video;              // 1=has video ES, 0=no
+    int32_t has_audio;              // 1=has audio ES, 0=no
+    int32_t reserved;               // Padding
+    int32_t reserved2;              // Padding
+} TsDuckProgramInfoNative;
+
+/// Get program information discovered from PAT/PMT parsing.
+/// @param analyzer The analyzer handle.
+/// @param out_programs Array to receive program information.
+/// @param max_programs Maximum number of programs to return (array size).
+/// @return Number of programs returned, or negative error code.
+TSDUCK_API int32_t tsduck_analyzer_get_programs(
     TsDuckAnalyzerHandle analyzer,
-    const RestampingConfigNative* config
-);
-
-/// Destroy a restamper and free its resources.
-/// Safe to call with NULL handle.
-TSDUCK_API void tsduck_restamper_destroy(TsDuckRestamperHandle restamper);
-
-/// Check if the restamper is initialized and ready.
-TSDUCK_API bool tsduck_restamper_is_initialized(TsDuckRestamperHandle restamper);
-
-/// Configure restamping behavior.
-/// Can be called at any time to change settings.
-/// @param restamper The restamper handle.
-/// @param config New configuration.
-/// @return true if configuration was applied, false on error.
-TSDUCK_API bool tsduck_restamper_configure(
-    TsDuckRestamperHandle restamper,
-    const RestampingConfigNative* config
+    TsDuckProgramInfoNative* out_programs,
+    int32_t max_programs
 );
 
 // =============================================================================
-// Restamper Data Processing (Phase 3 - Restamping)
+// HTTP Streamer (native curl-based streaming with failover)
 // =============================================================================
 
-/// Process MPEG-TS data and apply timestamp corrections in-place.
-/// This is the main hot-path function for restamping.
-/// @param restamper The restamper handle.
-/// @param data MPEG-TS data to process (will be modified in-place).
-/// @param length Number of bytes to process.
-/// @return Number of timestamps modified, or negative error code.
-TSDUCK_API int32_t tsduck_restamper_process(
-    TsDuckRestamperHandle restamper,
-    uint8_t* data,
-    int32_t length
-);
+// Opaque handle
+typedef struct TsDuckStreamer* TsDuckStreamerHandle;
 
-/// Notify restamper of a provider switch.
-/// Calculates offset needed for timestamp continuity.
-/// @param restamper The restamper handle.
-/// @param last_output_pts Last PTS written to output (90kHz).
-/// @param new_input_first_pts First PTS from new provider (90kHz).
-TSDUCK_API void tsduck_restamper_handle_switch(
-    TsDuckRestamperHandle restamper,
-    int64_t last_output_pts,
-    int64_t new_input_first_pts
-);
+// Streamer state enumeration
+typedef enum {
+    STREAMER_STATE_IDLE = 0,
+    STREAMER_STATE_CONNECTING = 1,
+    STREAMER_STATE_STREAMING = 2,
+    STREAMER_STATE_RECONNECTING = 3,
+    STREAMER_STATE_SWITCHING = 4,
+    STREAMER_STATE_STALLED = 5,
+    STREAMER_STATE_STOPPED = 6,
+    STREAMER_STATE_FAILED = 7
+} TsDuckStreamerState;
 
-/// Get restamping statistics.
-/// @param restamper The restamper handle.
-/// @param out_stats Pointer to structure to receive statistics.
-/// @return true if statistics were retrieved, false on error.
-TSDUCK_API bool tsduck_restamper_get_statistics(
-    TsDuckRestamperHandle restamper,
-    RestampingStatisticsNative* out_stats
-);
+// Streamer event enumeration
+typedef enum {
+    STREAMER_EVENT_CONNECTED = 0,
+    STREAMER_EVENT_DISCONNECTED = 1,
+    STREAMER_EVENT_RECONNECTING = 2,
+    STREAMER_EVENT_SWITCHED = 3,
+    STREAMER_EVENT_STALLED = 4,
+    STREAMER_EVENT_DATA_RECEIVED = 5,
+    STREAMER_EVENT_ERROR = 6,
+    STREAMER_EVENT_STOPPED = 7,
+    STREAMER_EVENT_QUALITY_DEGRADED = 8  // TR 101 290 error rate exceeded threshold
+} TsDuckStreamerEvent;
 
-/// Reset restamper state for a new stream.
-/// Clears all accumulated offsets and statistics.
-TSDUCK_API void tsduck_restamper_reset(TsDuckRestamperHandle restamper);
+// Streamer configuration (blittable)
+typedef struct {
+    int32_t connect_timeout_ms;         // TCP+TLS handshake timeout (default: 5000)
+    int32_t response_timeout_ms;        // Time to first byte (default: 10000)
+    int32_t stall_timeout_ms;           // No-data threshold (default: 20000)
+    int32_t max_retries;                // Total attempts before Failed (default: 10)
 
-/// Set callback for correction events.
-/// Useful for logging/debugging correction behavior.
-/// @param restamper The restamper handle.
-/// @param callback Callback function, or NULL to disable.
-/// @param user_data User data passed to callback.
-TSDUCK_API void tsduck_restamper_set_correction_callback(
-    TsDuckRestamperHandle restamper,
-    TsDuckCorrectionCallback callback,
+    int32_t initial_backoff_ms;         // First retry delay (default: 500)
+    int32_t max_backoff_ms;             // Backoff cap (default: 30000)
+    double backoff_multiplier;          // Exponential factor (default: 2.0)
+    int32_t backoff_jitter_ms;          // Random jitter range (default: 200)
+
+    int32_t output_fd;                  // Pipe fd for FFmpeg (-1 = callback mode)
+    int32_t alignment_buffer_packets;   // TS packets to buffer (default: 32)
+
+    int32_t enable_restamp;             // Feed through restamper (default: 1)
+    int32_t restamp_mode;               // RESTAMP_MODE_* (default: CORRECT)
+
+    int32_t low_speed_limit_bytes;      // Min bytes/sec for stall (default: 1000)
+    int32_t low_speed_time_sec;         // Duration below limit (default: 10)
+
+    int32_t stalls_before_switch;       // Consecutive stalls before URL rotation (default: 2)
+
+    // Quality-based switching (TR 101 290 error rate thresholds)
+    int32_t enable_quality_switch;      // 1 = enabled, 0 = disabled (default: 1)
+    int32_t quality_check_interval_ms;  // How often to evaluate quality (default: 1000)
+    int32_t quality_window_seconds;     // Sliding window for rate calc (default: 10)
+    int32_t max_sync_errors_per_window; // sync_loss threshold (default: 1)
+    int32_t max_continuity_errors_per_sec; // CC errors/sec (default: 20)
+    int32_t max_transport_errors_per_sec;  // TEI errors/sec (default: 10)
+    int32_t max_pcr_errors_per_sec;     // PCR errors/sec (default: 5)
+    int32_t reserved;                   // Padding
+} TsDuckStreamerConfigNative;
+
+// Streamer status snapshot (blittable)
+typedef struct {
+    int32_t state;                      // TsDuckStreamerState enum value
+    int32_t current_url_index;          // Active URL (0-based)
+    int32_t url_count;                  // Total URLs configured
+    int32_t retry_count;                // Current retry attempt
+    int64_t bytes_received;             // Total bytes from network
+    int64_t packets_output;             // Total TS packets written to output
+    int64_t switches_completed;         // Number of URL switches
+    int64_t reconnections;              // Number of reconnection attempts
+    int64_t last_data_time_ticks;       // Last data received (.NET ticks)
+    int64_t session_start_ticks;        // Session start (.NET ticks)
+    int32_t last_http_status;           // Last HTTP response code
+    int32_t last_curl_error;            // Last CURLcode error
+    int64_t quality_switches;           // Switches triggered by quality degradation
+} TsDuckStreamerStatusNative;
+
+// Event callback (called from streaming thread)
+typedef void (*TsDuckStreamerEventCallback)(
+    int32_t event,          // TsDuckStreamerEvent enum value
+    int32_t detail,         // Event-specific detail (HTTP status, curl code, URL index)
     void* user_data
+);
+
+// Data output callback (called from streaming thread with restamped TS data)
+typedef void (*TsDuckStreamerOutputCallback)(
+    const uint8_t* data,
+    int32_t length,         // Always multiple of 188
+    void* user_data
+);
+
+/// Create a new streamer instance.
+/// @param config Streamer configuration. If NULL, defaults are used.
+/// @param analyzer_config Analyzer configuration. If NULL, defaults are used.
+/// @return Streamer handle, or NULL on failure.
+TSDUCK_API TsDuckStreamerHandle tsduck_streamer_create(
+    const TsDuckStreamerConfigNative* config,
+    const TsDuckConfigNative* analyzer_config
+);
+
+/// Destroy a streamer and free all resources.
+/// Stops streaming if active. Safe to call with NULL.
+TSDUCK_API void tsduck_streamer_destroy(TsDuckStreamerHandle streamer);
+
+/// Add a URL to the streamer's URL list.
+/// @param streamer The streamer handle.
+/// @param url Null-terminated URL string.
+/// @return TSDUCK_OK or error code.
+TSDUCK_API int32_t tsduck_streamer_add_url(
+    TsDuckStreamerHandle streamer,
+    const char* url
+);
+
+/// Clear all URLs from the streamer.
+TSDUCK_API void tsduck_streamer_clear_urls(TsDuckStreamerHandle streamer);
+
+/// Set the output file descriptor (pipe for FFmpeg).
+/// Must be called before start(). Set to -1 for callback mode.
+TSDUCK_API void tsduck_streamer_set_output_fd(
+    TsDuckStreamerHandle streamer,
+    int32_t fd
+);
+
+/// Set the output data callback.
+/// Called from the streaming thread with restamped TS data.
+TSDUCK_API void tsduck_streamer_set_output_callback(
+    TsDuckStreamerHandle streamer,
+    TsDuckStreamerOutputCallback callback,
+    void* user_data
+);
+
+/// Set the event callback.
+/// Called from the streaming thread on state changes.
+TSDUCK_API void tsduck_streamer_set_event_callback(
+    TsDuckStreamerHandle streamer,
+    TsDuckStreamerEventCallback callback,
+    void* user_data
+);
+
+/// Start streaming. Spawns a worker thread.
+/// At least one URL must be added before calling this.
+/// @return true if started successfully.
+TSDUCK_API bool tsduck_streamer_start(TsDuckStreamerHandle streamer);
+
+/// Stop streaming. Blocks until worker thread exits.
+TSDUCK_API void tsduck_streamer_stop(TsDuckStreamerHandle streamer);
+
+/// Request a switch to the next URL in the rotation.
+/// The switch happens asynchronously on the next loop iteration.
+TSDUCK_API void tsduck_streamer_request_switch(TsDuckStreamerHandle streamer);
+
+/// Get the current streamer status snapshot (lock-free).
+/// @param streamer The streamer handle.
+/// @param out_status Pointer to receive status.
+/// @return true if status retrieved, false on error.
+TSDUCK_API bool tsduck_streamer_get_status(
+    TsDuckStreamerHandle streamer,
+    TsDuckStreamerStatusNative* out_status
+);
+
+/// Get the internal analyzer handle (for querying metrics).
+/// The returned handle is owned by the streamer - do NOT destroy it.
+/// @return Analyzer handle, or NULL if streamer is invalid.
+TSDUCK_API TsDuckAnalyzerHandle tsduck_streamer_get_analyzer(
+    TsDuckStreamerHandle streamer
 );
 
 #ifdef __cplusplus

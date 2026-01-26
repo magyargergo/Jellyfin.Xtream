@@ -1,0 +1,165 @@
+# clang-format configuration for TsDuck Interop Library
+# Based on LLVM style with project-specific adjustments
+# Run: clang-format -i src/**/*.cpp src/**/*.hpp include/*.h
+
+Language: Cpp
+Standard: c++20
+BasedOnStyle: LLVM
+
+# Indentation
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+IndentCaseLabels: true
+IndentCaseBlocks: false
+IndentPPDirectives: BeforeHash
+IndentExternBlock: Indent
+NamespaceIndentation: None
+
+# Line length
+ColumnLimit: 120
+
+# Braces
+BreakBeforeBraces: Attach
+Cpp11BracedListStyle: true
+InsertBraces: false
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignArrayOfStructures: Left
+AlignConsecutiveAssignments: None
+AlignConsecutiveBitFields: Consecutive
+AlignConsecutiveDeclarations: None
+AlignConsecutiveMacros: Consecutive
+AlignEscapedNewlines: Left
+AlignOperands: Align
+AlignTrailingComments: true
+
+# Breaks
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Inline
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+AlwaysBreakTemplateDeclarations: Yes
+BreakAfterAttributes: Never
+BreakBeforeBinaryOperators: None
+BreakBeforeConceptDeclarations: Always
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeColon
+BreakInheritanceList: BeforeColon
+BreakStringLiterals: true
+
+# Spaces
+BitFieldColonSpacing: Both
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: true
+SpaceAroundPointerQualifiers: Default
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCaseColon: false
+SpaceBeforeCpp11BracedList: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeSquareBrackets: false
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 2
+SpacesInAngles: Never
+SpacesInCStyleCastParentheses: false
+SpacesInConditionalStatement: false
+SpacesInContainerLiterals: false
+SpacesInLineCommentPrefix:
+  Minimum: 1
+  Maximum: -1
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# Pointers and references
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# Includes
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Project headers (quoted includes)
+  - Regex: '^".*\.hpp"$'
+    Priority: 1
+    SortPriority: 1
+  - Regex: '^".*\.h"$'
+    Priority: 2
+    SortPriority: 2
+  # TsDuck headers
+  - Regex: '^<tsduck.*>'
+    Priority: 3
+    SortPriority: 3
+  # CURL headers
+  - Regex: '^<curl/.*>'
+    Priority: 4
+    SortPriority: 4
+  # C++ standard library
+  - Regex: '^<[a-z_]+>$'
+    Priority: 5
+    SortPriority: 5
+  # C standard library
+  - Regex: '^<c[a-z]+>$'
+    Priority: 6
+    SortPriority: 6
+  # System headers
+  - Regex: '^<.*>'
+    Priority: 7
+    SortPriority: 7
+SortIncludes: CaseSensitive
+SortUsingDeclarations: true
+
+# Other
+AccessModifierOffset: -4
+BinPackArguments: true
+BinPackParameters: true
+CompactNamespaces: false
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+EmptyLineAfterAccessModifier: Never
+EmptyLineBeforeAccessModifier: LogicalBlock
+FixNamespaceComments: true
+InsertNewlineAtEOF: true
+InsertTrailingCommas: None
+KeepEmptyLinesAtTheStartOfBlocks: false
+LambdaBodyIndentation: Signature
+MaxEmptyLinesToKeep: 1
+PackConstructorInitializers: BinPack
+PenaltyBreakAssignment: 2
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakOpenParenthesis: 0
+PenaltyBreakString: 1000
+PenaltyBreakTemplateDeclaration: 10
+PenaltyExcessCharacter: 1000000
+PenaltyIndentedWhitespace: 0
+PenaltyReturnTypeOnItsOwnLine: 60
+QualifierAlignment: Leave
+ReflowComments: true
+RemoveSemicolon: false
+RequiresClausePosition: OwnLine
+RequiresExpressionIndentation: OuterScope
+SeparateDefinitionBlocks: Leave
+ShortNamespaceLines: 0
+
+# Macros
+AttributeMacros: ['TSDUCK_API']
+MacroBlockBegin: ''
+MacroBlockEnd: ''
+StatementAttributeLikeMacros: []
+StatementMacros: []
+TypenameMacros: []
+WhitespaceSensitiveMacros: []

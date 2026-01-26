@@ -12,8 +12,7 @@
 #include "../concurrency/ring_buffer.hpp"
 #include "tsduck_interop.h"
 
-namespace tsduck_interop {
-namespace analysis {
+namespace tsduck_interop::analysis {
 
 class alignas(CACHE_LINE_SIZE) IatAnalyzer {
 public:
@@ -59,14 +58,10 @@ public:
             data.iat_min_us = min_val;
             data.iat_max_us = max_val;
 
-            data.iat_jitter_us = std::max(
-                max_val - data.iat_avg_us,
-                data.iat_avg_us - min_val
-            );
+            data.iat_jitter_us = std::max(max_val - data.iat_avg_us, data.iat_avg_us - min_val);
 
             // Standard deviation (approximate from recent window)
-            double variance = (sum_sq / static_cast<double>(count)) -
-                              (data.iat_avg_us * data.iat_avg_us);
+            double variance = (sum_sq / static_cast<double>(count)) - (data.iat_avg_us * data.iat_avg_us);
             data.iat_stddev_us = variance > 0 ? std::sqrt(variance) : 0.0;
 
             // Detect late/early packets
@@ -87,7 +82,8 @@ public:
     }
 
     bool get(IatAnalysisNative* out) const noexcept {
-        if (!out) return false;
+        if (!out)
+            return false;
 
         uint64_t seq;
         do {
@@ -110,7 +106,6 @@ public:
     }
 };
 
-}  // namespace analysis
-}  // namespace tsduck_interop
+}  // namespace tsduck_interop::analysis
 
 #endif  // TSDUCK_INTEROP_ANALYSIS_IAT_ANALYZER_HPP

@@ -281,21 +281,27 @@ public sealed class CircularBufferReadStreamTests : IDisposable
 
     /// <summary>
     /// Verifies read returns available data when less than requested.
-    /// Note: Reader starts at totalWritten/2, so write extra data.
+    /// Reader starts at Max(0, totalWritten - bufferSize/4), so with a small buffer
+    /// and enough data written, the reader only sees the tail portion.
     /// </summary>
     [Fact]
     public void Read_LessThanRequested_ReturnsAvailable()
     {
-        // Write 4 packets, reader sees 2 (starts at totalWritten/2)
-        var tsData = CreateTsDataChunk(TsPacketSize * 4);
-        _writeStream.Write(tsData, 0, tsData.Length);
+        // Use a small buffer: 16 packets. bufferSize/4 = 4 packets.
+        const int SmallBufferSize = TsPacketSize * 16;
+        using var smallWriteStream = new CircularBufferWriteStream(SmallBufferSize);
 
-        using var readStream = new CircularBufferReadStream(_writeStream);
-        var buffer = new byte[TsPacketSize * 4]; // Request more than available
+        // Write 12 packets. Reader starts at Max(0, 12*188 - 4*188) = 8*188 = 1504.
+        // Available to reader: 12*188 - 1504 = 752 bytes (4 packets worth).
+        var tsData = CreateTsDataChunk(TsPacketSize * 12);
+        smallWriteStream.Write(tsData, 0, tsData.Length);
+
+        using var readStream = new CircularBufferReadStream(smallWriteStream);
+        var buffer = new byte[TsPacketSize * 8]; // Request 8 packets
 
         var bytesRead = readStream.Read(buffer, 0, buffer.Length);
 
-        // Should return less than requested (only what's available after reader start pos)
+        // Should return less than requested (only tail portion is available)
         Assert.True(bytesRead > 0 && bytesRead < buffer.Length);
     }
 
@@ -671,20 +677,6 @@ public sealed class CircularBufferReadStreamTests : IDisposable
         Assert.Contains("diag-test", diagnostics);
         Assert.Contains("Buffer Size", diagnostics);
         Assert.Contains("Total Read", diagnostics);
-    }
-
-    /// <summary>
-    /// Verifies GetTsIndexerMetrics returns valid metrics.
-    /// </summary>
-    [Fact]
-    public void GetTsIndexerMetrics_ReturnsValidMetrics()
-    {
-        using var readStream = new CircularBufferReadStream(_writeStream);
-
-        var metrics = readStream.GetTsIndexerMetrics();
-
-        Assert.True(metrics.TotalPacketsParsed >= 0);
-        Assert.True(metrics.ProgramCount >= 0);
     }
 
     #endregion

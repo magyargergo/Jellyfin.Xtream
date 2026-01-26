@@ -14,11 +14,9 @@
 #include "../core/constants.hpp"
 #include "../core/types.hpp"
 #include "../concurrency/seqlock.hpp"
-#include "../mpegts/packet_utils.hpp"
 #include "tsduck_interop.h"
 
-namespace tsduck_interop {
-namespace analysis {
+namespace tsduck_interop::analysis {
 
 class alignas(CACHE_LINE_SIZE) AvSyncTracker {
 public:
@@ -80,17 +78,16 @@ public:
     int64_t start_time_ns{0};
 
     AvSyncTracker() {
-        start_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()
-        ).count();
+        start_time_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
     }
 
-    void recordPtsSample(int32_t pid, int32_t stream_type, int64_t pts, int64_t dts,
-                         int64_t packet_idx, int64_t byte_off, bool is_video,
-                         bool is_audio, bool is_keyframe) noexcept {
-        auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()
-        ).count();
+    void record_pts_sample(int32_t pid, int32_t stream_type, int64_t pts, int64_t dts, int64_t packet_idx,
+                         int64_t byte_off, bool is_video, bool is_audio, bool is_keyframe) noexcept {
+        auto now_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
 
         int64_t pcr_ref = last_pcr_base.load(std::memory_order_acquire);
 
@@ -98,7 +95,7 @@ public:
         if (is_video) {
             int64_t prev = prev_video_pts.load(std::memory_order_relaxed);
             if (prev > 0) {
-                int64_t delta = mpegts::ptsDiff(pts, prev);
+                int64_t delta = pts_diff(pts, prev);
                 if (delta > PTS_DISCONTINUITY_THRESHOLD || delta < -PTS_BACKWARD_THRESHOLD) {
                     video_discontinuities.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -107,14 +104,14 @@ public:
             last_video_pts.store(pts, std::memory_order_release);
             video_pts_count.fetch_add(1, std::memory_order_relaxed);
 
-            storeRecentVideo(pts, dts, now_ns, packet_idx);
-            tryMatchAvPair(pts, dts, is_keyframe, now_ns, true);
+            store_recent_video(pts, dts, now_ns, packet_idx);
+            try_match_av_pair(pts, dts, is_keyframe, now_ns, true);
         }
 
         if (is_audio) {
             int64_t prev = prev_audio_pts.load(std::memory_order_relaxed);
             if (prev > 0) {
-                int64_t delta = mpegts::ptsDiff(pts, prev);
+                int64_t delta = pts_diff(pts, prev);
                 if (delta > PTS_DISCONTINUITY_THRESHOLD || delta < -PTS_BACKWARD_THRESHOLD) {
                     audio_discontinuities.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -123,8 +120,8 @@ public:
             last_audio_pts.store(pts, std::memory_order_release);
             audio_pts_count.fetch_add(1, std::memory_order_relaxed);
 
-            storeRecentAudio(pts, dts, now_ns, packet_idx);
-            tryMatchAvPair(pts, dts, false, now_ns, false);
+            store_recent_audio(pts, dts, now_ns, packet_idx);
+            try_match_av_pair(pts, dts, false, now_ns, false);
         }
 
         // Store sample in ring buffer
@@ -150,10 +147,10 @@ public:
         }
         samples_seqlock.end_write(seq);
 
-        updateDriftFromMatchedPairs(now_ns);
+        update_drift_from_matched_pairs(now_ns);
     }
 
-    void updatePcrReference(int64_t pcr_base) noexcept {
+    void update_pcr_reference(int64_t pcr_base) noexcept {
         last_pcr_base.store(pcr_base, std::memory_order_release);
 
         auto seq = analysis_seqlock.begin_write();
@@ -161,8 +158,9 @@ public:
         analysis_seqlock.end_write(seq);
     }
 
-    bool getAnalysis(AvSyncAnalysisNative* out) const noexcept {
-        if (!out) return false;
+    bool get_analysis(AvSyncAnalysisNative* out) const noexcept {
+        if (!out)
+            return false;
 
         uint64_t seq;
         do {
@@ -173,8 +171,9 @@ public:
         return out->video_pts_count > 0 || out->audio_pts_count > 0;
     }
 
-    int32_t getSamples(PtsDtsSampleNative* out, int32_t max_samples) const noexcept {
-        if (!out || max_samples <= 0) return 0;
+    int32_t get_samples(PtsDtsSampleNative* out, int32_t max_samples) const noexcept {
+        if (!out || max_samples <= 0)
+            return 0;
 
         uint64_t seq;
         int32_t count;
@@ -207,7 +206,7 @@ public:
         return count;
     }
 
-    int32_t getSampleCount() const noexcept {
+    int32_t get_sample_count() const noexcept {
         return static_cast<int32_t>(sample_count.load(std::memory_order_acquire));
     }
 
@@ -238,16 +237,28 @@ public:
         estimated_bitrate_bps.store(0, std::memory_order_release);
 
         auto seq = analysis_seqlock.begin_write();
-        std::memset(&analysis, 0, sizeof(analysis));
+        // Use aggregate initialization instead of memset (portability: memset on floats)
+        analysis = AvSyncAnalysisNative{};
         analysis_seqlock.end_write(seq);
 
-        start_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()
-        ).count();
+        start_time_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
     }
 
 private:
-    void storeRecentVideo(int64_t pts, int64_t dts, int64_t now_ns, int64_t packet_idx) noexcept {
+    /// 33-bit PTS/DTS wraparound-aware subtraction: (a - b) with wrap handling.
+    static int64_t pts_diff(int64_t pts_a, int64_t pts_b) noexcept {
+        int64_t diff = pts_a - pts_b;
+        if (diff > PTS_33BIT_MAX / 2) {
+            diff -= PTS_33BIT_MAX + 1;
+        } else if (diff < -static_cast<int64_t>(PTS_33BIT_MAX) / 2) {
+            diff += PTS_33BIT_MAX + 1;
+        }
+        return diff;
+    }
+
+    void store_recent_video(int64_t pts, int64_t dts, int64_t now_ns, int64_t packet_idx) noexcept {
         auto v_seq = recent_video_seqlock.begin_write();
         size_t v_idx = recent_video_idx.load(std::memory_order_relaxed);
         auto& v_sample = recent_video[v_idx & 7];
@@ -263,7 +274,7 @@ private:
         recent_video_seqlock.end_write(v_seq);
     }
 
-    void storeRecentAudio(int64_t pts, int64_t dts, int64_t now_ns, int64_t packet_idx) noexcept {
+    void store_recent_audio(int64_t pts, int64_t dts, int64_t now_ns, int64_t packet_idx) noexcept {
         auto a_seq = recent_audio_seqlock.begin_write();
         size_t a_idx = recent_audio_idx.load(std::memory_order_relaxed);
         auto& a_sample = recent_audio[a_idx & 7];
@@ -279,22 +290,22 @@ private:
         recent_audio_seqlock.end_write(a_seq);
     }
 
-    void tryMatchAvPair(int64_t current_pts, int64_t current_dts,
-                        bool is_keyframe, int64_t now_ns, bool is_video_sample) noexcept {
+    void try_match_av_pair(int64_t current_pts, int64_t current_dts, bool is_keyframe, int64_t now_ns,
+                        bool is_video_sample) noexcept {
         if (is_video_sample) {
-            matchWithAudio(current_pts, current_dts, is_keyframe, now_ns);
+            match_with_audio(current_pts, current_dts, is_keyframe, now_ns);
         } else {
-            matchWithVideo(current_pts, current_dts, now_ns);
+            match_with_video(current_pts, current_dts, now_ns);
         }
     }
 
-    void matchWithAudio(int64_t video_pts, int64_t video_dts,
-                        bool is_keyframe, int64_t now_ns) noexcept {
+    void match_with_audio(int64_t video_pts, int64_t video_dts, bool is_keyframe, int64_t now_ns) noexcept {
         uint64_t a_seq;
         do {
             a_seq = recent_audio_seqlock.begin_read();
             size_t a_count = recent_audio_count.load(std::memory_order_acquire);
-            if (a_count == 0) break;
+            if (a_count == 0)
+                break;
 
             size_t a_write = recent_audio_idx.load(std::memory_order_acquire);
             int64_t best_audio_pts = -1;
@@ -302,7 +313,7 @@ private:
 
             for (size_t i = 0; i < std::min(a_count, size_t{8}); i++) {
                 const auto& a = recent_audio[(a_write - 1 - i) & 7];
-                int64_t diff = std::abs(mpegts::ptsDiff(video_pts, a.pts_90khz));
+                int64_t diff = std::abs(pts_diff(video_pts, a.pts_90khz));
                 if (diff < best_diff) {
                     best_diff = diff;
                     best_audio_pts = a.pts_90khz;
@@ -310,23 +321,23 @@ private:
             }
 
             if (best_audio_pts >= 0 && best_diff <= PTS_MATCH_TOLERANCE_90KHZ) {
-                int64_t drift_90khz = mpegts::ptsDiff(best_audio_pts, video_pts);
+                int64_t drift_90khz = pts_diff(best_audio_pts, video_pts);
                 double drift_ms = static_cast<double>(drift_90khz) / 90.0;
 
                 if (std::abs(drift_ms) <= DRIFT_OUTLIER_THRESHOLD_MS) {
-                    recordMatchedPair(video_pts, video_dts, best_audio_pts,
-                                      drift_ms, now_ns, is_keyframe);
+                    record_matched_pair(video_pts, video_dts, best_audio_pts, drift_ms, now_ns, is_keyframe);
                 }
             }
         } while (!recent_audio_seqlock.read_consistent(a_seq));
     }
 
-    void matchWithVideo(int64_t audio_pts, int64_t audio_dts, int64_t now_ns) noexcept {
+    void match_with_video(int64_t audio_pts, int64_t audio_dts, int64_t now_ns) noexcept {
         uint64_t v_seq;
         do {
             v_seq = recent_video_seqlock.begin_read();
             size_t v_count = recent_video_count.load(std::memory_order_acquire);
-            if (v_count == 0) break;
+            if (v_count == 0)
+                break;
 
             size_t v_write = recent_video_idx.load(std::memory_order_acquire);
             int64_t best_video_pts = -1;
@@ -335,7 +346,7 @@ private:
 
             for (size_t i = 0; i < std::min(v_count, size_t{8}); i++) {
                 const auto& v = recent_video[(v_write - 1 - i) & 7];
-                int64_t diff = std::abs(mpegts::ptsDiff(audio_pts, v.pts_90khz));
+                int64_t diff = std::abs(pts_diff(audio_pts, v.pts_90khz));
                 if (diff < best_diff) {
                     best_diff = diff;
                     best_video_pts = v.pts_90khz;
@@ -344,12 +355,11 @@ private:
             }
 
             if (best_video_pts >= 0 && best_diff <= PTS_MATCH_TOLERANCE_90KHZ) {
-                int64_t drift_90khz = mpegts::ptsDiff(audio_pts, best_video_pts);
+                int64_t drift_90khz = pts_diff(audio_pts, best_video_pts);
                 double drift_ms = static_cast<double>(drift_90khz) / 90.0;
 
                 if (std::abs(drift_ms) <= DRIFT_OUTLIER_THRESHOLD_MS) {
-                    recordMatchedPair(best_video_pts, best_video_dts, audio_pts,
-                                      drift_ms, now_ns, false);
+                    record_matched_pair(best_video_pts, best_video_dts, audio_pts, drift_ms, now_ns, false);
                 }
             }
         } while (!recent_video_seqlock.read_consistent(v_seq));
@@ -357,8 +367,8 @@ private:
         (void)audio_dts;  // Unused for audio matching
     }
 
-    void recordMatchedPair(int64_t video_pts, int64_t video_dts, int64_t audio_pts,
-                           double drift_ms, int64_t now_ns, bool is_keyframe) noexcept {
+    void record_matched_pair(int64_t video_pts, int64_t video_dts, int64_t audio_pts, double drift_ms, int64_t now_ns,
+                           bool is_keyframe) noexcept {
         auto seq = matched_seqlock.begin_write();
 
         size_t idx = matched_write_idx.load(std::memory_order_relaxed);
@@ -388,11 +398,11 @@ private:
         matched_seqlock.end_write(seq);
     }
 
-    void updateDriftFromMatchedPairs(int64_t now_ns) noexcept {
+    void update_drift_from_matched_pairs(int64_t now_ns) noexcept {
         size_t m_count = matched_count.load(std::memory_order_acquire);
 
         if (m_count < 3) {
-            updateDriftSimple(now_ns);
+            update_drift_simple(now_ns);
             return;
         }
 
@@ -404,7 +414,8 @@ private:
         do {
             m_seq = matched_seqlock.begin_read();
             size_t count = matched_count.load(std::memory_order_acquire);
-            if (count == 0) break;
+            if (count == 0)
+                break;
 
             avg_drift_ms = matched_drift_sum / static_cast<double>(count);
 
@@ -426,19 +437,20 @@ private:
                     sum_xx += x * x;
                 }
 
-                double denom = n * sum_xx - sum_x * sum_x;
+                const auto n_d = static_cast<double>(n);
+                double denom = n_d * sum_xx - sum_x * sum_x;
                 if (std::abs(denom) > 1e-9) {
-                    drift_rate = (n * sum_xy - sum_x * sum_y) / denom;
+                    drift_rate = (n_d * sum_xy - sum_x * sum_y) / denom;
                 }
             }
         } while (!matched_seqlock.read_consistent(m_seq));
 
         double elapsed_sec = static_cast<double>(now_ns - start_time_ns) / 1e9;
-        recordDriftSample(current_drift_ms, elapsed_sec);
-        updateAnalysisFromDrift(current_drift_ms, avg_drift_ms, drift_rate, elapsed_sec);
+        record_drift_sample(current_drift_ms, elapsed_sec);
+        update_analysis_from_drift(current_drift_ms, avg_drift_ms, drift_rate, elapsed_sec);
     }
 
-    void updateDriftSimple(int64_t now_ns) noexcept {
+    void update_drift_simple(int64_t now_ns) noexcept {
         int64_t video_pts = last_video_pts.load(std::memory_order_acquire);
         int64_t audio_pts = last_audio_pts.load(std::memory_order_acquire);
 
@@ -446,19 +458,19 @@ private:
             return;
         }
 
-        int64_t pts_diff = mpegts::ptsDiff(audio_pts, video_pts);
-        double drift_ms = static_cast<double>(pts_diff) / 90.0;
+        int64_t pts_delta = pts_diff(audio_pts, video_pts);
+        double drift_ms = static_cast<double>(pts_delta) / 90.0;
 
         if (std::abs(drift_ms) > DRIFT_OUTLIER_THRESHOLD_MS) {
             return;
         }
 
         double elapsed_sec = static_cast<double>(now_ns - start_time_ns) / 1e9;
-        recordDriftSample(drift_ms, elapsed_sec);
-        updateAnalysisFromDrift(drift_ms, drift_ms, 0.0, elapsed_sec);
+        record_drift_sample(drift_ms, elapsed_sec);
+        update_analysis_from_drift(drift_ms, drift_ms, 0.0, elapsed_sec);
     }
 
-    void recordDriftSample(double drift_ms, double elapsed_sec) noexcept {
+    void record_drift_sample(double drift_ms, double elapsed_sec) noexcept {
         auto seq = drift_seqlock.begin_write();
 
         size_t idx = drift_write_idx.load(std::memory_order_relaxed);
@@ -482,8 +494,8 @@ private:
         drift_seqlock.end_write(seq);
     }
 
-    void updateAnalysisFromDrift(double current_drift_ms, double avg_drift_ms,
-                                  double drift_rate, double elapsed_sec) noexcept {
+    void update_analysis_from_drift(double current_drift_ms, double avg_drift_ms, double drift_rate,
+                                 double elapsed_sec) noexcept {
         (void)elapsed_sec;  // Not currently used
 
         auto seq = analysis_seqlock.begin_write();
@@ -511,10 +523,10 @@ private:
             int64_t a_pts = analysis.last_audio_pts;
 
             if (v_pts >= 0) {
-                analysis.pcr_video_offset_ms = static_cast<double>(mpegts::ptsDiff(v_pts, pcr)) / 90.0;
+                analysis.pcr_video_offset_ms = static_cast<double>(pts_diff(v_pts, pcr)) / 90.0;
             }
             if (a_pts >= 0) {
-                analysis.pcr_audio_offset_ms = static_cast<double>(mpegts::ptsDiff(a_pts, pcr)) / 90.0;
+                analysis.pcr_audio_offset_ms = static_cast<double>(pts_diff(a_pts, pcr)) / 90.0;
             }
         }
 
@@ -535,7 +547,6 @@ private:
     }
 };
 
-}  // namespace analysis
-}  // namespace tsduck_interop
+}  // namespace tsduck_interop::analysis
 
 #endif  // TSDUCK_INTEROP_ANALYSIS_AV_SYNC_TRACKER_HPP

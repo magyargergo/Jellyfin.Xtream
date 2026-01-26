@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <gtest/gtest.h>
-#include <tsduck.h>
-#include <cstring>
 #include <vector>
 #include "context/context.hpp"
 #include "context/analyzer.hpp"
 #include "restamping/restamper.hpp"
-#include "mpegts/packet_utils.hpp"
 #include "tsduck_interop.h"
 
 using namespace tsduck_interop;
@@ -21,7 +18,7 @@ protected:
 
     void SetUp() override {
         ctx = new context::TsDuckContext();
-        ASSERT_TRUE(ctx->isInitialized());
+        ASSERT_TRUE(ctx->is_initialized());
 
         TsDuckConfigNative config{};
         config.metrics_interval_ms = 100;
@@ -48,56 +45,43 @@ protected:
 
     // Create a packet with PCR
     static void createPcrPacket(uint8_t* packet, uint16_t pid, uint8_t cc, int64_t pcr_base) {
-        std::memset(packet, 0xFF, TS_PACKET_SIZE);
-        packet[0] = TS_SYNC_BYTE;
-        packet[1] = (pid >> 8) & 0x1F;
-        packet[2] = pid & 0xFF;
-        packet[3] = 0x30 | (cc & 0x0F);  // Adaptation + payload
-        packet[4] = 7;  // Adaptation field length
-        packet[5] = 0x10;  // PCR flag
-
-        // Write PCR (base only, extension = 0)
-        packet[6] = (pcr_base >> 25) & 0xFF;
-        packet[7] = (pcr_base >> 17) & 0xFF;
-        packet[8] = (pcr_base >> 9) & 0xFF;
-        packet[9] = (pcr_base >> 1) & 0xFF;
-        packet[10] = ((pcr_base & 0x01) << 7) | 0x7E;
-        packet[11] = 0x00;
+        ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(packet);
+        pkt = ts::NullPacket;
+        pkt.setPID(ts::PID(pid));
+        pkt.b[3] = 0x30 | (cc & 0x0F);  // Adaptation + payload
+        pkt.b[4] = 7;   // AF length (flags + 6 PCR bytes)
+        pkt.b[5] = 0x10;  // PCR flag
+        // Encode PCR using TsDuck (convert 90kHz base to 27MHz)
+        pkt.setPCR(static_cast<uint64_t>(pcr_base) * ts::SYSTEM_CLOCK_SUBFACTOR);
     }
 
     // Create a PES packet with PTS
     static void createPesPacket(uint8_t* packet, uint16_t pid, uint8_t cc, int64_t pts, bool video) {
-        std::memset(packet, 0xFF, TS_PACKET_SIZE);
-        packet[0] = TS_SYNC_BYTE;
-        packet[1] = 0x40 | ((pid >> 8) & 0x1F);  // PUSI set
-        packet[2] = pid & 0xFF;
-        packet[3] = 0x10 | (cc & 0x0F);  // Payload only
+        ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(packet);
+        pkt = ts::NullPacket;
+        pkt.setPID(ts::PID(pid));
+        pkt.b[1] |= 0x40;  // Set PUSI
+        pkt.b[3] = 0x10 | (cc & 0x0F);  // Payload only
 
-        // PES header
-        packet[4] = 0x00;  // Start code
-        packet[5] = 0x00;
-        packet[6] = 0x01;
-        packet[7] = video ? 0xE0 : 0xC0;  // Stream ID
-        packet[8] = 0x00;  // PES length high
-        packet[9] = 0x00;  // PES length low (0 = unbounded)
-        packet[10] = 0x80;  // Flags
-        packet[11] = 0x80;  // PTS only
-        packet[12] = 0x05;  // PES header length
-
-        // Write PTS
-        packet[13] = 0x20 | ((pts >> 29) & 0x0E) | 0x01;
-        packet[14] = (pts >> 22) & 0xFF;
-        packet[15] = ((pts >> 14) & 0xFE) | 0x01;
-        packet[16] = (pts >> 7) & 0xFF;
-        packet[17] = ((pts << 1) & 0xFE) | 0x01;
+        // PES header structure
+        pkt.b[4] = 0x00;   // Start code
+        pkt.b[5] = 0x00;
+        pkt.b[6] = 0x01;
+        pkt.b[7] = video ? ts::SID_VIDEO : ts::SID_AUDIO;
+        pkt.b[8] = 0x00;   // PES length high
+        pkt.b[9] = 0x00;   // PES length low (unbounded)
+        pkt.b[10] = 0x80;  // MPEG-2 marker
+        pkt.b[11] = 0x80;  // PTS present
+        pkt.b[12] = 0x05;  // PES header data length
+        // Encode PTS using TsDuck
+        pkt.setPTS(static_cast<uint64_t>(pts));
     }
 
-    // Extract PTS from packet
-    static int64_t extractPts(const uint8_t* packet) {
-        if (packet[4] != 0x00 || packet[5] != 0x00 || packet[6] != 0x01) {
-            return -1;
-        }
-        return mpegts::extractPts(&packet[13]);
+    // Extract PTS from packet using TsDuck
+    static int64_t extractPts(uint8_t* packet) {
+        ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(packet);
+        if (!pkt.hasPTS()) return -1;
+        return static_cast<int64_t>(pkt.getPTS());
     }
 };
 
@@ -118,12 +102,12 @@ TEST_F(RestamperIntegrationTest, ProcessesEmptyBuffer) {
 // ============================================================================
 
 TEST_F(RestamperIntegrationTest, ProcessesPcrPacket) {
-    uint8_t packet[TS_PACKET_SIZE];
+    uint8_t packet[ts::PKT_SIZE];
     int64_t pcr_base = 90000;  // 1 second in 90kHz
 
     createPcrPacket(packet, 256, 0, pcr_base);
 
-    int32_t mods = restamper->process(packet, TS_PACKET_SIZE, 0);
+    int32_t mods = restamper->process(packet, static_cast<int32_t>(ts::PKT_SIZE), 0);
 
     // In CORRECT mode with switch offset 0, should still process PCR
     EXPECT_GE(mods, 0);
@@ -134,20 +118,19 @@ TEST_F(RestamperIntegrationTest, SmoothsPcrValues) {
     restamper->config.smooth_pcr = 1;
     restamper->config.stream_bitrate_hint = 10000000;  // 10 Mbps
 
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 100);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 100);
     int64_t pcr_base = 90000;
 
     // Create packets with PCR every 10 packets
     for (int i = 0; i < 100; i++) {
         if (i % 10 == 0) {
-            createPcrPacket(&data[i * TS_PACKET_SIZE], 256, i % 16, pcr_base);
+            createPcrPacket(&data[i * ts::PKT_SIZE], 256, i % 16, pcr_base);
             pcr_base += 9000;  // 100ms in 90kHz
         } else {
-            std::memset(&data[i * TS_PACKET_SIZE], 0xFF, TS_PACKET_SIZE);
-            data[i * TS_PACKET_SIZE] = TS_SYNC_BYTE;
-            data[i * TS_PACKET_SIZE + 1] = 0x01;
-            data[i * TS_PACKET_SIZE + 2] = 0x00;  // PID 256
-            data[i * TS_PACKET_SIZE + 3] = 0x10 | ((i) % 16);
+            ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(&data[i * ts::PKT_SIZE]);
+            pkt = ts::NullPacket;
+            pkt.setPID(ts::PID(256));
+            pkt.b[3] = 0x10 | (i % 16);
         }
     }
 
@@ -165,7 +148,7 @@ TEST_F(RestamperIntegrationTest, HandlesProviderSwitch) {
     int64_t last_output_pts = 270000;  // 3 seconds
     int64_t new_input_first_pts = 90000;  // 1 second
 
-    restamper->handleSwitch(last_output_pts, new_input_first_pts);
+    restamper->handle_switch(last_output_pts, new_input_first_pts);
 
     int64_t switch_offset = restamper->switch_offset_90khz.load();
 
@@ -175,14 +158,14 @@ TEST_F(RestamperIntegrationTest, HandlesProviderSwitch) {
 
 TEST_F(RestamperIntegrationTest, AppliesSwitchOffsetToPts) {
     // Set up a switch offset
-    restamper->handleSwitch(270000, 90000);  // Gap of ~180000
+    restamper->handle_switch(270000, 90000);  // Gap of ~180000
 
     // Create a PES packet
-    uint8_t packet[TS_PACKET_SIZE];
+    uint8_t packet[ts::PKT_SIZE];
     createPesPacket(packet, 0x100, 0, 90000, true);
 
     // Process with restamper (in CORRECT mode)
-    restamper->process(packet, TS_PACKET_SIZE, 0);
+    restamper->process(packet, static_cast<int32_t>(ts::PKT_SIZE), 0);
 
     // The PTS should have been modified
     int64_t new_pts = extractPts(packet);
@@ -197,24 +180,23 @@ TEST_F(RestamperIntegrationTest, AppliesSwitchOffsetToPts) {
 // ============================================================================
 
 TEST_F(RestamperIntegrationTest, TracksStatistics) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 100);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 100);
 
     for (int i = 0; i < 100; i++) {
         if (i % 10 == 0) {
-            createPcrPacket(&data[i * TS_PACKET_SIZE], 256, i % 16, 90000 + i * 900);
+            createPcrPacket(&data[i * ts::PKT_SIZE], 256, i % 16, 90000 + i * 900);
         } else {
-            std::memset(&data[i * TS_PACKET_SIZE], 0xFF, TS_PACKET_SIZE);
-            data[i * TS_PACKET_SIZE] = TS_SYNC_BYTE;
-            data[i * TS_PACKET_SIZE + 1] = 0x01;
-            data[i * TS_PACKET_SIZE + 2] = 0x00;
-            data[i * TS_PACKET_SIZE + 3] = 0x10 | (i % 16);
+            ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(&data[i * ts::PKT_SIZE]);
+            pkt = ts::NullPacket;
+            pkt.setPID(ts::PID(256));
+            pkt.b[3] = 0x10 | (i % 16);
         }
     }
 
     restamper->process(data.data(), static_cast<int32_t>(data.size()), 0);
 
     RestampingStatisticsNative stats;
-    bool has_stats = restamper->getStatistics(&stats);
+    bool has_stats = restamper->get_statistics(&stats);
 
     EXPECT_TRUE(has_stats);
     EXPECT_EQ(stats.packets_processed, 100);
@@ -226,20 +208,20 @@ TEST_F(RestamperIntegrationTest, TracksStatistics) {
 
 TEST_F(RestamperIntegrationTest, ResetClearsState) {
     // Process some data
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 10);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 10);
     for (int i = 0; i < 10; i++) {
-        createPcrPacket(&data[i * TS_PACKET_SIZE], 256, i % 16, 90000 + i * 900);
+        createPcrPacket(&data[i * ts::PKT_SIZE], 256, i % 16, 90000 + i * 900);
     }
     restamper->process(data.data(), static_cast<int32_t>(data.size()), 0);
 
     // Set switch offset
-    restamper->handleSwitch(270000, 90000);
+    restamper->handle_switch(270000, 90000);
 
     // Reset
     restamper->reset();
 
     RestampingStatisticsNative stats;
-    restamper->getStatistics(&stats);
+    restamper->get_statistics(&stats);
 
     EXPECT_EQ(stats.packets_processed, 0);
     EXPECT_EQ(restamper->switch_offset_90khz.load(), 0);
@@ -261,26 +243,27 @@ TEST_F(RestamperIntegrationTest, ConfigureChangesMode) {
 TEST_F(RestamperIntegrationTest, MonitorModeDoesNotModify) {
     restamper->config.mode = RESTAMP_MODE_MONITOR;
 
-    uint8_t packet[TS_PACKET_SIZE];
+    uint8_t packet[ts::PKT_SIZE];
     createPcrPacket(packet, 256, 0, 90000);
 
-    // Store original PCR
-    int64_t original_pcr = mpegts::extractPcrBase(&packet[6]);
+    // Store original PCR base (90kHz)
+    ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(packet);
+    int64_t original_pcr = static_cast<int64_t>(pkt.getPCR() / ts::SYSTEM_CLOCK_SUBFACTOR);
 
-    restamper->process(packet, TS_PACKET_SIZE, 0);
+    restamper->process(packet, static_cast<int32_t>(ts::PKT_SIZE), 0);
 
     // PCR should be unchanged in monitor mode
-    int64_t new_pcr = mpegts::extractPcrBase(&packet[6]);
+    int64_t new_pcr = static_cast<int64_t>(pkt.getPCR() / ts::SYSTEM_CLOCK_SUBFACTOR);
     EXPECT_EQ(new_pcr, original_pcr);
 }
 
 TEST_F(RestamperIntegrationTest, DisabledModeSkipsProcessing) {
     restamper->config.mode = RESTAMP_MODE_DISABLED;
 
-    uint8_t packet[TS_PACKET_SIZE];
+    uint8_t packet[ts::PKT_SIZE];
     createPcrPacket(packet, 256, 0, 90000);
 
-    int32_t mods = restamper->process(packet, TS_PACKET_SIZE, 0);
+    int32_t mods = restamper->process(packet, static_cast<int32_t>(ts::PKT_SIZE), 0);
 
     EXPECT_EQ(mods, 0);
 }
@@ -289,7 +272,7 @@ TEST_F(RestamperIntegrationTest, DisabledModeSkipsProcessing) {
 // API Tests
 // ============================================================================
 
-TEST(RestamperApiTest, CreateDestroy) {
+TEST(IntegratedRestamperApiTest, ConfigureAndCheck) {
     TsDuckContextHandle ctx = tsduck_context_create();
     ASSERT_NE(ctx, nullptr);
 
@@ -297,58 +280,57 @@ TEST(RestamperApiTest, CreateDestroy) {
     TsDuckAnalyzerHandle analyzer = tsduck_analyzer_create(ctx, &config);
     ASSERT_NE(analyzer, nullptr);
 
-    RestampingConfigNative restamp_config{};
-    restamp_config.mode = RESTAMP_MODE_CORRECT;
+    // Initially restamping should be disabled
+    EXPECT_FALSE(tsduck_analyzer_is_restamping_enabled(analyzer));
 
-    TsDuckRestamperHandle restamper = tsduck_restamper_create(analyzer, &restamp_config);
-    ASSERT_NE(restamper, nullptr);
-    EXPECT_TRUE(tsduck_restamper_is_initialized(restamper));
+    // Configure restamping through analyzer
+    bool configured = tsduck_analyzer_configure_restamp(analyzer, RESTAMP_MODE_CORRECT, 1, 1);
+    EXPECT_TRUE(configured);
+    EXPECT_TRUE(tsduck_analyzer_is_restamping_enabled(analyzer));
 
-    tsduck_restamper_destroy(restamper);
     tsduck_analyzer_destroy(analyzer);
     tsduck_context_destroy(ctx);
 }
 
-TEST(RestamperApiTest, ProcessViaApi) {
+TEST(IntegratedRestamperApiTest, FeedWithRestamp) {
     TsDuckContextHandle ctx = tsduck_context_create();
+
+    // Create analyzer with restamping enabled from the start
     TsDuckConfigNative config{};
+    config.enable_auto_restamp = 1;
+    config.restamp_mode = RESTAMP_MODE_CORRECT;
     TsDuckAnalyzerHandle analyzer = tsduck_analyzer_create(ctx, &config);
 
-    RestampingConfigNative restamp_config{};
-    restamp_config.mode = RESTAMP_MODE_CORRECT;
-    TsDuckRestamperHandle restamper = tsduck_restamper_create(analyzer, &restamp_config);
+    EXPECT_TRUE(tsduck_analyzer_is_restamping_enabled(analyzer));
 
     // Create test data
-    uint8_t data[TS_PACKET_SIZE];
-    std::memset(data, 0xFF, TS_PACKET_SIZE);
-    data[0] = TS_SYNC_BYTE;
-    data[1] = 0x01;
-    data[2] = 0x00;
-    data[3] = 0x10;
+    uint8_t data[ts::PKT_SIZE];
+    ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(data);
+    pkt = ts::NullPacket;
+    pkt.setPID(ts::PID(256));
+    pkt.b[3] = 0x10;
 
-    int32_t result = tsduck_restamper_process(restamper, data, TS_PACKET_SIZE);
+    // Feed with restamping (modifies data in-place)
+    int32_t result = tsduck_analyzer_feed_restamp(analyzer, data, static_cast<int32_t>(ts::PKT_SIZE));
     EXPECT_GE(result, 0);
 
-    tsduck_restamper_destroy(restamper);
     tsduck_analyzer_destroy(analyzer);
     tsduck_context_destroy(ctx);
 }
 
-TEST(RestamperApiTest, GetStatisticsViaApi) {
+TEST(IntegratedRestamperApiTest, GetStatisticsViaAnalyzer) {
     TsDuckContextHandle ctx = tsduck_context_create();
+
     TsDuckConfigNative config{};
+    config.enable_auto_restamp = 1;
+    config.restamp_mode = RESTAMP_MODE_CORRECT;
     TsDuckAnalyzerHandle analyzer = tsduck_analyzer_create(ctx, &config);
 
-    RestampingConfigNative restamp_config{};
-    restamp_config.mode = RESTAMP_MODE_CORRECT;
-    TsDuckRestamperHandle restamper = tsduck_restamper_create(analyzer, &restamp_config);
-
     RestampingStatisticsNative stats;
-    bool result = tsduck_restamper_get_statistics(restamper, &stats);
+    bool result = tsduck_analyzer_get_restamp_statistics(analyzer, &stats);
 
     EXPECT_TRUE(result);
 
-    tsduck_restamper_destroy(restamper);
     tsduck_analyzer_destroy(analyzer);
     tsduck_context_destroy(ctx);
 }

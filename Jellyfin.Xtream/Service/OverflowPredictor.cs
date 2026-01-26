@@ -16,10 +16,6 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Threading;
-using Jellyfin.Xtream.Service.MpegTs;
-using Jellyfin.Xtream.Service.MpegTs.Core;
-using Jellyfin.Xtream.Service.MpegTs.Models;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -52,7 +48,9 @@ public sealed class OverflowPredictor(int bufferSize)
     private const double CriticalSecondsToOverflow = 10.0;
 
     private readonly int _bufferSize = bufferSize;
-    private readonly RingBuffer<GapSample> _gapSamples = new(MaxSamples);
+    private readonly GapSample[] _gapSamples = new GapSample[MaxSamples];
+    private int _gapSampleCount;
+    private int _gapSampleWriteIndex;
     private long _lastWriteHead;
     private long _lastReadHead;
     private long _lastSampleTicks;
@@ -149,9 +147,14 @@ public sealed class OverflowPredictor(int bufferSize)
         _lastWriteHead = writeHead;
         _lastReadHead = readHead;
 
-        // Record gap sample
+        // Record gap sample (circular overwrite when full)
         var gap = writeHead - readHead;
-        _gapSamples.Add(new GapSample(DateTime.UtcNow.Ticks, gap));
+        _gapSamples[_gapSampleWriteIndex] = new GapSample(DateTime.UtcNow.Ticks, gap);
+        _gapSampleWriteIndex = (_gapSampleWriteIndex + 1) % MaxSamples;
+        if (_gapSampleCount < MaxSamples)
+        {
+            _gapSampleCount++;
+        }
     }
 
     private void UpdatePrediction(long writeHead, long readHead)
@@ -197,7 +200,7 @@ public sealed class OverflowPredictor(int bufferSize)
 
     private double CalculateGapTrend()
     {
-        var count = _gapSamples.Count;
+        var count = _gapSampleCount;
         if (count < 3)
         {
             return 0;
@@ -209,11 +212,14 @@ public sealed class OverflowPredictor(int bufferSize)
             sumY = 0,
             sumXY = 0,
             sumX2 = 0;
-        var baseTime = _gapSamples[0].Ticks;
+
+        // Determine the start index for oldest sample in circular buffer
+        var startIndex = count >= MaxSamples ? _gapSampleWriteIndex : 0;
+        var baseTime = _gapSamples[startIndex].Ticks;
 
         for (var i = 0; i < count; i++)
         {
-            var sample = _gapSamples[i];
+            var sample = _gapSamples[(startIndex + i) % MaxSamples];
             var x = (sample.Ticks - baseTime) / (double)TimeSpan.TicksPerSecond;
             double y = sample.Gap;
 
@@ -238,7 +244,9 @@ public sealed class OverflowPredictor(int bufferSize)
     /// </summary>
     public void Reset()
     {
-        _gapSamples.Clear();
+        Array.Clear(_gapSamples, 0, MaxSamples);
+        _gapSampleCount = 0;
+        _gapSampleWriteIndex = 0;
         WriteRateBps = 0;
         ReadRateBps = 0;
         _lastWriteHead = 0;

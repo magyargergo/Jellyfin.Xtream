@@ -10,8 +10,7 @@
 #include <intrin.h>
 #endif
 
-namespace tsduck_interop {
-namespace platform {
+namespace tsduck_interop::platform {
 
 // Count trailing zeros in a 32-bit integer
 inline int ctz32(unsigned int x) noexcept {
@@ -33,7 +32,6 @@ inline int popcount32(unsigned int x) noexcept {
 #endif
 }
 
-}  // namespace platform
-}  // namespace tsduck_interop
+}  // namespace tsduck_interop::platform
 
 #endif  // TSDUCK_INTEROP_PLATFORM_BIT_OPS_HPP

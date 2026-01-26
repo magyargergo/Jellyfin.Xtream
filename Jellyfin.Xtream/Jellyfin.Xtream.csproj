@@ -24,7 +24,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Jellyfin.Xtream.Tests" />
     <InternalsVisibleTo Include="Jellyfin.Xtream.Benchmarks" />
-    <InternalsVisibleTo Include="TestStreamAnalyzer" />
+    <InternalsVisibleTo Include="Jellyfin.Xtream.E2ETests" />
   </ItemGroup>
 
   <ItemGroup>

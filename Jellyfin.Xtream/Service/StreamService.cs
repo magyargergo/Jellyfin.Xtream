@@ -25,7 +25,6 @@ using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
-using Jellyfin.Xtream.Service.ProviderManagement;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
@@ -763,28 +762,6 @@ public static partial class StreamService
     /// <returns>A map of channels to their providers, supporting failover.</returns>
     public static async Task<ChannelProviderMap> GetDeduplicatedChannelMap(CancellationToken cancellationToken) =>
         ChannelProviderMap.Build(await GetAllLiveStreams(cancellationToken).ConfigureAwait(false));
-
-    /// <summary>
-    /// Gets all live streams with channel deduplication and health-aware provider ordering.
-    /// Channels with the same name are merged. Providers are sorted by a combination of
-    /// stream quality and provider health (success rate, capacity, circuit state).
-    /// </summary>
-    /// <param name="failoverService">Failover service for health-aware sorting and filtering.</param>
-    /// <param name="filterByCapacity">When true, channels with no providers having capacity are filtered out.</param>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>A map of channels to their providers, supporting failover.</returns>
-    public static async Task<ChannelProviderMap> GetDeduplicatedChannelMap(
-        IAutomaticFailoverService? failoverService,
-        bool filterByCapacity,
-        CancellationToken cancellationToken
-    )
-    {
-        return ChannelProviderMap.Build(
-            await GetAllLiveStreams(cancellationToken).ConfigureAwait(false),
-            failoverService,
-            filterByCapacity
-        );
-    }
 
     [GeneratedRegex(@"\[([^\]]+)\]|\|([^\|]+)\|")]
     private static partial Regex TagRegex();

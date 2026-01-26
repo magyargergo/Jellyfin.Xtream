@@ -1,0 +1,135 @@
+# Dockerfile for static analysis and code formatting of libtsduck_interop
+# Uses CMake targets defined in CMakeLists.txt - no duplicated logic
+#
+# Usage (run from repo root):
+#   # Run all analysis (formatting + static analysis):
+#   docker build -f native/tsduck_interop/Dockerfile.analysis .
+#
+#   # Extract analysis reports:
+#   docker build -f native/tsduck_interop/Dockerfile.analysis --target results -o type=local,dest=./native/tsduck_interop/analysis-results .
+
+ARG TSDUCK_VERSION=3.43-4549
+
+# =============================================================================
+# Stage 1: Build TsDuck from source (reusable base)
+# =============================================================================
+FROM ubuntu:24.04 AS tsduck-builder
+
+ARG TSDUCK_VERSION
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    dos2unix \
+    ca-certificates \
+    python3 \
+    locales \
+    libssl-dev \
+    zlib1g-dev \
+    && locale-gen en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+WORKDIR /tsduck-src
+RUN git clone --depth 1 --branch v${TSDUCK_VERSION} https://github.com/tsduck/tsduck.git .
+
+ENV TSDUCK_BUILD_FLAGS="NODEKTEC=1 NOHIDES=1 NOVATEK=1 NOCURL=1 NOPCSC=1 NOSRT=1 NORIST=1 NOEDITLINE=1 NOUSB=1 NOJAVA=1 NOPYTHON=1 NOTEST=1"
+
+RUN make -j$(nproc) $TSDUCK_BUILD_FLAGS
+RUN make install $TSDUCK_BUILD_FLAGS NODOC=1 SYSPREFIX=/opt/tsduck
+
+# =============================================================================
+# Stage 2: Static Analysis Environment
+# =============================================================================
+FROM ubuntu:24.04 AS analyzer
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    clang-format \
+    clang-tidy \
+    cppcheck \
+    flawfinder \
+    libssl-dev \
+    zlib1g-dev \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TsDuck
+COPY --from=tsduck-builder /opt/tsduck /opt/tsduck
+
+ENV PKG_CONFIG_PATH="/opt/tsduck/share/pkgconfig"
+ENV LD_LIBRARY_PATH="/opt/tsduck/lib"
+
+WORKDIR /src
+
+# Copy source and configuration files
+# Note: Build context is repo root, so paths are prefixed with native/tsduck_interop/
+COPY native/tsduck_interop/include/ include/
+COPY native/tsduck_interop/src/ src/
+COPY native/tsduck_interop/CMakeLists.txt .
+COPY native/tsduck_interop/.clang-format .
+COPY native/tsduck_interop/.clang-tidy .
+COPY native/tsduck_interop/.cppcheck-suppressions .
+
+# Configure with formatting and static analysis enabled - uses CMake targets
+RUN cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH=/opt/tsduck \
+    -DENABLE_CODE_FORMATTING=ON \
+    -DENABLE_STATIC_ANALYSIS=ON
+
+# Create results directory
+RUN mkdir -p /results
+
+# Run formatting check first (fast, catches style issues early)
+RUN echo "=== Checking code formatting ===" && \
+    cmake --build build --target format-check 2>&1 | tee /results/format-check.log && \
+    echo "Formatting OK" || \
+    (echo "Formatting issues found (see log)" && \
+     echo "Run 'cmake --build build --target format' to fix" >> /results/format-check.log)
+
+# Run static analysis using CMake targets
+# Note: We run each target separately to capture output and continue on warnings
+RUN echo "=== Running clang-tidy ===" && \
+    cmake --build build --target clang-tidy 2>&1 | tee /results/clang-tidy.log || true
+
+RUN echo "=== Running cppcheck ===" && \
+    cmake --build build --target cppcheck 2>&1 | tee /results/cppcheck.log || \
+    echo "cppcheck found issues (see log)"
+
+RUN echo "=== Generating cppcheck XML report ===" && \
+    cmake --build build --target cppcheck-xml 2>&1 || true && \
+    cp build/cppcheck-report.xml /results/ 2>/dev/null || true
+
+RUN echo "=== Running flawfinder security analysis ===" && \
+    cmake --build build --target flawfinder 2>&1 | tee /results/flawfinder.log || true
+
+RUN echo "=== Generating flawfinder HTML report ===" && \
+    cmake --build build --target flawfinder-html 2>&1 || true && \
+    cp build/flawfinder-report.html /results/ 2>/dev/null || true
+
+# Summary
+RUN echo "" && \
+    echo "===========================================" && \
+    echo "  Analysis Complete" && \
+    echo "===========================================" && \
+    echo "" && \
+    echo "Tools run:" && \
+    echo "  - clang-format (formatting check)" && \
+    echo "  - clang-tidy (static analysis)" && \
+    echo "  - cppcheck (static analysis)" && \
+    echo "  - flawfinder (security analysis)" && \
+    echo "" && \
+    echo "Results available in /results/" && \
+    ls -la /results/
+
+# =============================================================================
+# Stage 3: Extract results
+# =============================================================================
+FROM scratch AS results
+
+COPY --from=analyzer /results/ /

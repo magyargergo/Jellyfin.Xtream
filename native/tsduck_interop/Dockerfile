@@ -91,6 +91,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Minimal runtime deps that TsDuck still needs
     libssl-dev \
     zlib1g-dev \
+    # libcurl is needed by our interop library (stream_source.cpp HTTP streaming)
+    # Note: TsDuck itself is built with NOCURL=1, but our code uses curl directly
+    libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the minimal TsDuck installation
@@ -143,6 +146,7 @@ FROM ubuntu:24.04 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     zlib1g \
+    libcurl4 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the built libraries (interop + libtscore + libtsduck)
@@ -150,6 +154,9 @@ COPY --from=builder /install/lib/*.so* /usr/local/lib/
 COPY --from=builder /opt/tsduck/lib/libtscore.so* /usr/local/lib/
 COPY --from=builder /opt/tsduck/lib/libtsduck.so* /usr/local/lib/
 COPY --from=builder /install/include/ /usr/local/include/
+
+# Deploy TsDuck data files (required by DuckContext / Names singleton)
+COPY --from=tsduck-builder /opt/tsduck/share/tsduck /usr/local/share/tsduck
 
 # Update library cache
 RUN ldconfig

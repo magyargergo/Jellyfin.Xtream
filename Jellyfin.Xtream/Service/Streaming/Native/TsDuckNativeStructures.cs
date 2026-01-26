@@ -1,0 +1,857 @@
+// Copyright (C) 2025  Gergo Magyar
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+using System;
+using System.Runtime.InteropServices;
+
+namespace Jellyfin.Xtream.Service.Streaming.Native;
+
+/// <summary>
+/// Native TR 101 290 Priority 1 structure.
+/// Layout must match Tr101290Priority1Native in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct Tr101290Priority1Native
+{
+    public long SyncByteError;
+    public long SyncLoss;
+    public long PatError;
+    public long PatError2;
+    public long ContinuityCountError;
+    public long PmtError;
+    public long PmtError2;
+    public long PidError;
+
+    /// <summary>
+    /// Converts to managed Tr101290Priority1.
+    /// </summary>
+    public readonly Tr101290Priority1 ToManaged() =>
+        new(SyncByteError, SyncLoss, PatError, PatError2, ContinuityCountError, PmtError, PmtError2, PidError);
+}
+
+/// <summary>
+/// Native TR 101 290 Priority 2 structure.
+/// Layout must match Tr101290Priority2Native in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct Tr101290Priority2Native
+{
+    public long TransportError;
+    public long CrcError;
+    public long PcrRepetitionError;
+    public long PcrDiscontinuityError;
+    public long PcrAccuracyError;
+    public long PtsError;
+    public long CatError;
+
+    /// <summary>
+    /// Converts to managed Tr101290Priority2.
+    /// </summary>
+    public readonly Tr101290Priority2 ToManaged() =>
+        new(TransportError, CrcError, PcrRepetitionError, PcrDiscontinuityError, PcrAccuracyError, PtsError, CatError);
+}
+
+/// <summary>
+/// Native metrics structure.
+/// Layout must match TsDuckMetricsNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct TsDuckMetricsNative
+{
+    public long TimestampTicks;
+    public long TsBitrate;
+    public int ServiceCount;
+    public int PidCount;
+    public Tr101290Priority1Native Priority1;
+    public Tr101290Priority2Native Priority2;
+
+    /// <summary>
+    /// Converts to managed TsDuckMetrics.
+    /// </summary>
+    public readonly TsDuckMetrics ToManaged() =>
+        new()
+        {
+            Timestamp = new DateTime(TimestampTicks, DateTimeKind.Utc),
+            TsBitrate = TsBitrate,
+            ServiceCount = ServiceCount,
+            PidCount = PidCount,
+            Priority1 = Priority1.ToManaged(),
+            Priority2 = Priority2.ToManaged(),
+            Services = [],
+            Pids = [],
+        };
+}
+
+/// <summary>
+/// Native configuration structure.
+/// Layout must match TsDuckConfigNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal readonly struct TsDuckConfigNative
+{
+    public readonly int MetricsIntervalMs;
+    public readonly int EnableTr101290;
+    public readonly int SampleSizeBytes;
+    public readonly int EnableAutoRestamp;
+
+    // Integrated restamping settings
+    public readonly int RestampMode;
+    public readonly int SmoothPcr;
+    public readonly int FixDiscontinuities;
+    public readonly int Reserved;
+
+    public readonly double CorrectionThresholdMs;
+    public readonly double MaxCorrectionRateMs;
+    public readonly double HysteresisThresholdMs;
+    public readonly long StreamBitrateHint;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="TsDuckConfigNative"/> struct.
+    /// </summary>
+    private TsDuckConfigNative(
+        int metricsIntervalMs,
+        int enableTr101290,
+        int sampleSizeBytes,
+        int enableAutoRestamp,
+        int restampMode,
+        int smoothPcr,
+        int fixDiscontinuities,
+        int reserved,
+        double correctionThresholdMs,
+        double maxCorrectionRateMs,
+        double hysteresisThresholdMs,
+        long streamBitrateHint
+    )
+    {
+        MetricsIntervalMs = metricsIntervalMs;
+        EnableTr101290 = enableTr101290;
+        SampleSizeBytes = sampleSizeBytes;
+        EnableAutoRestamp = enableAutoRestamp;
+        RestampMode = restampMode;
+        SmoothPcr = smoothPcr;
+        FixDiscontinuities = fixDiscontinuities;
+        Reserved = reserved;
+        CorrectionThresholdMs = correctionThresholdMs;
+        MaxCorrectionRateMs = maxCorrectionRateMs;
+        HysteresisThresholdMs = hysteresisThresholdMs;
+        StreamBitrateHint = streamBitrateHint;
+    }
+
+    /// <summary>
+    /// Creates native config from managed configuration.
+    /// </summary>
+    public static TsDuckConfigNative FromManaged(TsDuckConfiguration config) =>
+        new(
+            metricsIntervalMs: config.MetricsIntervalSeconds * 1000,
+            enableTr101290: config.EnableTr101290 ? 1 : 0,
+            sampleSizeBytes: config.SampleSizeBytes,
+            enableAutoRestamp: config.EnableAutoRestamp ? 1 : 0,
+            restampMode: (int)config.RestampMode,
+            smoothPcr: config.SmoothPcr ? 1 : 0,
+            fixDiscontinuities: config.FixDiscontinuities ? 1 : 0,
+            reserved: 0,
+            correctionThresholdMs: config.CorrectionThresholdMs,
+            maxCorrectionRateMs: config.MaxCorrectionRateMs,
+            hysteresisThresholdMs: config.HysteresisThresholdMs,
+            streamBitrateHint: config.StreamBitrateHint
+        );
+}
+
+/// <summary>
+/// Native PCR analysis structure.
+/// Layout must match PcrAnalysisNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct PcrAnalysisNative
+{
+    public double PcrJitterUs;
+    public double PcrJitterMaxUs;
+    public double PcrJitterAvgUs;
+    public long PcrIntervalPackets;
+    public double PcrIntervalMs;
+    public double PcrDriftPpm;
+    public long PcrCount;
+    public long PcrValidCount;
+
+    /// <summary>
+    /// Converts to managed PcrAnalysis.
+    /// </summary>
+    public readonly PcrAnalysis ToManaged() =>
+        new(
+            PcrJitterUs,
+            PcrJitterMaxUs,
+            PcrJitterAvgUs,
+            PcrIntervalPackets,
+            PcrIntervalMs,
+            PcrDriftPpm,
+            PcrCount,
+            PcrValidCount
+        );
+}
+
+/// <summary>
+/// Native IAT (Inter-packet Arrival Time) analysis structure.
+/// Layout must match IatAnalysisNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct IatAnalysisNative
+{
+    public double IatAvgUs;
+    public double IatMinUs;
+    public double IatMaxUs;
+    public double IatJitterUs;
+    public double IatStddevUs;
+    public long LatePackets;
+    public long EarlyPackets;
+    public long BurstCount;
+
+    /// <summary>
+    /// Converts to managed IatAnalysis.
+    /// </summary>
+    public readonly IatAnalysis ToManaged() =>
+        new(IatAvgUs, IatMinUs, IatMaxUs, IatJitterUs, IatStddevUs, LatePackets, EarlyPackets, BurstCount);
+}
+
+/// <summary>
+/// Native bitrate analysis structure.
+/// Layout must match BitrateAnalysisNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct BitrateAnalysisNative
+{
+    public long TsBitrateNominal;
+    public long TsBitratePcr;
+    public long TsBitrateDts;
+    public double BitrateAccuracy;
+    public long NullPacketBitrate;
+    public double NullPacketRatio;
+    public long UsefulBitrate;
+
+    /// <summary>
+    /// Converts to managed BitrateAnalysis.
+    /// </summary>
+    public readonly BitrateAnalysis ToManaged() =>
+        new(
+            TsBitrateNominal,
+            TsBitratePcr,
+            TsBitrateDts,
+            BitrateAccuracy,
+            NullPacketBitrate,
+            NullPacketRatio,
+            UsefulBitrate
+        );
+}
+
+/// <summary>
+/// Native extended PID information structure (Phase 2b).
+/// Layout must match TsDuckPidInfoExtended in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct TsDuckPidInfoExtendedNative
+{
+    public int Pid;
+    public int StreamType;
+    public long Packets;
+    public long Bitrate;
+    public long ContinuityErrors;
+    public long DuplicatePackets;
+    public long ScrambledPackets;
+    public int IsScrambled;
+    public int IsPcrPid;
+    public double PcrJitterUs;
+    public int IsVideo;
+    public int IsAudio;
+
+    /// <summary>
+    /// Converts to managed TsDuckPidInfoExtended.
+    /// </summary>
+    public readonly TsDuckPidInfoExtended ToManaged() =>
+        new(
+            Pid,
+            StreamType,
+            Packets,
+            Bitrate,
+            ContinuityErrors,
+            DuplicatePackets,
+            ScrambledPackets,
+            IsScrambled != 0,
+            IsPcrPid != 0,
+            PcrJitterUs,
+            IsVideo != 0,
+            IsAudio != 0
+        );
+}
+
+/// <summary>
+/// Error codes returned by native functions.
+/// </summary>
+internal enum TsDuckNativeError
+{
+    Internal = -5,
+    InvalidData = -4,
+    NotInitialized = -3,
+    InvalidConfig = -2,
+    NullHandle = -1,
+    Ok = 0,
+}
+
+// =============================================================================
+// A/V Sync Analysis Structures (Phase 3 - Restamping)
+// =============================================================================
+
+/// <summary>
+/// A/V synchronization status.
+/// </summary>
+public enum AvSyncStatus
+{
+    /// <summary>Not enough data to determine sync status.</summary>
+    Unknown = 0,
+
+    /// <summary>Audio and video are synchronized within tolerance (±20ms).</summary>
+    Synchronized = 1,
+
+    /// <summary>Drift detected but within correctable range.</summary>
+    Drifting = 2,
+
+    /// <summary>Severe desync detected (>100ms).</summary>
+    Desync = 3,
+
+    /// <summary>No audio PTS detected in stream.</summary>
+    NoAudio = 4,
+
+    /// <summary>No video PTS detected in stream.</summary>
+    NoVideo = 5,
+}
+
+/// <summary>
+/// Native PTS/DTS sample structure.
+/// Layout must match PtsDtsSampleNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct PtsDtsSampleNative
+{
+    public int Pid;
+    public int StreamType;
+    public long Pts90Khz;
+    public long Dts90Khz;
+    public long Pcr90Khz;
+    public long PacketIndex;
+    public long ByteOffset;
+    public int IsVideo;
+    public int IsAudio;
+    public int IsKeyframe;
+    public int Reserved;
+
+    /// <summary>
+    /// Converts to managed PtsDtsSample.
+    /// </summary>
+    public readonly PtsDtsSample ToManaged() =>
+        new(
+            Pid,
+            StreamType,
+            Pts90Khz,
+            Dts90Khz,
+            Pcr90Khz,
+            PacketIndex,
+            ByteOffset,
+            IsVideo != 0,
+            IsAudio != 0,
+            IsKeyframe != 0
+        );
+}
+
+/// <summary>
+/// Native A/V synchronization analysis structure.
+/// Layout must match AvSyncAnalysisNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct AvSyncAnalysisNative
+{
+    // Current drift state
+    public double VideoAudioDriftMs;
+    public double DriftRateMsPerSec;
+    public double PeakDriftMs;
+    public double AvgDriftMs;
+
+    // PCR-PTS relationship
+    public double PcrVideoOffsetMs;
+    public double PcrAudioOffsetMs;
+
+    // Sample counts
+    public long VideoPtsCount;
+    public long AudioPtsCount;
+    public long PcrCount;
+
+    // Discontinuity tracking
+    public long VideoDiscontinuities;
+    public long AudioDiscontinuities;
+    public long PcrDiscontinuities;
+
+    // Timing
+    public long LastVideoPts;
+    public long LastAudioPts;
+    public long LastPcr;
+
+    // Status
+    public int SyncStatus;
+    public int Reserved;
+
+    /// <summary>
+    /// Converts to managed AvSyncAnalysis.
+    /// </summary>
+    public readonly AvSyncAnalysis ToManaged() =>
+        new(
+            VideoAudioDriftMs,
+            DriftRateMsPerSec,
+            PeakDriftMs,
+            AvgDriftMs,
+            PcrVideoOffsetMs,
+            PcrAudioOffsetMs,
+            VideoPtsCount,
+            AudioPtsCount,
+            PcrCount,
+            VideoDiscontinuities,
+            AudioDiscontinuities,
+            PcrDiscontinuities,
+            LastVideoPts,
+            LastAudioPts,
+            LastPcr,
+            (AvSyncStatus)SyncStatus
+        );
+}
+
+/// <summary>
+/// Restamping mode.
+/// </summary>
+public enum RestampingMode
+{
+    /// <summary>Restamping disabled.</summary>
+    Disabled = 0,
+
+    /// <summary>Monitor and detect drift but don't correct.</summary>
+    Monitor = 1,
+
+    /// <summary>Detect drift and apply corrections.</summary>
+    Correct = 2,
+}
+
+/// <summary>
+/// Native restamping statistics structure.
+/// Layout must match RestampingStatisticsNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct RestampingStatisticsNative
+{
+    public long PacketsProcessed;
+    public long PcrSmoothed;
+    public long PtsCorrected;
+    public long DtsCorrected;
+    public long DiscontinuitiesFixed;
+    public double TotalCorrectionMs;
+    public double CurrentOffsetMs;
+    public long LastCorrectionTimeTicks;
+    public int CorrectionActive;
+    public int Reserved;
+
+    /// <summary>
+    /// Converts to managed RestampingStatistics.
+    /// </summary>
+    public readonly RestampingStatistics ToManaged() =>
+        new(
+            PacketsProcessed,
+            PcrSmoothed,
+            PtsCorrected,
+            DtsCorrected,
+            DiscontinuitiesFixed,
+            TotalCorrectionMs,
+            CurrentOffsetMs,
+            LastCorrectionTimeTicks > 0 ? new DateTime(LastCorrectionTimeTicks, DateTimeKind.Utc) : null,
+            CorrectionActive != 0
+        );
+}
+
+// =============================================================================
+// HTTP Streamer Structures
+// =============================================================================
+
+/// <summary>
+/// Streamer state enumeration.
+/// </summary>
+public enum StreamerState
+{
+    /// <summary>Not started.</summary>
+    Idle = 0,
+
+    /// <summary>Establishing connection.</summary>
+    Connecting = 1,
+
+    /// <summary>Actively receiving data.</summary>
+    Streaming = 2,
+
+    /// <summary>Backoff before retry on same URL.</summary>
+    Reconnecting = 3,
+
+    /// <summary>Mid-stream URL switch in progress.</summary>
+    Switching = 4,
+
+    /// <summary>No data received within threshold.</summary>
+    Stalled = 5,
+
+    /// <summary>Explicitly stopped.</summary>
+    Stopped = 6,
+
+    /// <summary>Unrecoverable error (max retries exhausted).</summary>
+    Failed = 7,
+}
+
+/// <summary>
+/// Streamer event types.
+/// </summary>
+public enum StreamerEvent
+{
+    /// <summary>Successfully connected to URL.</summary>
+    Connected = 0,
+
+    /// <summary>Connection lost.</summary>
+    Disconnected = 1,
+
+    /// <summary>Starting reconnection attempt.</summary>
+    Reconnecting = 2,
+
+    /// <summary>Successfully switched to new URL.</summary>
+    Switched = 3,
+
+    /// <summary>Data stall detected.</summary>
+    Stalled = 4,
+
+    /// <summary>First data received after connect/reconnect.</summary>
+    DataReceived = 5,
+
+    /// <summary>HTTP or network error.</summary>
+    Error = 6,
+
+    /// <summary>Streaming stopped.</summary>
+    Stopped = 7,
+
+    /// <summary>TR 101 290 error rate exceeded threshold, switching URL.</summary>
+    QualityDegraded = 8,
+}
+
+/// <summary>
+/// Native streamer configuration structure.
+/// Layout must match TsDuckStreamerConfigNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct TsDuckStreamerConfigNative
+{
+    public int ConnectTimeoutMs;
+    public int ResponseTimeoutMs;
+    public int StallTimeoutMs;
+    public int MaxRetries;
+
+    public int InitialBackoffMs;
+    public int MaxBackoffMs;
+    public double BackoffMultiplier;
+    public int BackoffJitterMs;
+
+    public int OutputFd;
+    public int AlignmentBufferPackets;
+
+    public int EnableRestamp;
+    public int RestampMode;
+
+    public int LowSpeedLimitBytes;
+    public int LowSpeedTimeSec;
+
+    public int StallsBeforeSwitch;
+
+    // Quality-based switching (TR 101 290 error rate thresholds)
+    public int EnableQualitySwitch;
+    public int QualityCheckIntervalMs;
+    public int QualityWindowSeconds;
+    public int MaxSyncErrorsPerWindow;
+    public int MaxContinuityErrorsPerSec;
+    public int MaxTransportErrorsPerSec;
+    public int MaxPcrErrorsPerSec;
+    public int Reserved;
+
+    /// <summary>
+    /// Creates a default configuration.
+    /// </summary>
+    public static TsDuckStreamerConfigNative Default =>
+        new()
+        {
+            ConnectTimeoutMs = 5000,
+            ResponseTimeoutMs = 10000,
+            StallTimeoutMs = 20000,
+            MaxRetries = 10,
+            InitialBackoffMs = 500,
+            MaxBackoffMs = 30000,
+            BackoffMultiplier = 2.0,
+            BackoffJitterMs = 200,
+            OutputFd = -1,
+            AlignmentBufferPackets = 32,
+            EnableRestamp = 1,
+            RestampMode = (int)RestampingMode.Correct,
+            LowSpeedLimitBytes = 1000,
+            LowSpeedTimeSec = 10,
+            StallsBeforeSwitch = 2,
+            EnableQualitySwitch = 1,
+            QualityCheckIntervalMs = 1000,
+            QualityWindowSeconds = 10,
+            MaxSyncErrorsPerWindow = 1,
+            MaxContinuityErrorsPerSec = 20,
+            MaxTransportErrorsPerSec = 10,
+            MaxPcrErrorsPerSec = 5,
+            Reserved = 0,
+        };
+}
+
+/// <summary>
+/// Native streamer status snapshot.
+/// Layout must match TsDuckStreamerStatusNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct TsDuckStreamerStatusNative
+{
+    public int State;
+    public int CurrentUrlIndex;
+    public int UrlCount;
+    public int RetryCount;
+    public long BytesReceived;
+    public long PacketsOutput;
+    public long SwitchesCompleted;
+    public long Reconnections;
+    public long LastDataTimeTicks;
+    public long SessionStartTicks;
+    public int LastHttpStatus;
+    public int LastCurlError;
+    public long QualitySwitches;
+
+    /// <summary>
+    /// Converts to managed StreamerStatus.
+    /// </summary>
+    public readonly StreamerStatus ToManaged() =>
+        new(
+            (StreamerState)State,
+            CurrentUrlIndex,
+            UrlCount,
+            RetryCount,
+            BytesReceived,
+            PacketsOutput,
+            SwitchesCompleted,
+            Reconnections,
+            LastDataTimeTicks > 0 ? new DateTime(LastDataTimeTicks, DateTimeKind.Utc) : null,
+            SessionStartTicks > 0 ? new DateTime(SessionStartTicks, DateTimeKind.Utc) : null,
+            LastHttpStatus,
+            LastCurlError,
+            QualitySwitches
+        );
+}
+
+// =============================================================================
+// Managed Record Types
+// =============================================================================
+
+/// <summary>
+/// PTS/DTS sample from stream analysis.
+/// </summary>
+/// <param name="Pid">PID carrying this timestamp.</param>
+/// <param name="StreamType">MPEG stream type.</param>
+/// <param name="Pts90Khz">Presentation timestamp (90kHz).</param>
+/// <param name="Dts90Khz">Decoding timestamp (-1 if not present).</param>
+/// <param name="Pcr90Khz">Reference PCR at sample time (-1 if N/A).</param>
+/// <param name="PacketIndex">Packet position in stream.</param>
+/// <param name="ByteOffset">Byte offset in stream.</param>
+/// <param name="IsVideo">True if video stream.</param>
+/// <param name="IsAudio">True if audio stream.</param>
+/// <param name="IsKeyframe">True if keyframe (video only).</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct PtsDtsSample(
+    int Pid,
+    int StreamType,
+    long Pts90Khz,
+    long Dts90Khz,
+    long Pcr90Khz,
+    long PacketIndex,
+    long ByteOffset,
+    bool IsVideo,
+    bool IsAudio,
+    bool IsKeyframe
+)
+{
+    /// <summary>
+    /// Gets the PTS in milliseconds.
+    /// </summary>
+    public double PtsMs => Pts90Khz / 90.0;
+
+    /// <summary>
+    /// Gets the DTS in milliseconds, or null if not present.
+    /// </summary>
+    public double? DtsMs => Dts90Khz >= 0 ? Dts90Khz / 90.0 : null;
+}
+
+/// <summary>
+/// A/V synchronization analysis result.
+/// </summary>
+/// <param name="VideoAudioDriftMs">Current A/V drift (positive = audio ahead).</param>
+/// <param name="DriftRateMsPerSec">Drift trend (positive = increasing drift).</param>
+/// <param name="PeakDriftMs">Maximum drift observed.</param>
+/// <param name="AvgDriftMs">Average drift over analysis window.</param>
+/// <param name="PcrVideoOffsetMs">PCR to video PTS offset.</param>
+/// <param name="PcrAudioOffsetMs">PCR to audio PTS offset.</param>
+/// <param name="VideoPtsCount">Video PTS samples collected.</param>
+/// <param name="AudioPtsCount">Audio PTS samples collected.</param>
+/// <param name="PcrCount">PCR samples for reference.</param>
+/// <param name="VideoDiscontinuities">Video PTS discontinuities detected.</param>
+/// <param name="AudioDiscontinuities">Audio PTS discontinuities detected.</param>
+/// <param name="PcrDiscontinuities">PCR discontinuities detected.</param>
+/// <param name="LastVideoPts">Most recent video PTS (90kHz).</param>
+/// <param name="LastAudioPts">Most recent audio PTS (90kHz).</param>
+/// <param name="LastPcr">Most recent PCR (90kHz base).</param>
+/// <param name="Status">Current sync status.</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct AvSyncAnalysis(
+    double VideoAudioDriftMs,
+    double DriftRateMsPerSec,
+    double PeakDriftMs,
+    double AvgDriftMs,
+    double PcrVideoOffsetMs,
+    double PcrAudioOffsetMs,
+    long VideoPtsCount,
+    long AudioPtsCount,
+    long PcrCount,
+    long VideoDiscontinuities,
+    long AudioDiscontinuities,
+    long PcrDiscontinuities,
+    long LastVideoPts,
+    long LastAudioPts,
+    long LastPcr,
+    AvSyncStatus Status
+)
+{
+    /// <summary>
+    /// Gets whether the stream is currently synchronized within tolerance.
+    /// </summary>
+    public bool IsSynchronized => Status == AvSyncStatus.Synchronized;
+
+    /// <summary>
+    /// Gets the absolute drift in milliseconds.
+    /// </summary>
+    public double AbsoluteDriftMs => Math.Abs(VideoAudioDriftMs);
+
+    /// <summary>
+    /// Gets a human-readable description of the sync status.
+    /// </summary>
+    public string StatusDescription =>
+        Status switch
+        {
+            AvSyncStatus.Synchronized => string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"Synchronized (drift: {VideoAudioDriftMs:F1}ms)"
+            ),
+            AvSyncStatus.Drifting => string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"Drifting ({VideoAudioDriftMs:F1}ms, rate: {DriftRateMsPerSec:F2}ms/s)"
+            ),
+            AvSyncStatus.Desync => string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"Desync ({VideoAudioDriftMs:F1}ms)"
+            ),
+            AvSyncStatus.NoAudio => "No audio",
+            AvSyncStatus.NoVideo => "No video",
+            _ => "Unknown",
+        };
+}
+
+/// <summary>
+/// Restamping statistics.
+/// </summary>
+/// <param name="PacketsProcessed">Total packets analyzed.</param>
+/// <param name="PcrSmoothed">PCRs that were smoothed.</param>
+/// <param name="PtsCorrected">PTS values corrected.</param>
+/// <param name="DtsCorrected">DTS values corrected.</param>
+/// <param name="DiscontinuitiesFixed">Discontinuities repaired.</param>
+/// <param name="TotalCorrectionMs">Cumulative correction applied.</param>
+/// <param name="CurrentOffsetMs">Current correction offset.</param>
+/// <param name="LastCorrectionTime">Time of last correction.</param>
+/// <param name="CorrectionActive">Currently applying corrections.</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct RestampingStatistics(
+    long PacketsProcessed,
+    long PcrSmoothed,
+    long PtsCorrected,
+    long DtsCorrected,
+    long DiscontinuitiesFixed,
+    double TotalCorrectionMs,
+    double CurrentOffsetMs,
+    DateTime? LastCorrectionTime,
+    bool CorrectionActive
+)
+{
+    /// <summary>
+    /// Gets the total number of timestamps modified.
+    /// </summary>
+    public long TotalModified => PcrSmoothed + PtsCorrected + DtsCorrected;
+}
+
+/// <summary>
+/// Managed streamer status.
+/// </summary>
+/// <param name="State">Current streamer state.</param>
+/// <param name="CurrentUrlIndex">Active URL index (0-based).</param>
+/// <param name="UrlCount">Total URLs configured.</param>
+/// <param name="RetryCount">Current retry attempt number.</param>
+/// <param name="BytesReceived">Total bytes received from network.</param>
+/// <param name="PacketsOutput">Total TS packets written to output.</param>
+/// <param name="SwitchesCompleted">Number of URL switches performed.</param>
+/// <param name="Reconnections">Number of reconnection attempts.</param>
+/// <param name="LastDataTime">Time of last data received.</param>
+/// <param name="SessionStart">Session start time.</param>
+/// <param name="LastHttpStatus">Last HTTP response code.</param>
+/// <param name="LastCurlError">Last libcurl error code.</param>
+/// <param name="QualitySwitches">Switches triggered by quality degradation (TR 101 290).</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct StreamerStatus(
+    StreamerState State,
+    int CurrentUrlIndex,
+    int UrlCount,
+    int RetryCount,
+    long BytesReceived,
+    long PacketsOutput,
+    long SwitchesCompleted,
+    long Reconnections,
+    DateTime? LastDataTime,
+    DateTime? SessionStart,
+    int LastHttpStatus,
+    int LastCurlError,
+    long QualitySwitches
+)
+{
+    /// <summary>
+    /// Gets whether the streamer is actively streaming or reconnecting.
+    /// </summary>
+    public bool IsActive =>
+        State
+            is StreamerState.Connecting
+                or StreamerState.Streaming
+                or StreamerState.Reconnecting
+                or StreamerState.Switching;
+
+    /// <summary>
+    /// Gets whether the streamer has reached a terminal state.
+    /// </summary>
+    public bool IsTerminal => State is StreamerState.Stopped or StreamerState.Failed;
+}

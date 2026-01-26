@@ -21,7 +21,6 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Xtream.Service.ProviderManagement;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Client;
@@ -184,11 +183,11 @@ public readonly record struct BackendHealthResult
     }
 
     /// <summary>
-    /// Gets the appropriate <see cref="ProviderFailureReason"/> for this result.
+    /// Gets a descriptive failure reason string for this result.
     /// Uses exception analysis for accurate categorization.
     /// </summary>
-    /// <returns>The failure reason, or null if the result is healthy.</returns>
-    public ProviderFailureReason? ToFailureReason()
+    /// <returns>The failure reason description, or null if the result is healthy.</returns>
+    public string? ToFailureReason()
     {
         if (IsHealthy)
         {
@@ -197,17 +196,17 @@ public readonly record struct BackendHealthResult
 
         if (IsZombieBackend)
         {
-            return ProviderFailureReason.ZombieBackend;
+            return "ZombieBackend";
         }
 
         if (IsDnsFailure)
         {
-            return ProviderFailureReason.NetworkError;
+            return "NetworkError";
         }
 
         if (IsConnectionRefused)
         {
-            return ProviderFailureReason.NetworkError;
+            return "NetworkError";
         }
 
         // Check error message for additional patterns
@@ -216,12 +215,12 @@ public readonly record struct BackendHealthResult
         // HTTP status code based failures
         if (error.Contains("407", StringComparison.Ordinal))
         {
-            return ProviderFailureReason.ProxyAuthenticationError;
+            return "ProxyAuthenticationError";
         }
 
         if (error.Contains("429", StringComparison.Ordinal) || error.Contains("RATE LIMIT", StringComparison.Ordinal))
         {
-            return ProviderFailureReason.RateLimited;
+            return "RateLimited";
         }
 
         if (
@@ -230,7 +229,7 @@ public readonly record struct BackendHealthResult
             || error.Contains("GATEWAY TIMEOUT", StringComparison.Ordinal)
         )
         {
-            return ProviderFailureReason.Timeout;
+            return "Timeout";
         }
 
         if (
@@ -238,7 +237,7 @@ public readonly record struct BackendHealthResult
             || error.Contains("SERVICE UNAVAILABLE", StringComparison.Ordinal)
         )
         {
-            return ProviderFailureReason.ServerError;
+            return "ServerError";
         }
 
         // Network-level patterns
@@ -249,10 +248,10 @@ public readonly record struct BackendHealthResult
             || error.Contains("NETWORK UNREACHABLE", StringComparison.Ordinal)
         )
         {
-            return ProviderFailureReason.NetworkError;
+            return "NetworkError";
         }
 
-        return ProviderFailureReason.Unknown;
+        return "Unknown";
     }
 }
 
@@ -495,7 +494,7 @@ public class BackendHealthValidator
         }
 
         // Default: retry unknown errors
-        return result.ToFailureReason() == ProviderFailureReason.Unknown;
+        return string.Equals(result.ToFailureReason(), "Unknown", StringComparison.Ordinal);
     }
 
     private async Task<BackendHealthResult> ValidateSingleAttemptAsync(
@@ -638,7 +637,8 @@ public class BackendHealthValidator
     {
         ArgumentNullException.ThrowIfNull(url);
 
-        var timeoutMs = responseHeadersTimeoutMs ?? StreamingTimeoutPolicy.GetResponseHeadersTimeoutMs();
+        // Default response headers timeout: 10 seconds (detects zombie backends that accept TCP but never send HTTP response)
+        var timeoutMs = responseHeadersTimeoutMs ?? 10000;
         var startTime = DateTime.UtcNow;
         CancellationTokenSource? timeoutCts = null;
 

@@ -7,28 +7,23 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "tsduck.h"
+
 namespace tsduck_interop {
 
 // ============================================================================
-// MPEG-TS Constants
+// MPEG-TS Constants (derived from TsDuck)
 // ============================================================================
 
-constexpr uint8_t TS_SYNC_BYTE = 0x47;
-constexpr int TS_PACKET_SIZE = 188;
-constexpr size_t MAX_PIDS = 8192;
+/// Number of distinct PID values in MPEG-TS (0x0000..0x1FFF inclusive)
+constexpr size_t MAX_PIDS = static_cast<size_t>(ts::PID_NULL) + 1;
 
 // ============================================================================
-// Clock Frequencies
+// PTS/DTS Constants (derived from TsDuck)
 // ============================================================================
 
-constexpr double PCR_CLOCK_FREQ = 27000000.0;  // 27 MHz PCR clock
-constexpr double PTS_CLOCK_FREQ = 90000.0;     // 90 kHz PTS/DTS clock
-
-// ============================================================================
-// PTS/DTS Constants
-// ============================================================================
-
-constexpr int64_t PTS_33BIT_MAX = (1LL << 33) - 1;
+/// Maximum 33-bit PTS/DTS value (2^33 - 1), derived from ts::PTS_DTS_SCALE
+constexpr int64_t PTS_33BIT_MAX = static_cast<int64_t>(ts::PTS_DTS_SCALE) - 1;
 constexpr int64_t PTS_DISCONTINUITY_THRESHOLD = 90000;   // 1 second in 90kHz
 constexpr int64_t PTS_BACKWARD_THRESHOLD = 45000;        // 500ms backward jump
 
@@ -78,14 +73,36 @@ constexpr double MIN_CORRECTION_INTERVAL_SEC = 0.1;  // 100ms minimum interval
 constexpr double PCR_SMOOTHING_FACTOR = 0.85;
 
 // ============================================================================
+// TR 101 290 Timing Limits (ETSI TR 101 290 V1.3.1)
+// ============================================================================
+
+constexpr int64_t TR101290_PAT_INTERVAL_NS = 500000000LL;   // 500ms
+constexpr int64_t TR101290_PMT_INTERVAL_NS = 500000000LL;   // 500ms
+constexpr int64_t TR101290_PCR_INTERVAL_NS = 40000000LL;    // 40ms
+constexpr int64_t TR101290_PTS_INTERVAL_NS = 700000000LL;   // 700ms
+constexpr int64_t TR101290_PID_TIMEOUT_NS  = 5000000000LL;  // 5s
+
+// PCR accuracy limit: ±500ns = ±13.5 ticks at 27MHz
+constexpr int64_t TR101290_PCR_ACCURACY_TICKS = 14;
+
+// PCR discontinuity threshold: 100ms at 27MHz
+constexpr int64_t TR101290_PCR_DISCONTINUITY_TICKS = 2700000LL;
+
+// ============================================================================
+// PSI Table Limits
+// ============================================================================
+
+constexpr size_t MAX_PROGRAMS = 32;
+constexpr size_t MAX_ELEMENTARY_STREAMS = 64;
+constexpr size_t PSI_SECTION_MAX_SIZE = 1024;
+
+// ============================================================================
 // Cache Line Size
 // ============================================================================
 
-#ifdef __cpp_lib_hardware_interference_size
-constexpr size_t CACHE_LINE_SIZE = std::hardware_destructive_interference_size;
-#else
+// Use hardcoded 64 bytes (typical for x86-64 and ARM64) to avoid
+// -Winterference-size warnings from std::hardware_destructive_interference_size
 constexpr size_t CACHE_LINE_SIZE = 64;
-#endif
 
 }  // namespace tsduck_interop
 

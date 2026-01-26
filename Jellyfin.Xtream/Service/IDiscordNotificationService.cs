@@ -16,9 +16,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Xtream.Service.MpegTs.Models;
-using Jellyfin.Xtream.Service.MpegTs.TsDuck;
-using Jellyfin.Xtream.Service.ProviderManagement;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -132,24 +129,6 @@ public interface IDiscordNotificationService
     Task<bool> TestWebhookAsync(string webhookUrl, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sends MPEG-TS stream diagnostics to Discord.
-    /// Reports stream health using TsIndexer for structural info and TsDuck for TR 101 290 compliance.
-    /// </summary>
-    /// <param name="streamId">The stream identifier.</param>
-    /// <param name="channelName">The channel name.</param>
-    /// <param name="indexerMetrics">The structured TsIndexer metrics (program structure, encryption).</param>
-    /// <param name="tsDuckMetrics">Optional TsDuck metrics for TR 101 290 compliance (errors, PCR jitter).</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A task representing the asynchronous operation.</returns>
-    Task SendTsIndexerMetricsAsync(
-        string streamId,
-        string channelName,
-        TsIndexerMetrics indexerMetrics,
-        TsDuckMetrics? tsDuckMetrics = null,
-        CancellationToken cancellationToken = default
-    );
-
-    /// <summary>
     /// Sends a TR 101 290 stream quality violation notification to Discord.
     /// Used to report issues like missing PCR values, version changes, or jitter violations.
     /// </summary>
@@ -245,26 +224,6 @@ public interface IDiscordNotificationService
         double correctionMs,
         string correctionType,
         long streamOffset,
-        CancellationToken cancellationToken = default
-    );
-
-    /// <summary>
-    /// Sends a provider blacklist notification to Discord.
-    /// Reports when a provider is temporarily blacklisted due to consecutive failures.
-    /// </summary>
-    /// <param name="providerId">The provider identifier.</param>
-    /// <param name="providerName">The provider display name.</param>
-    /// <param name="reason">The failure reason that triggered the blacklist.</param>
-    /// <param name="duration">How long the provider will be blacklisted.</param>
-    /// <param name="consecutiveFailures">Number of consecutive failures that triggered the blacklist.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A task representing the asynchronous operation.</returns>
-    Task NotifyProviderBlacklistedAsync(
-        string providerId,
-        string providerName,
-        ProviderFailureReason reason,
-        TimeSpan duration,
-        int consecutiveFailures,
         CancellationToken cancellationToken = default
     );
 }

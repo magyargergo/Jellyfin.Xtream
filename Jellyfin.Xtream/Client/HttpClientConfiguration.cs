@@ -20,7 +20,6 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.RateLimiting;
 using Jellyfin.Xtream.Configuration;
-using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -319,7 +318,10 @@ public static class HttpClientConfiguration
             // Industry standard: 1-5 seconds for CDN failover scenarios
             // KeepAlivePingDelay: 60s - ping during active requests to prevent connection drops
             // KeepAlivePingTimeout: 30s - allow time for ping response over slow networks
-            ConnectTimeout = TimeSpan.FromMilliseconds(StreamingTimeoutPolicy.GetConnectTimeoutMs(config)),
+            // Default TCP connection timeout: 5 seconds (industry standard for CDN failover scenarios)
+            ConnectTimeout = TimeSpan.FromMilliseconds(
+                config.StreamConnectTimeoutSeconds > 0 ? config.StreamConnectTimeoutSeconds * 1000 : 5000
+            ),
             KeepAlivePingTimeout = TimeSpan.FromSeconds(30),
             KeepAlivePingDelay = TimeSpan.FromSeconds(60),
             KeepAlivePingPolicy = System.Net.Http.HttpKeepAlivePingPolicy.WithActiveRequests,
@@ -332,9 +334,9 @@ public static class HttpClientConfiguration
 
             // NOTE: "Zombie backend" detection (TCP connects but HTTP never responds) is handled
             // at the request level in Restream.ResolveStreamUrlAsync using CancellationToken
-            // with StreamingTimeoutPolicy.GetResponseHeadersTimeoutMs(). SocketsHttpHandler
-            // doesn't have a dedicated response headers timeout property - ConnectTimeout only
-            // covers TCP establishment, not HTTP response. See Restream.SendWithZombieBackendDetectionAsync.
+            // with a 10-second response headers timeout. SocketsHttpHandler doesn't have a
+            // dedicated response headers timeout property - ConnectTimeout only covers TCP
+            // establishment, not HTTP response. See BackendHealthValidator.SendWithZombieDetectionAsync.
         };
 
         // Configure proxy if enabled

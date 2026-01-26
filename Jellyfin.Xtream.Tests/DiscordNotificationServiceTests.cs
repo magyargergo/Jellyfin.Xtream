@@ -17,9 +17,6 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service;
-using Jellyfin.Xtream.Service.MpegTs.Models;
-using Jellyfin.Xtream.Service.MpegTs.TsDuck;
-using Jellyfin.Xtream.Service.ProviderManagement;
 using Xunit;
 
 namespace Jellyfin.Xtream.Tests;
@@ -157,7 +154,6 @@ public sealed class DiscordNotificationServiceTests
         // Quality notifications
         Assert.NotNull(interfaceType.GetMethod("NotifyAVDriftAsync"));
         Assert.NotNull(interfaceType.GetMethod("NotifyStreamQualityViolationAsync"));
-        Assert.NotNull(interfaceType.GetMethod("SendTsIndexerMetricsAsync"));
 
         // Connection limit notifications
         Assert.NotNull(interfaceType.GetMethod("NotifyConnectionLimitChangeAsync"));
@@ -294,14 +290,6 @@ public sealed class DiscordNotificationServiceTests
         public Task<bool> TestWebhookAsync(string webhookUrl, CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
 
-        public Task SendTsIndexerMetricsAsync(
-            string streamId,
-            string channelName,
-            TsIndexerMetrics indexerMetrics,
-            TsDuckMetrics? tsDuckMetrics = null,
-            CancellationToken cancellationToken = default
-        ) => Task.CompletedTask;
-
         public Task NotifyStreamQualityViolationAsync(
             string streamId,
             string channelName,
@@ -349,15 +337,6 @@ public sealed class DiscordNotificationServiceTests
             LastAudioSyncCorrection = (streamId, originalDriftMs, correctionType);
             return Task.CompletedTask;
         }
-
-        public Task NotifyProviderBlacklistedAsync(
-            string providerId,
-            string providerName,
-            ProviderFailureReason reason,
-            TimeSpan duration,
-            int consecutiveFailures,
-            CancellationToken cancellationToken = default
-        ) => Task.CompletedTask;
     }
 
     [Fact]

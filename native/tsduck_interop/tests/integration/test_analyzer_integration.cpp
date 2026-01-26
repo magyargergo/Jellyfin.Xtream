@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <gtest/gtest.h>
-#include <tsduck.h>
-#include <cstring>
 #include <vector>
 #include <chrono>
 #include "context/context.hpp"
@@ -19,12 +17,12 @@ protected:
 
     void SetUp() override {
         ctx = new context::TsDuckContext();
-        ASSERT_TRUE(ctx->isInitialized());
+        ASSERT_TRUE(ctx->is_initialized());
 
         TsDuckConfigNative config{};
         config.metrics_interval_ms = 100;
         config.enable_tr101290 = 1;
-        config.sample_size_bytes = TS_PACKET_SIZE * 100;
+        config.sample_size_bytes = ts::PKT_SIZE * 100;
 
         analyzer = new context::TsDuckAnalyzer(ctx, &config);
     }
@@ -37,45 +35,37 @@ protected:
     // Create a valid TS packet
     static void createPacket(uint8_t* packet, uint16_t pid, uint8_t cc,
                              bool has_payload = true, bool has_adaptation = false) {
-        std::memset(packet, 0xFF, TS_PACKET_SIZE);
-        packet[0] = TS_SYNC_BYTE;
-        packet[1] = (pid >> 8) & 0x1F;
-        packet[2] = pid & 0xFF;
+        ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(packet);
+        pkt = ts::NullPacket;
+        pkt.setPID(ts::PID(pid));
 
         uint8_t adaptation_control = 0;
         if (has_adaptation && has_payload) adaptation_control = 0x30;
         else if (has_adaptation) adaptation_control = 0x20;
         else if (has_payload) adaptation_control = 0x10;
 
-        packet[3] = adaptation_control | (cc & 0x0F);
+        pkt.b[3] = adaptation_control | (cc & 0x0F);
 
         if (has_adaptation) {
-            packet[4] = 7;  // Adaptation field length
-            packet[5] = 0;  // Flags
+            pkt.b[4] = 7;  // Adaptation field length
+            pkt.b[5] = 0;  // Flags
         }
     }
 
     // Create a null packet
     static void createNullPacket(uint8_t* packet) {
-        createPacket(packet, 0x1FFF, 0, true, false);
+        ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(packet);
+        pkt = ts::NullPacket;
     }
 
     // Create a packet with PCR
     static void createPcrPacket(uint8_t* packet, uint16_t pid, uint8_t cc, uint64_t pcr) {
         createPacket(packet, pid, cc, true, true);
-        packet[4] = 7;  // Adaptation field length
-        packet[5] = 0x10;  // PCR flag
-
-        // Write PCR base (33 bits)
-        uint64_t pcr_base = pcr / 300;
-        uint16_t pcr_ext = pcr % 300;
-
-        packet[6] = (pcr_base >> 25) & 0xFF;
-        packet[7] = (pcr_base >> 17) & 0xFF;
-        packet[8] = (pcr_base >> 9) & 0xFF;
-        packet[9] = (pcr_base >> 1) & 0xFF;
-        packet[10] = ((pcr_base & 0x01) << 7) | 0x7E | ((pcr_ext >> 8) & 0x01);
-        packet[11] = pcr_ext & 0xFF;
+        ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(packet);
+        pkt.b[4] = 7;     // AF length
+        pkt.b[5] = 0x10;  // PCR flag
+        // Encode PCR using TsDuck
+        pkt.setPCR(pcr);
     }
 };
 
@@ -84,7 +74,7 @@ protected:
 // ============================================================================
 
 TEST_F(AnalyzerIntegrationTest, ContextInitializesCorrectly) {
-    EXPECT_TRUE(ctx->isInitialized());
+    EXPECT_TRUE(ctx->is_initialized());
 }
 
 // ============================================================================
@@ -92,18 +82,18 @@ TEST_F(AnalyzerIntegrationTest, ContextInitializesCorrectly) {
 // ============================================================================
 
 TEST_F(AnalyzerIntegrationTest, FeedSinglePacket) {
-    uint8_t packet[TS_PACKET_SIZE];
+    uint8_t packet[ts::PKT_SIZE];
     createPacket(packet, 100, 0);
 
-    int32_t result = analyzer->feed(packet, TS_PACKET_SIZE);
+    int32_t result = analyzer->feed(packet, ts::PKT_SIZE);
     EXPECT_EQ(result, 1);
 }
 
 TEST_F(AnalyzerIntegrationTest, FeedMultiplePackets) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 100);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 100);
 
     for (int i = 0; i < 100; i++) {
-        createPacket(&data[i * TS_PACKET_SIZE], 100, i % 16);
+        createPacket(&data[i * ts::PKT_SIZE], 100, i % 16);
     }
 
     int32_t result = analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
@@ -121,28 +111,28 @@ TEST_F(AnalyzerIntegrationTest, FeedRejectsInvalidData) {
 // ============================================================================
 
 TEST_F(AnalyzerIntegrationTest, TracksMultiplePids) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 30);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 30);
 
     // Create packets for 3 different PIDs
     for (int i = 0; i < 10; i++) {
-        createPacket(&data[i * TS_PACKET_SIZE], 100, i % 16);
-        createPacket(&data[(10 + i) * TS_PACKET_SIZE], 200, i % 16);
-        createPacket(&data[(20 + i) * TS_PACKET_SIZE], 300, i % 16);
+        createPacket(&data[i * ts::PKT_SIZE], 100, i % 16);
+        createPacket(&data[(10 + i) * ts::PKT_SIZE], 200, i % 16);
+        createPacket(&data[(20 + i) * ts::PKT_SIZE], 300, i % 16);
     }
 
     analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
 
-    EXPECT_EQ(analyzer->pids.getActiveCount(), 3);
+    EXPECT_EQ(analyzer->pids.get_active_count(), 3);
 }
 
 TEST_F(AnalyzerIntegrationTest, TracksNullPackets) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 10);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 10);
 
     for (int i = 0; i < 5; i++) {
-        createPacket(&data[i * TS_PACKET_SIZE], 100, i % 16);
+        createPacket(&data[i * ts::PKT_SIZE], 100, i % 16);
     }
     for (int i = 5; i < 10; i++) {
-        createNullPacket(&data[i * TS_PACKET_SIZE]);
+        createNullPacket(&data[i * ts::PKT_SIZE]);
     }
 
     analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
@@ -159,11 +149,11 @@ TEST_F(AnalyzerIntegrationTest, TracksNullPackets) {
 // ============================================================================
 
 TEST_F(AnalyzerIntegrationTest, ProcessesPcrPackets) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 10);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 10);
     uint64_t pcr = 27000000;  // 1 second
 
     for (int i = 0; i < 10; i++) {
-        createPcrPacket(&data[i * TS_PACKET_SIZE], 256, i % 16, pcr);
+        createPcrPacket(&data[i * ts::PKT_SIZE], 256, i % 16, pcr);
         pcr += 2700000;  // 100ms intervals
     }
 
@@ -181,10 +171,10 @@ TEST_F(AnalyzerIntegrationTest, ProcessesPcrPackets) {
 // ============================================================================
 
 TEST_F(AnalyzerIntegrationTest, GeneratesMetrics) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 1000);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 1000);
 
     for (int i = 0; i < 1000; i++) {
-        createPacket(&data[i * TS_PACKET_SIZE], 100 + (i % 3), i % 16);
+        createPacket(&data[i * ts::PKT_SIZE], 100 + (i % 3), i % 16);
     }
 
     analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
@@ -193,12 +183,12 @@ TEST_F(AnalyzerIntegrationTest, GeneratesMetrics) {
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
     // Feed a small amount of data to trigger updateMetrics()
-    std::vector<uint8_t> trigger_data(TS_PACKET_SIZE);
+    std::vector<uint8_t> trigger_data(ts::PKT_SIZE);
     createPacket(trigger_data.data(), 100, 0);
     analyzer->feed(trigger_data.data(), static_cast<int32_t>(trigger_data.size()));
 
     TsDuckMetricsNative metrics;
-    bool has_metrics = analyzer->getMetrics(&metrics);
+    bool has_metrics = analyzer->get_metrics(&metrics);
 
     EXPECT_TRUE(has_metrics);
     EXPECT_GT(metrics.pid_count, 0);
@@ -209,24 +199,24 @@ TEST_F(AnalyzerIntegrationTest, GeneratesMetrics) {
 // ============================================================================
 
 TEST_F(AnalyzerIntegrationTest, DetectsContinuityErrors) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 10);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 10);
 
     // Create packets with CC: 0, 1, 2, 5, 6, 7 (missing 3, 4)
-    createPacket(&data[0 * TS_PACKET_SIZE], 100, 0);
-    createPacket(&data[1 * TS_PACKET_SIZE], 100, 1);
-    createPacket(&data[2 * TS_PACKET_SIZE], 100, 2);
-    createPacket(&data[3 * TS_PACKET_SIZE], 100, 5);  // CC error here
-    createPacket(&data[4 * TS_PACKET_SIZE], 100, 6);
-    createPacket(&data[5 * TS_PACKET_SIZE], 100, 7);
-    createPacket(&data[6 * TS_PACKET_SIZE], 100, 8);
-    createPacket(&data[7 * TS_PACKET_SIZE], 100, 9);
-    createPacket(&data[8 * TS_PACKET_SIZE], 100, 10);
-    createPacket(&data[9 * TS_PACKET_SIZE], 100, 11);
+    createPacket(&data[0 * ts::PKT_SIZE], 100, 0);
+    createPacket(&data[1 * ts::PKT_SIZE], 100, 1);
+    createPacket(&data[2 * ts::PKT_SIZE], 100, 2);
+    createPacket(&data[3 * ts::PKT_SIZE], 100, 5);  // CC error here
+    createPacket(&data[4 * ts::PKT_SIZE], 100, 6);
+    createPacket(&data[5 * ts::PKT_SIZE], 100, 7);
+    createPacket(&data[6 * ts::PKT_SIZE], 100, 8);
+    createPacket(&data[7 * ts::PKT_SIZE], 100, 9);
+    createPacket(&data[8 * ts::PKT_SIZE], 100, 10);
+    createPacket(&data[9 * ts::PKT_SIZE], 100, 11);
 
     analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
 
     // Check TSDuck's CC analyzer detected errors
-    size_t cc_errors = analyzer->cc_analyzer.errorCount();
+    int64_t cc_errors = analyzer->pids.total_cc_errors.load(std::memory_order_relaxed);
     EXPECT_GT(cc_errors, 0);
 }
 
@@ -235,10 +225,10 @@ TEST_F(AnalyzerIntegrationTest, DetectsContinuityErrors) {
 // ============================================================================
 
 TEST_F(AnalyzerIntegrationTest, CalculatesBitrateFromPackets) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 1000);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 1000);
 
     for (int i = 0; i < 1000; i++) {
-        createPacket(&data[i * TS_PACKET_SIZE], 100, i % 16);
+        createPacket(&data[i * ts::PKT_SIZE], 100, i % 16);
     }
 
     analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
@@ -247,12 +237,12 @@ TEST_F(AnalyzerIntegrationTest, CalculatesBitrateFromPackets) {
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
     // Feed a small amount of data to trigger updateMetrics()
-    std::vector<uint8_t> trigger_data(TS_PACKET_SIZE);
+    std::vector<uint8_t> trigger_data(ts::PKT_SIZE);
     createPacket(trigger_data.data(), 100, 0);
     analyzer->feed(trigger_data.data(), static_cast<int32_t>(trigger_data.size()));
 
     BitrateAnalysisNative bitrate;
-    bool has_bitrate = analyzer->getBitrateAnalysis(&bitrate);
+    bool has_bitrate = analyzer->get_bitrate_analysis(&bitrate);
 
     EXPECT_TRUE(has_bitrate);
     EXPECT_GT(bitrate.ts_bitrate_nominal, 0);
@@ -263,10 +253,10 @@ TEST_F(AnalyzerIntegrationTest, CalculatesBitrateFromPackets) {
 // ============================================================================
 
 TEST_F(AnalyzerIntegrationTest, ResetClearsAllState) {
-    std::vector<uint8_t> data(TS_PACKET_SIZE * 100);
+    std::vector<uint8_t> data(ts::PKT_SIZE * 100);
 
     for (int i = 0; i < 100; i++) {
-        createPacket(&data[i * TS_PACKET_SIZE], 100, i % 16);
+        createPacket(&data[i * ts::PKT_SIZE], 100, i % 16);
     }
 
     analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
@@ -275,7 +265,7 @@ TEST_F(AnalyzerIntegrationTest, ResetClearsAllState) {
     analyzer->reset();
 
     EXPECT_EQ(analyzer->packets_processed.load(), 0);
-    EXPECT_EQ(analyzer->pids.getActiveCount(), 0);
+    EXPECT_EQ(analyzer->pids.get_active_count(), 0);
 }
 
 // ============================================================================

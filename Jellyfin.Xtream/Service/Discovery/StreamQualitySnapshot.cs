@@ -14,7 +14,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
-using Jellyfin.Xtream.Service.MpegTs.TsDuck;
 
 namespace Jellyfin.Xtream.Service.Discovery;
 
@@ -50,15 +49,8 @@ public enum StreamQualityLevel
 }
 
 /// <summary>
-/// Captures stream quality metrics from TsDuck or TsIndexer during discovery and monitoring.
+/// Captures stream quality metrics during discovery and monitoring.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This class integrates with TsDuck's native TR 101 290 monitoring for broadcast-grade
-/// quality metrics. When TsDuck is available, use <see cref="FromTsDuckMetrics"/> for
-/// comprehensive TR 101 290 compliance data.
-/// </para>
-/// </remarks>
 public sealed class StreamQualitySnapshot
 {
     /// <summary>
@@ -251,71 +243,5 @@ public sealed class StreamQualitySnapshot
         };
 
         QualityIssues = issues.Count > 0 ? string.Join(", ", issues) : null;
-    }
-
-    /// <summary>
-    /// Creates a StreamQualitySnapshot from TsDuck metrics.
-    /// </summary>
-    /// <param name="metrics">TsDuck metrics containing TR 101 290 data.</param>
-    /// <returns>A new StreamQualitySnapshot populated with TsDuck metrics.</returns>
-    public static StreamQualitySnapshot FromTsDuckMetrics(TsDuckMetrics metrics)
-    {
-        ArgumentNullException.ThrowIfNull(metrics);
-
-        var snapshot = new StreamQualitySnapshot
-        {
-            // TR 101 290 Priority 1 metrics
-            SyncByteErrors = metrics.Priority1.SyncByteError,
-            ContinuityErrors = metrics.Priority1.ContinuityCountError,
-            PatViolations = metrics.Priority1.PatError + metrics.Priority1.PatError2,
-
-            // TR 101 290 Priority 2 metrics
-            PacketErrors = metrics.Priority2.TransportError,
-            CrcErrors = metrics.Priority2.CrcError,
-
-            // Stream information
-            ProgramCount = metrics.ServiceCount,
-
-            // Use TsDuck's quality score calculation
-            QualityScore = metrics.CalculateQualityScore(),
-        };
-
-        snapshot.CalculateQualityFromScore();
-        return snapshot;
-    }
-
-    /// <summary>
-    /// Updates this snapshot with TR 101 290 metrics from TsDuck.
-    /// </summary>
-    /// <param name="metrics">TsDuck metrics containing TR 101 290 data.</param>
-    public void UpdateFromTsDuckMetrics(TsDuckMetrics metrics)
-    {
-        ArgumentNullException.ThrowIfNull(metrics);
-
-        // TR 101 290 Priority 1 metrics (most critical)
-        SyncByteErrors = metrics.Priority1.SyncByteError;
-        ContinuityErrors = metrics.Priority1.ContinuityCountError;
-        PatViolations = metrics.Priority1.PatError + metrics.Priority1.PatError2;
-
-        // TR 101 290 Priority 2 metrics
-        PacketErrors = metrics.Priority2.TransportError;
-        CrcErrors = metrics.Priority2.CrcError;
-
-        // Stream information
-        ProgramCount = metrics.ServiceCount;
-    }
-
-    /// <summary>
-    /// Sets quality level based on a pre-calculated quality score.
-    /// </summary>
-    private void CalculateQualityFromScore()
-    {
-        QualityLevel = QualityScore switch
-        {
-            >= 95 => StreamQualityLevel.Excellent,
-            >= 80 => StreamQualityLevel.Good,
-            >= 60 => StreamQualityLevel.Fair,
-            _ => StreamQualityLevel.Poor,
-        };
     }
 }

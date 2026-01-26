@@ -11,14 +11,13 @@
 #include <cstddef>
 #include "../core/constants.hpp"
 
-namespace tsduck_interop {
-namespace concurrency {
+namespace tsduck_interop::concurrency {
 
 // ============================================================================
 // Lock-Free Ring Buffer (SPSC - Single Producer Single Consumer)
 // ============================================================================
 
-template<typename T, size_t Capacity>
+template <typename T, size_t Capacity>
 class alignas(CACHE_LINE_SIZE) LockFreeRingBuffer {
     static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be power of 2");
 
@@ -38,14 +37,13 @@ public:
         }
     }
 
-    size_t size() const noexcept {
-        return size_.load(std::memory_order_acquire);
-    }
+    size_t size() const noexcept { return size_.load(std::memory_order_acquire); }
 
     // Get min/max from buffer (approximate - may be slightly stale)
     std::pair<T, T> get_min_max() const noexcept {
         size_t sz = size_.load(std::memory_order_acquire);
-        if (sz == 0) return {T{}, T{}};
+        if (sz == 0)
+            return {T{}, T{}};
 
         size_t w = write_idx_.load(std::memory_order_acquire);
         T min_val = buffer_[(w - 1) & (Capacity - 1)];
@@ -71,16 +69,11 @@ public:
         return buffer_[(w - 1 - idx) & (Capacity - 1)];
     }
 
-    size_t write_index() const noexcept {
-        return write_idx_.load(std::memory_order_acquire);
-    }
+    size_t write_index() const noexcept { return write_idx_.load(std::memory_order_acquire); }
 
-    static constexpr size_t capacity() noexcept {
-        return Capacity;
-    }
+    static constexpr size_t capacity() noexcept { return Capacity; }
 };
 
-}  // namespace concurrency
-}  // namespace tsduck_interop
+}  // namespace tsduck_interop::concurrency
 
 #endif  // TSDUCK_INTEROP_CONCURRENCY_RING_BUFFER_HPP

@@ -1,0 +1,11 @@
+services:
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: Jellyfin.Xtream.E2ETests/Dockerfile.e2e
+    volumes:
+      - ./e2e-results:/results
+    environment:
+      - E2E_STREAM_DURATION_SEC=10
+      - E2E_TARGET_BITRATE_MBPS=5
+      - DOTNET_ENVIRONMENT=Production

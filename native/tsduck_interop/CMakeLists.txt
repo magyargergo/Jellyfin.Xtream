@@ -8,10 +8,13 @@
 cmake_minimum_required(VERSION 3.16)
 project(tsduck_interop VERSION 1.0.0 LANGUAGES CXX)
 
-# C++17 required for structured bindings and other features
-set(CMAKE_CXX_STANDARD 17)
+# C++20 required for TsDuck v3.43+ headers
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Generate compile_commands.json for static analysis tools (clang-tidy, cppcheck)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Build type defaults
 if(NOT CMAKE_BUILD_TYPE)
@@ -220,14 +223,19 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     endif()
 endif()
 
-# Find TSDuck using pkg-config
+# Find libcurl for HTTP streaming
+find_package(CURL REQUIRED)
+
+# Find TsDuck via pkg-config (required for ts::TSPacket API)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(TSDUCK REQUIRED IMPORTED_TARGET tsduck)
+pkg_check_modules(TSDUCK REQUIRED tsduck)
+message(STATUS "TsDuck found: ${TSDUCK_VERSION}")
 
 # Build shared library
-# Using refactored modular source structure
 add_library(tsduck_interop SHARED
     src/tsduck_interop.cpp
+    src/streaming/stream_source.cpp
+    src/streaming/stream_pipeline.cpp
 )
 
 # Include directories
@@ -244,14 +252,21 @@ target_include_directories(tsduck_interop
         ${CMAKE_CURRENT_SOURCE_DIR}/src/analysis
         ${CMAKE_CURRENT_SOURCE_DIR}/src/restamping
         ${CMAKE_CURRENT_SOURCE_DIR}/src/context
-        ${TSDUCK_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/streaming
+        ${CURL_INCLUDE_DIRS}
 )
 
-# Link TSDuck
+# Link libcurl for HTTP streaming
 target_link_libraries(tsduck_interop
     PRIVATE
-        PkgConfig::TSDUCK
+        CURL::libcurl
 )
+
+# Link TsDuck for ts::TSPacket API (PCR/PTS/DTS manipulation)
+# Use SYSTEM to treat TsDuck headers as system headers (excludes from static analysis)
+target_include_directories(tsduck_interop SYSTEM PRIVATE ${TSDUCK_INCLUDE_DIRS})
+target_link_libraries(tsduck_interop PRIVATE ${TSDUCK_LIBRARIES})
+target_link_directories(tsduck_interop PRIVATE ${TSDUCK_LIBRARY_DIRS})
 
 # Set library properties
 set_target_properties(tsduck_interop PROPERTIES
@@ -316,10 +331,16 @@ message(STATUS "  Build type:       ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ Compiler:     ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "  Install prefix:   ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "")
-message(STATUS "TSDuck:")
+message(STATUS "libcurl:")
+message(STATUS "  Version:          ${CURL_VERSION_STRING}")
+message(STATUS "  Include dirs:     ${CURL_INCLUDE_DIRS}")
+message(STATUS "  Libraries:        ${CURL_LIBRARIES}")
+message(STATUS "")
+message(STATUS "TsDuck:")
 message(STATUS "  Version:          ${TSDUCK_VERSION}")
 message(STATUS "  Include dirs:     ${TSDUCK_INCLUDE_DIRS}")
 message(STATUS "  Libraries:        ${TSDUCK_LIBRARIES}")
+message(STATUS "  Library dirs:     ${TSDUCK_LIBRARY_DIRS}")
 message(STATUS "")
 message(STATUS "CPU Architecture:")
 message(STATUS "  Processor:        ${CMAKE_SYSTEM_PROCESSOR}")
@@ -358,11 +379,260 @@ message(STATUS "Testing:")
 message(STATUS "  Build tests:      ${BUILD_TESTS}")
 message(STATUS "")
 message(STATUS "Project Structure:")
-message(STATUS "  src/core/         Constants and types")
+message(STATUS "  src/core/         Constants (derived from TsDuck)")
 message(STATUS "  src/platform/     CPU detection, SIMD search")
 message(STATUS "  src/concurrency/  Seqlock, ring buffer")
-message(STATUS "  src/mpegts/       Packet utilities")
 message(STATUS "  src/analysis/     PCR, IAT, A/V sync trackers")
-message(STATUS "  src/restamping/   Timestamp correction")
+message(STATUS "  src/restamping/   Timestamp correction (via TsDuck)")
 message(STATUS "  src/context/      TsDuck context and analyzer")
+message(STATUS "  src/streaming/    HTTP streaming, failover, pipeline")
+message(STATUS "")
+
+# ============================================================================
+# Code Formatting Targets (optional)
+# ============================================================================
+option(ENABLE_CODE_FORMATTING "Enable code formatting targets" OFF)
+
+if(ENABLE_CODE_FORMATTING)
+    find_program(CLANG_FORMAT_EXE NAMES clang-format clang-format-18 clang-format-17 clang-format-16)
+    if(CLANG_FORMAT_EXE)
+        message(STATUS "clang-format found: ${CLANG_FORMAT_EXE}")
+
+        # Collect source files for formatting
+        file(GLOB_RECURSE FORMAT_SOURCES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/include/*.h
+        )
+
+        # Create format target (applies formatting in-place)
+        add_custom_target(format
+            COMMAND ${CLANG_FORMAT_EXE}
+                -i
+                --style=file
+                ${FORMAT_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Formatting source files with clang-format..."
+            VERBATIM
+        )
+
+        # Create format-check target (checks formatting without modifying)
+        add_custom_target(format-check
+            COMMAND ${CLANG_FORMAT_EXE}
+                --dry-run
+                --Werror
+                --style=file
+                ${FORMAT_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Checking source file formatting..."
+            VERBATIM
+        )
+
+        # Create format-diff target (shows diff of what would change)
+        add_custom_target(format-diff
+            COMMAND ${CMAKE_COMMAND} -E echo "Showing formatting differences..."
+            COMMAND ${CLANG_FORMAT_EXE}
+                --style=file
+                ${FORMAT_SOURCES}
+                | diff -u ${FORMAT_SOURCES} - || true
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Showing formatting differences..."
+            VERBATIM
+        )
+    else()
+        message(STATUS "clang-format not found - formatting targets disabled")
+    endif()
+endif()
+
+message(STATUS "Code Formatting:")
+message(STATUS "  Enabled:          ${ENABLE_CODE_FORMATTING}")
+if(ENABLE_CODE_FORMATTING AND CLANG_FORMAT_EXE)
+    message(STATUS "  clang-format:     ${CLANG_FORMAT_EXE}")
+elseif(ENABLE_CODE_FORMATTING)
+    message(STATUS "  clang-format:     not found")
+endif()
+message(STATUS "")
+
+# ============================================================================
+# Static Analysis Targets (optional)
+# ============================================================================
+option(ENABLE_STATIC_ANALYSIS "Enable static analysis targets" OFF)
+
+if(ENABLE_STATIC_ANALYSIS)
+    # Find clang-tidy
+    find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy-18 clang-tidy-17 clang-tidy-16)
+    if(CLANG_TIDY_EXE)
+        message(STATUS "clang-tidy found: ${CLANG_TIDY_EXE}")
+
+        # Collect source files for analysis
+        # Note: We only analyze C++ files (.cpp, .hpp), not C headers (.h)
+        # The tsduck_interop.h is a C API header for P/Invoke that must remain C-compatible
+        file(GLOB_RECURSE TSDUCK_SOURCES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp
+        )
+
+        # Create clang-tidy target
+        # Use --extra-arg=-isystem to treat TsDuck and CURL as system headers
+        # Use --extra-arg-before to inject -Qunused-arguments before compile_commands.json flags
+        # This silently ignores GCC-specific flags like -ftree-loop-vectorize
+        add_custom_target(clang-tidy
+            COMMAND ${CLANG_TIDY_EXE}
+                -p ${CMAKE_BINARY_DIR}
+                --config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy
+                "--extra-arg-before=-Qunused-arguments"
+                "--extra-arg=-isystem${TSDUCK_INCLUDE_DIRS}"
+                "--extra-arg=-isystem${CURL_INCLUDE_DIRS}"
+                "--extra-arg=-Wno-unknown-warning-option"
+                ${TSDUCK_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Running clang-tidy static analysis..."
+            VERBATIM
+        )
+
+        # Create clang-tidy-fix target (auto-fixes issues)
+        add_custom_target(clang-tidy-fix
+            COMMAND ${CLANG_TIDY_EXE}
+                -p ${CMAKE_BINARY_DIR}
+                --config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy
+                "--extra-arg-before=-Qunused-arguments"
+                "--extra-arg=-isystem${TSDUCK_INCLUDE_DIRS}"
+                "--extra-arg=-isystem${CURL_INCLUDE_DIRS}"
+                "--extra-arg=-Wno-unknown-warning-option"
+                --fix
+                --fix-errors
+                ${TSDUCK_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Running clang-tidy with auto-fix..."
+            VERBATIM
+        )
+    else()
+        message(STATUS "clang-tidy not found - clang-tidy target disabled")
+    endif()
+
+    # Find cppcheck
+    find_program(CPPCHECK_EXE NAMES cppcheck)
+    if(CPPCHECK_EXE)
+        message(STATUS "cppcheck found: ${CPPCHECK_EXE}")
+
+        # Create cppcheck target
+        # Exclude TsDuck and system header directories from analysis
+        add_custom_target(cppcheck
+            COMMAND ${CPPCHECK_EXE}
+                --enable=all
+                --std=c++20
+                --language=c++
+                --project=${CMAKE_BINARY_DIR}/compile_commands.json
+                --suppressions-list=${CMAKE_CURRENT_SOURCE_DIR}/.cppcheck-suppressions
+                --error-exitcode=1
+                --inline-suppr
+                --quiet
+                -i ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                -i /opt/tsduck
+                -i /usr/include
+                -i /usr/local/include
+                --template="{file}:{line}: [{severity}] {id}: {message}"
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Running cppcheck static analysis..."
+            VERBATIM
+        )
+
+        # Create cppcheck-xml target (for CI integration)
+        add_custom_target(cppcheck-xml
+            COMMAND ${CPPCHECK_EXE}
+                --enable=all
+                --std=c++20
+                --language=c++
+                --project=${CMAKE_BINARY_DIR}/compile_commands.json
+                --suppressions-list=${CMAKE_CURRENT_SOURCE_DIR}/.cppcheck-suppressions
+                --inline-suppr
+                -i ${CMAKE_CURRENT_SOURCE_DIR}/tests
+                -i /opt/tsduck
+                -i /usr/include
+                -i /usr/local/include
+                --xml
+                --output-file=${CMAKE_BINARY_DIR}/cppcheck-report.xml
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Running cppcheck with XML output..."
+            VERBATIM
+        )
+    else()
+        message(STATUS "cppcheck not found - cppcheck target disabled")
+    endif()
+
+    # Find flawfinder (security-focused analysis)
+    find_program(FLAWFINDER_EXE NAMES flawfinder)
+    if(FLAWFINDER_EXE)
+        message(STATUS "flawfinder found: ${FLAWFINDER_EXE}")
+
+        # Create flawfinder target
+        add_custom_target(flawfinder
+            COMMAND ${FLAWFINDER_EXE}
+                --minlevel=1
+                --context
+                --columns
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Running flawfinder security analysis..."
+            VERBATIM
+        )
+
+        # Create flawfinder-html target (for CI integration)
+        add_custom_target(flawfinder-html
+            COMMAND ${FLAWFINDER_EXE}
+                --minlevel=1
+                --context
+                --columns
+                --html
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                > ${CMAKE_BINARY_DIR}/flawfinder-report.html
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Running flawfinder with HTML output..."
+            VERBATIM
+        )
+    else()
+        message(STATUS "flawfinder not found - flawfinder target disabled")
+    endif()
+
+    # Combined static analysis target
+    set(STATIC_ANALYSIS_DEPS)
+    if(CLANG_TIDY_EXE)
+        list(APPEND STATIC_ANALYSIS_DEPS clang-tidy)
+    endif()
+    if(CPPCHECK_EXE)
+        list(APPEND STATIC_ANALYSIS_DEPS cppcheck)
+    endif()
+    if(FLAWFINDER_EXE)
+        list(APPEND STATIC_ANALYSIS_DEPS flawfinder)
+    endif()
+
+    if(STATIC_ANALYSIS_DEPS)
+        add_custom_target(static-analysis
+            DEPENDS ${STATIC_ANALYSIS_DEPS}
+            COMMENT "Running all static analysis tools..."
+        )
+    endif()
+endif()
+
+message(STATUS "Static Analysis:")
+message(STATUS "  Enabled:          ${ENABLE_STATIC_ANALYSIS}")
+if(ENABLE_STATIC_ANALYSIS)
+    if(CLANG_TIDY_EXE)
+        message(STATUS "  clang-tidy:       ${CLANG_TIDY_EXE}")
+    else()
+        message(STATUS "  clang-tidy:       not found")
+    endif()
+    if(CPPCHECK_EXE)
+        message(STATUS "  cppcheck:         ${CPPCHECK_EXE}")
+    else()
+        message(STATUS "  cppcheck:         not found")
+    endif()
+    if(FLAWFINDER_EXE)
+        message(STATUS "  flawfinder:       ${FLAWFINDER_EXE}")
+    else()
+        message(STATUS "  flawfinder:       not found")
+    endif()
+endif()
 message(STATUS "")

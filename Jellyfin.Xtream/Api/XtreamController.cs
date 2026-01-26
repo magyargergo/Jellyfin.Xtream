@@ -30,7 +30,6 @@ using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Discovery;
 using Jellyfin.Xtream.Service.Epg;
 using Jellyfin.Xtream.Service.Logging;
-using Jellyfin.Xtream.Service.ProviderManagement;
 using Jellyfin.Xtream.Utility;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -50,8 +49,6 @@ namespace Jellyfin.Xtream.Api;
 /// <param name="loggerFactory">The logger factory instance.</param>
 /// <param name="cache">The memory cache instance.</param>
 /// <param name="httpClientFactory">The HTTP client factory.</param>
-/// <param name="monitoringService">The provider monitoring service.</param>
-/// <param name="failoverService">The automatic failover service.</param>
 [ApiController]
 [Route("[controller]")]
 [Produces("application/json")]
@@ -59,9 +56,7 @@ public class XtreamController(
     ILogger<XtreamController> logger,
     ILoggerFactory loggerFactory,
     IMemoryCache cache,
-    IHttpClientFactory httpClientFactory,
-    IProviderMonitoringService monitoringService,
-    IAutomaticFailoverService failoverService
+    IHttpClientFactory httpClientFactory
 ) : ControllerBase
 {
     private const int CacheMinutes = 5;
@@ -70,8 +65,6 @@ public class XtreamController(
     private readonly ILoggerFactory _loggerFactory = loggerFactory;
     private readonly IMemoryCache _cache = cache;
     private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
-    private readonly IProviderMonitoringService _monitoringService = monitoringService;
-    private readonly IAutomaticFailoverService _failoverService = failoverService;
 
     private static XtreamProvider? GetProvider(string? providerId)
     {
@@ -1356,67 +1349,6 @@ public class XtreamController(
         );
     }
 
-    /// <summary>
-    /// Get comprehensive connection status for all providers.
-    /// Returns cached data from the background monitoring service to avoid impacting streaming.
-    /// </summary>
-    /// <param name="forceRefresh">If true, triggers a background refresh and waits briefly for new data.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Connection status with per-provider details and utilization warnings.</returns>
-    [Authorize(Policy = "RequiresElevation")]
-    [HttpGet("ConnectionStatus")]
-    public async Task<ActionResult<ConnectionStatusResponse>> GetConnectionStatus(
-        [FromQuery] bool forceRefresh = false,
-        CancellationToken cancellationToken = default
-    )
-    {
-        // Use cached data from the background monitoring service
-        // This avoids making HTTP calls during streaming which could cause disruption
-        var cachedStatus = _monitoringService.GetCachedStatus();
-
-        if (cachedStatus != null && !forceRefresh)
-        {
-            // Update active stream count in real-time (this is local, no network call)
-            cachedStatus.PluginActiveStreams = Restream.GetActiveStreamCount();
-            return Ok(cachedStatus);
-        }
-
-        // If no cached data or force refresh requested, trigger a background refresh
-        _monitoringService.TriggerRefresh();
-
-        // Wait briefly for data to become available (max 2 seconds)
-        const int maxWaitMs = 2000;
-        const int pollIntervalMs = 100;
-        var waited = 0;
-
-        while (waited < maxWaitMs && !cancellationToken.IsCancellationRequested)
-        {
-            cachedStatus = _monitoringService.GetCachedStatus();
-            if (cachedStatus != null)
-            {
-                cachedStatus.PluginActiveStreams = Restream.GetActiveStreamCount();
-                return Ok(cachedStatus);
-            }
-
-            await Task.Delay(pollIntervalMs, cancellationToken).ConfigureAwait(false);
-            waited += pollIntervalMs;
-        }
-
-        // If still no data, return a minimal response
-        var config = Plugin.Instance.Configuration;
-        return Ok(
-            new ConnectionStatusResponse
-            {
-                PluginActiveStreams = Restream.GetActiveStreamCount(),
-                ConfiguredMaxStreams = config.MaxConcurrentStreams,
-                EnforcementEnabled = config.EnforceConnectionLimit,
-                AutoKillEnabled = config.AutoKillOldestStream,
-                WarningLevel = "None",
-                WarningMessage = "Monitoring data not yet available. Refresh in progress.",
-            }
-        );
-    }
-
     private static DiscoveredProviderResponse MapToDiscoveryResponse(ProviderTestResult result)
     {
         return new DiscoveredProviderResponse
@@ -1681,142 +1613,5 @@ public class XtreamController(
         logService.Clear();
         _logger.PluginLogInformation("Log buffer cleared by user");
         return Ok(new { success = true, message = "Log buffer cleared" });
-    }
-
-    /// <summary>
-    /// Get resilience metrics for all providers.
-    /// </summary>
-    /// <returns>Provider resilience states, circuit breaker status, and performance metrics.</returns>
-    [Authorize(Policy = "RequiresElevation")]
-    [HttpGet("ResilienceMetrics")]
-    public ActionResult<object> GetResilienceMetrics()
-    {
-        var states = _failoverService.GetProviderStates();
-        var config = Plugin.Instance.Configuration;
-        var enabledProviders = config.GetEnabledProviders().ToList();
-        var healthSummaries = _failoverService.GetHealthSummaries(enabledProviders);
-
-        var providerMetrics = states
-            .Select(kvp =>
-            {
-                var provider = config.GetProvider(kvp.Key);
-                var perfMetrics = _failoverService.GetMetricsSnapshot(kvp.Key);
-                var healthSummary = healthSummaries.FirstOrDefault(h => h.ProviderId == kvp.Key);
-
-                return new
-                {
-                    providerId = kvp.Key,
-                    providerName = provider?.Name ?? kvp.Key,
-                    circuitState = kvp.Value.CircuitState.ToString(),
-                    selectionScore = kvp.Value.SelectionScore,
-                    isAvailable = kvp.Value.IsAvailable,
-                    consecutiveFailures = kvp.Value.ConsecutiveFailures,
-                    availableSlots = kvp.Value.AvailableSlots,
-                    maxConnections = kvp.Value.MaxConnections,
-                    timestamp = kvp.Value.Timestamp,
-
-                    // Combined health metrics
-                    combinedHealthScore = healthSummary.CombinedScore,
-                    metricsScore = healthSummary.MetricsScore,
-                    healthStatus = healthSummary.Status,
-
-                    // Trend analysis (predictive)
-                    trend = new
-                    {
-                        direction = healthSummary.Trend.ToString(),
-                        currentScore = healthSummary.TrendSnapshot.CurrentScore,
-                        predictedScore30s = healthSummary.TrendSnapshot.PredictedScore30s,
-                        predictedScore60s = healthSummary.TrendSnapshot.PredictedScore60s,
-                        velocity = Math.Round(healthSummary.TrendSnapshot.Velocity, 2),
-                        suggestsImminentFailure = healthSummary.PredictedFailure,
-                    },
-
-                    // Performance metrics
-                    performance = new
-                    {
-                        avgLatencyMs = Math.Round(perfMetrics.AvgLatencyMs, 1),
-                        minLatencyMs = Math.Round(perfMetrics.MinLatencyMs, 1),
-                        maxLatencyMs = Math.Round(perfMetrics.MaxLatencyMs, 1),
-                        avgThroughputMBps = Math.Round(perfMetrics.AvgThroughputMBps, 2),
-                        maxThroughputMBps = Math.Round(perfMetrics.MaxThroughputMBps, 2),
-                        packetErrors = perfMetrics.PacketErrors,
-                        continuityErrors = perfMetrics.ContinuityErrors,
-                        syncErrors = perfMetrics.SyncErrors,
-                        timeoutErrors = perfMetrics.TimeoutErrors,
-                        networkErrors = perfMetrics.NetworkErrors,
-                        totalErrors = perfMetrics.TotalErrors,
-                        disconnections = perfMetrics.DisconnectionCount,
-                        totalStreamTimeMs = perfMetrics.TotalStreamTimeMs,
-                        totalSamples = perfMetrics.TotalSamples,
-                    },
-                };
-            })
-            .OrderByDescending(p => p.combinedHealthScore)
-            .ToList();
-
-        return Ok(
-            new
-            {
-                providers = providerMetrics,
-                summary = new
-                {
-                    totalProviders = providerMetrics.Count,
-                    availableProviders = providerMetrics.Count(p => p.isAvailable),
-                    openCircuits = providerMetrics.Count(p => p.circuitState is "Open" or "Isolated"),
-                    halfOpenCircuits = providerMetrics.Count(p => p.circuitState == "HalfOpen"),
-                    healthyProviders = providerMetrics.Count(p => p.healthStatus == "Healthy"),
-                    degradedProviders = providerMetrics.Count(p => p.healthStatus == "Degraded"),
-                    poorProviders = providerMetrics.Count(p => p.healthStatus == "Poor"),
-                    criticalProviders = providerMetrics.Count(p => p.healthStatus == "Critical"),
-                    avgHealthScore = providerMetrics.Count > 0
-                        ? Math.Round(providerMetrics.Average(p => p.combinedHealthScore), 1)
-                        : 0,
-                    // Trend analysis summary
-                    improvingProviders = providerMetrics.Count(p => p.trend.direction == "Improving"),
-                    degradingProviders = providerMetrics.Count(p =>
-                        p.trend.direction is "Degrading" or "RapidlyDegrading"
-                    ),
-                    imminentFailures = providerMetrics.Count(p => p.trend.suggestsImminentFailure),
-                },
-                configuration = new
-                {
-                    enableHedging = config.EnableHedging,
-                    hedgingDelayMs = config.HedgingDelayMs,
-                    maxHedgedAttempts = config.MaxHedgedAttempts,
-                    providerBlacklistSeconds = config.ProviderBlacklistSeconds,
-                    maxFailoverAttempts = config.MaxFailoverAttempts,
-                    failoverBudgetSeconds = config.FailoverBudgetSeconds,
-                },
-            }
-        );
-    }
-
-    /// <summary>
-    /// Reset a provider's circuit breaker to closed state.
-    /// </summary>
-    /// <param name="providerId">The provider ID to reset.</param>
-    /// <returns>Result indicating success.</returns>
-    [Authorize(Policy = "RequiresElevation")]
-    [HttpPost("ResetCircuit/{providerId}")]
-    public async Task<ActionResult<object>> ResetProviderCircuit(string providerId)
-    {
-        var provider = Plugin.Instance.Configuration.GetProvider(providerId);
-        if (provider == null)
-        {
-            return NotFound(new { success = false, message = "Provider not found" });
-        }
-
-        await _failoverService.ResetCircuitAsync(providerId).ConfigureAwait(false);
-        _logger.PluginLogInformation("Circuit breaker reset for provider {ProviderId}", providerId);
-
-        return Ok(
-            new
-            {
-                success = true,
-                message = $"Circuit breaker reset for provider {provider.Name}",
-                providerId,
-                newState = _failoverService.GetCircuitState(providerId).ToString(),
-            }
-        );
     }
 }

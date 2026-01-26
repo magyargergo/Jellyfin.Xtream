@@ -8,8 +8,7 @@
 #include <cstdint>
 #include "../core/constants.hpp"
 
-namespace tsduck_interop {
-namespace concurrency {
+namespace tsduck_interop::concurrency {
 
 // ============================================================================
 // Seqlock: Lock-Free Read of Compound Data Structures
@@ -59,7 +58,6 @@ struct alignas(CACHE_LINE_SIZE) Seqlock {
     }
 };
 
-}  // namespace concurrency
-}  // namespace tsduck_interop
+}  // namespace tsduck_interop::concurrency
 
 #endif  // TSDUCK_INTEROP_CONCURRENCY_SEQLOCK_HPP

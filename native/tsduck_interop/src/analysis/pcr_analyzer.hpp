@@ -11,11 +11,15 @@
 #include "../concurrency/seqlock.hpp"
 #include "tsduck_interop.h"
 
-namespace tsduck_interop {
-namespace analysis {
+namespace tsduck_interop::analysis {
 
 class alignas(CACHE_LINE_SIZE) PcrAnalyzer {
 public:
+    // PCR constants from TsDuck
+    static constexpr int64_t PCR_WRAPAROUND = static_cast<int64_t>(ts::PCR_SCALE);
+    static constexpr double PCR_FREQUENCY_HZ = static_cast<double>(ts::SYSTEM_CLOCK_FREQ);
+    static constexpr int64_t PCR_TO_90KHZ = static_cast<int64_t>(ts::SYSTEM_CLOCK_SUBFACTOR);
+
     PcrAnalysisNative data{};
     concurrency::Seqlock seqlock;
 
@@ -48,10 +52,10 @@ public:
         // Calculate PCR interval
         int64_t pcr_diff = static_cast<int64_t>(pcr_value) - last_pcr_value;
         if (pcr_diff < 0) {
-            pcr_diff += (1LL << 42);  // Handle wraparound
+            pcr_diff += PCR_WRAPAROUND;  // Handle wraparound
         }
 
-        double interval_ms = static_cast<double>(pcr_diff) / PCR_CLOCK_FREQ * 1000.0;
+        double interval_ms = static_cast<double>(pcr_diff) / PCR_FREQUENCY_HZ * 1000.0;
         int64_t packet_diff = packet_index - last_pcr_packet_index;
 
         data.pcr_interval_packets = packet_diff;
@@ -83,9 +87,9 @@ public:
             if (total_system_us > 1000000.0) {  // After 1 second
                 int64_t total_pcr_diff = static_cast<int64_t>(pcr_value) - first_pcr_value;
                 if (total_pcr_diff < 0) {
-                    total_pcr_diff += (1LL << 42);
+                    total_pcr_diff += PCR_WRAPAROUND;
                 }
-                double expected_pcr_ticks = total_system_us * PCR_CLOCK_FREQ / 1000000.0;
+                double expected_pcr_ticks = total_system_us * PCR_FREQUENCY_HZ / 1000000.0;
                 double drift_ratio = (static_cast<double>(total_pcr_diff) - expected_pcr_ticks) / expected_pcr_ticks;
                 data.pcr_drift_ppm = drift_ratio * 1000000.0;
             }
@@ -100,7 +104,8 @@ public:
     }
 
     bool get(PcrAnalysisNative* out) const noexcept {
-        if (!out) return false;
+        if (!out)
+            return false;
 
         uint64_t seq;
         do {
@@ -122,14 +127,13 @@ public:
         seqlock.end_write(seq);
     }
 
-    int64_t lastPcrBase90khz() const noexcept {
+    int64_t last_pcr_base_90khz() const noexcept {
         // Convert from 27MHz to 90kHz (divide by 300)
         int64_t pcr = last_pcr_value;
-        return pcr >= 0 ? pcr / 300 : -1;
+        return pcr >= 0 ? pcr / PCR_TO_90KHZ : -1;
     }
 };
 
-}  // namespace analysis
-}  // namespace tsduck_interop
+}  // namespace tsduck_interop::analysis
 
 #endif  // TSDUCK_INTEROP_ANALYSIS_PCR_ANALYZER_HPP

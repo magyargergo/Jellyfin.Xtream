@@ -78,17 +78,6 @@ public sealed class CircularBufferWriteStreamTests
     }
 
     /// <summary>
-    /// Verifies TsIndexer is created and available.
-    /// </summary>
-    [Fact]
-    public void Constructor_CreatesTsIndexer()
-    {
-        using var stream = new CircularBufferWriteStream(1024 * 1024);
-
-        Assert.NotNull(stream.TsIndexer);
-    }
-
-    /// <summary>
     /// Verifies power-of-2 buffer sizes use efficient masking.
     /// Power-of-2 sizes enable bitwise AND instead of modulo for position calculation.
     /// Uses smaller chunks to avoid SIMD alignment issues in test environment.

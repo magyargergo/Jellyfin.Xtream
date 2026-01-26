@@ -16,14 +16,11 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
-using Jellyfin.Xtream.Service.MpegTs;
-using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.Discovery.Pipeline.Stages;
@@ -261,22 +258,37 @@ public sealed class StreamTestStage(IHttpClientFactory httpClientFactory, ILogge
     {
         try
         {
-            var indexer = new TsIndexer(StreamTestBytes);
-            indexer.ProcessChunk(data, 0);
+            // Basic byte-level TS quality analysis without MpegTs dependencies.
+            // Count valid sync bytes at expected packet boundaries.
+            var syncErrors = 0L;
+            var packetsParsed = 0L;
 
-            // Note: PatViolations is set to 0 because TR 101 290 monitoring requires TsDuck
-            // which isn't available during quick stream discovery tests
+            // Find first sync byte
+            var offset = Array.IndexOf(data, TsSyncByte);
+            if (offset < 0)
+            {
+                return null;
+            }
+
+            while (offset + TsPacketSize <= data.Length)
+            {
+                if (data[offset] == TsSyncByte)
+                {
+                    packetsParsed++;
+                }
+                else
+                {
+                    syncErrors++;
+                }
+
+                offset += TsPacketSize;
+            }
+
             var snapshot = new StreamQualitySnapshot
             {
-                PacketsParsed = (int)indexer.TotalPacketsParsed,
-                BytesProcessed = (int)indexer.TotalBytesProcessed,
-                SyncByteErrors = (int)indexer.SyncByteErrors,
-                ContinuityErrors = (int)indexer.TotalContinuityErrors,
-                PatViolations = 0,
-                CrcErrors = (int)(indexer.PatCrcErrors + indexer.PmtCrcErrors),
-                ProgramCount = indexer.ProgramCount,
-                IsEncrypted = indexer.IsEncrypted,
-                ScrambledPidCount = indexer.ScrambledPids.Length,
+                PacketsParsed = packetsParsed,
+                BytesProcessed = data.Length,
+                SyncByteErrors = syncErrors,
             };
             snapshot.CalculateQuality();
 

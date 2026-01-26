@@ -54,8 +54,7 @@
     #include <arm_neon.h>
 #endif
 
-namespace tsduck_interop {
-namespace platform {
+namespace tsduck_interop::platform {
 
 // ============================================================================
 // Runtime CPU Feature Detection
@@ -104,7 +103,6 @@ struct CpuFeatures {
     }
 };
 
-}  // namespace platform
-}  // namespace tsduck_interop
+}  // namespace tsduck_interop::platform
 
 #endif  // TSDUCK_INTEROP_PLATFORM_CPU_FEATURES_HPP

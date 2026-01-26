@@ -22,11 +22,6 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Xtream.Service.MpegTs.Core;
-using Jellyfin.Xtream.Service.MpegTs.Infrastructure;
-using Jellyfin.Xtream.Service.MpegTs.Models;
-using Jellyfin.Xtream.Service.MpegTs.TsDuck;
-using Jellyfin.Xtream.Service.MpegTs.UseCases;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service;
@@ -44,7 +39,12 @@ namespace Jellyfin.Xtream.Service;
 /// - Uses memory barriers and atomic operations to ensure visibility across cores.
 /// </para>
 /// </summary>
-public sealed class CircularBufferWriteStream : Stream
+/// <remarks>
+/// Initializes a new instance of the <see cref="CircularBufferWriteStream"/> class.
+/// </remarks>
+/// <param name="bufferSize">Size in bytes of the internal buffer.</param>
+/// <param name="loggerFactory">Optional logger factory for creating loggers.</param>
+public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? loggerFactory = null) : Stream
 {
     [StructLayout(LayoutKind.Explicit, Size = 128)]
     private struct CacheLinePadded
@@ -69,9 +69,10 @@ public sealed class CircularBufferWriteStream : Stream
     private static readonly bool _sse2Supported = Sse2.IsSupported;
     private static readonly int _prefetchDistance = DeterminePrefetchDistance();
 
-    private readonly ILogger<CircularBufferWriteStream>? _logger;
-    private readonly bool _isPowerOfTwo;
-    private readonly long _bufferMask;
+    private readonly ILogger<CircularBufferWriteStream>? _logger =
+        loggerFactory?.CreateLogger<CircularBufferWriteStream>();
+    private readonly bool _isPowerOfTwo = (bufferSize & (bufferSize - 1)) == 0;
+    private readonly long _bufferMask = bufferSize - 1;
     private long _lastProgressLogBytes;
 
     private CacheLinePadded _totalBytesWritten;
@@ -88,27 +89,13 @@ public sealed class CircularBufferWriteStream : Stream
     // When a reader disconnects, it records its position here so the next reader can continue
     private CacheLinePadded _lastReaderPosition;
 
-    // FFmpeg demuxer for program detection - owned by this stream, passed to TsIndexer
-    private readonly FFmpegStreamDemuxer? _demuxer;
-
-    // TSDuck analyzer for broadcast-grade TR 101 290 monitoring (optional)
-    private readonly ITsDuckAnalyzer? _tsDuckAnalyzer;
+    private const int TsPacketSize = 188;
+    private const byte TsSyncByte = 0x47;
 
     /// <summary>
     /// Gets the maximal size in bytes of read/write chunks.
     /// </summary>
-    public int BufferSize { get; }
-
-    /// <summary>
-    /// Gets the MPEG-TS indexer for keyframe detection.
-    /// </summary>
-    public TsIndexer TsIndexer { get; }
-
-    /// <summary>
-    /// Gets the TsDuck analyzer for broadcast-grade TR 101 290 monitoring.
-    /// Returns null if TsDuck is not available or was not configured.
-    /// </summary>
-    public ITsDuckAnalyzer? TsDuckAnalyzer => _tsDuckAnalyzer;
+    public int BufferSize { get; } = bufferSize;
 
     /// <summary>
     /// Gets the internal buffer.
@@ -117,7 +104,7 @@ public sealed class CircularBufferWriteStream : Stream
     /// Intentionally exposed as byte[] for zero-copy reads. Readers access this buffer
     /// directly for high-performance streaming without memory copies.
     /// </remarks>
-    public byte[] Buffer { get; }
+    public byte[] Buffer { get; } = new byte[bufferSize];
 
     /// <summary>
     /// Gets the number of bytes that have been written to this stream.
@@ -172,21 +159,6 @@ public sealed class CircularBufferWriteStream : Stream
     /// Gets the time when the last reader disconnected.
     /// </summary>
     public DateTime LastReaderDisconnectTime { get; private set; }
-
-    /// <summary>
-    /// Gets a value indicating whether the FFmpeg demuxer has completed initialization.
-    /// The demuxer needs to probe enough data to detect programs and streams before
-    /// it can provide video PID and keyframe information for stream alignment.
-    /// </summary>
-    /// <remarks>
-    /// Returns true if:
-    /// - FFmpeg demuxer is available and has completed <c>avformat_find_stream_info</c>
-    /// - At least one program has been detected (ProgramCount > 0)
-    /// Returns false if:
-    /// - FFmpeg demuxer is not available (IsAvailable was false)
-    /// - Demuxer is still initializing (probing stream data)
-    /// </remarks>
-    public bool IsDemuxerInitialized => _demuxer?.IsInitialized == true && _demuxer.ProgramCount > 0;
 
     /// <summary>
     /// Records a reader's final position when it disconnects.
@@ -258,56 +230,6 @@ public sealed class CircularBufferWriteStream : Stream
         return position;
     }
 
-    /// <summary>
-    /// Gets the cached parameter sets (SPS/PPS) for the specified program, or null if not available.
-    /// </summary>
-    /// <param name="programNumber">The program number, or -1 for the first detected program.</param>
-    /// <returns>A CachedParameterSets instance if extradata is available; null otherwise.</returns>
-    public CachedParameterSets? GetCachedParameterSets(int programNumber = -1)
-    {
-        if (_demuxer == null)
-        {
-            return null;
-        }
-
-        var programs = _demuxer.Programs;
-        if (programs.Count == 0)
-        {
-            return null;
-        }
-
-        // Find the requested program or use the first one
-        FFmpegProgramInfo? programInfo = null;
-        if (programNumber >= 0 && programs.TryGetValue(programNumber, out var found))
-        {
-            programInfo = found;
-        }
-        else
-        {
-            // Use the first available program
-            foreach (var kvp in programs)
-            {
-                programInfo = kvp.Value;
-                break;
-            }
-        }
-
-        if (programInfo?.VideoExtradata == null || programInfo.VideoExtradata.Length == 0)
-        {
-            return null;
-        }
-
-        // Parse the AVCC/HVCC/Annex B extradata into NAL units using FFmpeg bitstream filter
-        // Falls back to manual parsing if FFmpeg is not available
-        var cache = new CachedParameterSets();
-        if (FFmpegParameterSetExtractor.Extract(programInfo.VideoExtradata, programInfo.VideoCodecId, cache))
-        {
-            return cache;
-        }
-
-        return null;
-    }
-
     /// <inheritdoc />
     public override long Position
     {
@@ -330,69 +252,6 @@ public sealed class CircularBufferWriteStream : Stream
 
     /// <inheritdoc />
     public override long Length => throw new NotSupportedException();
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="CircularBufferWriteStream"/> class.
-    /// </summary>
-    /// <param name="bufferSize">Size in bytes of the internal buffer.</param>
-    /// <param name="loggerFactory">Optional logger factory for creating loggers.</param>
-    /// <param name="ffmpegContext">Optional FFmpeg context for program detection. If null, uses the default adapter.</param>
-    /// <param name="tsDuckAnalyzer">Optional TSDuck analyzer for broadcast-grade TR 101 290 monitoring.</param>
-    public CircularBufferWriteStream(
-        int bufferSize,
-        ILoggerFactory? loggerFactory = null,
-        IFFmpegContext? ffmpegContext = null,
-        ITsDuckAnalyzer? tsDuckAnalyzer = null
-    )
-    {
-        BufferSize = bufferSize;
-        _tsDuckAnalyzer = tsDuckAnalyzer;
-        _isPowerOfTwo = (bufferSize & (bufferSize - 1)) == 0;
-        _bufferMask = bufferSize - 1;
-
-        // Use provided context or default to production adapter
-        ffmpegContext ??= FFmpegContextAdapter.Instance;
-
-        // Create FFmpeg demuxer for program detection if available
-        _logger = loggerFactory?.CreateLogger<CircularBufferWriteStream>();
-        var logger = _logger;
-        var ffmpegAvailable = ffmpegContext.IsAvailable;
-        logger?.PluginLogInformation(
-            "CircularBufferWriteStream: FFmpegContext.IsAvailable={IsAvailable}, FFmpegPath={Path}",
-            ffmpegAvailable,
-            ffmpegContext.FFmpegPath ?? "(null)"
-        );
-
-        if (ffmpegAvailable)
-        {
-            try
-            {
-                // Use 8MB buffer to handle bursts and prevent overflow during high bitrate streams
-                // Live TV streams can burst up to 20 Mbps which is ~2.5MB/s
-                // 8MB provides ~3.2 seconds of buffering at max bitrate, allowing FFmpeg to catch up
-                _demuxer = new FFmpegStreamDemuxer(
-                    inputBufferSize: 8 * 1024 * 1024,
-                    loggerFactory?.CreateLogger<FFmpegStreamDemuxer>(),
-                    ffmpegContext
-                );
-                logger?.PluginLogInformation("FFmpegStreamDemuxer created successfully for program detection");
-            }
-            catch (Exception ex)
-            {
-                logger?.PluginLogWarning(ex, "Failed to create FFmpeg demuxer, program detection will be limited");
-            }
-        }
-        else
-        {
-            logger?.PluginLogWarning(
-                "FFmpeg not available - program detection will be limited. "
-                    + "Ensure FFmpegInitializationService runs before streams are opened."
-            );
-        }
-
-        TsIndexer = new TsIndexer(bufferSize, loggerFactory?.CreateLogger<TsIndexer>(), _demuxer);
-        Buffer = new byte[bufferSize];
-    }
 
     /// <inheritdoc />
     public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
@@ -460,7 +319,6 @@ public sealed class CircularBufferWriteStream : Stream
         var sourceOffset = 0;
         var localWriteHead = Volatile.Read(ref _totalBytesWritten.Value);
         var localBufferSize = BufferSize;
-        var startOffsetForIndexer = localWriteHead;
 
         fixed (byte* srcPtr = source)
         {
@@ -493,12 +351,6 @@ public sealed class CircularBufferWriteStream : Stream
                 }
             }
         }
-
-        TsIndexer.ProcessChunk(source, startOffsetForIndexer);
-
-        // Feed data to TSDuck analyzer for TR 101 290 monitoring (if available)
-        // TsDuckAnalyzer handles sampling internally to prevent overwhelming the subprocess
-        _tsDuckAnalyzer?.FeedData(source);
 
         _ = Interlocked.Exchange(ref _totalBytesWritten.Value, localWriteHead);
         LastWriteTime = DateTime.UtcNow;
@@ -734,8 +586,6 @@ public sealed class CircularBufferWriteStream : Stream
         var previousBytes = TotalBytesWritten;
         var previousDiscontinuities = DiscontinuityCount;
 
-        TsIndexer.Reset();
-        _tsDuckAnalyzer?.Reset();
         _ = Interlocked.Exchange(ref _totalBytesWritten.Value, 0L);
         _ = Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, 0L);
         _ = Interlocked.Exchange(ref _discontinuityCount.Value, 0);
@@ -787,19 +637,19 @@ public sealed class CircularBufferWriteStream : Stream
     public int AlignToPacketBoundary()
     {
         var currentOffset = Volatile.Read(ref _totalBytesWritten.Value);
-        var remainder = (int)(currentOffset % TsConstants.PacketSize);
+        var remainder = (int)(currentOffset % TsPacketSize);
 
         if (remainder == 0)
         {
             return 0; // Already aligned
         }
 
-        var paddingNeeded = TsConstants.PacketSize - remainder;
+        var paddingNeeded = TsPacketSize - remainder;
 
         // Create a null packet for padding
         // Null packet: sync byte (0x47), PID 0x1FFF, no adaptation field, payload all 0xFF
-        Span<byte> nullPacket = stackalloc byte[TsConstants.PacketSize];
-        nullPacket[0] = TsConstants.SyncByte; // Sync byte
+        Span<byte> nullPacket = stackalloc byte[TsPacketSize];
+        nullPacket[0] = TsSyncByte; // Sync byte
         nullPacket[1] = 0x1F; // PID high byte (0x1FFF >> 8) with TEI=0, PUSI=0, priority=0
         nullPacket[2] = 0xFF; // PID low byte
         nullPacket[3] = 0x10; // Adaptation field control = 01 (payload only), CC = 0
@@ -874,11 +724,6 @@ public sealed class CircularBufferWriteStream : Stream
     /// <inheritdoc />
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
-        {
-            _demuxer?.Dispose();
-        }
-
         base.Dispose(disposing);
     }
 }
