@@ -31,12 +31,17 @@ run_test test_failover_manager
 run_test test_quality_switch_trigger
 run_test test_duckcontext
 run_test test_psi_monitor
+run_test test_scte35_monitor
+run_test test_nal_parser
 run_test test_tr101290
+run_test test_keyframe_aligner
 
 echo "=== Integration Tests ==="
 run_test test_analyzer_integration
 run_test test_restamper_integration
 run_test test_streamer_integration
+run_test test_scte35_integration
+run_test test_nal_integration
 
 echo "=== Stress Tests ==="
 STRESS_DURATION_MS=500 run_test test_stress

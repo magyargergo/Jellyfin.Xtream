@@ -65,6 +65,8 @@ set(UNIT_TESTS
     test_quality_switch_trigger
     test_duckcontext
     test_psi_monitor
+    test_scte35_monitor
+    test_nal_parser
     test_tr101290
 )
 
@@ -96,6 +98,8 @@ if(CURL_FOUND)
         set(DOCKER_INTEGRATION_TESTS
             test_analyzer_integration
             test_restamper_integration
+            test_scte35_integration
+            test_nal_integration
         )
 
         foreach(test ${DOCKER_INTEGRATION_TESTS})
@@ -273,9 +277,32 @@ if(BUILD_FUZZ_TESTS)
             -fsanitize=fuzzer,address,undefined)
         target_link_libraries(fuzz_keyframe_aligner ${TSDUCK_LIBRARIES})
         target_link_directories(fuzz_keyframe_aligner PRIVATE ${TSDUCK_LIBRARY_DIRS})
+
+        # SCTE-35 monitor fuzzer
+        add_executable(fuzz_scte35_monitor fuzz/fuzz_scte35_monitor.cpp)
+        target_include_directories(fuzz_scte35_monitor PRIVATE
+            ${SRC_DIR} ${INCLUDE_DIR} ${TSDUCK_INCLUDE_DIRS})
+        target_compile_options(fuzz_scte35_monitor PRIVATE
+            -fsanitize=fuzzer,address,undefined -g -O1)
+        target_link_options(fuzz_scte35_monitor PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+        target_link_libraries(fuzz_scte35_monitor ${TSDUCK_LIBRARIES})
+        target_link_directories(fuzz_scte35_monitor PRIVATE ${TSDUCK_LIBRARY_DIRS})
+
+        # NAL parser fuzzer
+        add_executable(fuzz_nal_parser fuzz/fuzz_nal_parser.cpp)
+        target_include_directories(fuzz_nal_parser PRIVATE
+            ${SRC_DIR} ${INCLUDE_DIR} ${TSDUCK_INCLUDE_DIRS})
+        target_compile_options(fuzz_nal_parser PRIVATE
+            -fsanitize=fuzzer,address,undefined -g -O1)
+        target_link_options(fuzz_nal_parser PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+        target_link_libraries(fuzz_nal_parser ${TSDUCK_LIBRARIES})
+        target_link_directories(fuzz_nal_parser PRIVATE ${TSDUCK_LIBRARY_DIRS})
     else()
         message(STATUS "Fuzz tests: DISABLED (requires Clang)")
     endif()
 else()
     message(STATUS "Fuzz tests: DISABLED (set -DBUILD_FUZZ_TESTS=ON to enable)")
 endif()
+# Build timestamp: 1769634906

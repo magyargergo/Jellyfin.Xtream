@@ -35,6 +35,8 @@ run_fuzzer fuzz_restamper corpus/restamper 65536
 run_fuzzer fuzz_ring_buffer corpus/ring 8192
 run_fuzzer fuzz_failover_manager corpus/failover 4096
 run_fuzzer fuzz_keyframe_aligner corpus/keyframe 65536
+run_fuzzer fuzz_scte35_monitor corpus/scte35 8192
+run_fuzzer fuzz_nal_parser corpus/nal 16384
 
 echo "=========================================="
 if [ $FAILED -eq 0 ]; then
