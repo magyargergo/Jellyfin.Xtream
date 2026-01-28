@@ -152,6 +152,8 @@ COPY --from=test-builder /build/tests/build/test_failover_manager .
 COPY --from=test-builder /build/tests/build/test_quality_switch_trigger .
 COPY --from=test-builder /build/tests/build/test_duckcontext .
 COPY --from=test-builder /build/tests/build/test_psi_monitor .
+COPY --from=test-builder /build/tests/build/test_scte35_monitor .
+COPY --from=test-builder /build/tests/build/test_nal_parser .
 COPY --from=test-builder /build/tests/build/test_tr101290 .
 COPY --from=test-builder /build/tests/build/test_keyframe_aligner .
 
@@ -166,6 +168,8 @@ RUN echo "=== Running Unit Tests ===" && \
     ./test_quality_switch_trigger --gtest_output=xml:test_quality_switch_trigger.xml && \
     ./test_duckcontext --gtest_output=xml:test_duckcontext.xml && \
     ./test_psi_monitor --gtest_output=xml:test_psi_monitor.xml && \
+    ./test_scte35_monitor --gtest_output=xml:test_scte35_monitor.xml && \
+    ./test_nal_parser --gtest_output=xml:test_nal_parser.xml && \
     ./test_tr101290 --gtest_output=xml:test_tr101290.xml && \
     ./test_keyframe_aligner --gtest_output=xml:test_keyframe_aligner.xml && \
     echo "=== All Unit Tests Passed ==="
@@ -192,6 +196,8 @@ WORKDIR /tests
 COPY --from=test-builder /build/tests/build/test_analyzer_integration .
 COPY --from=test-builder /build/tests/build/test_restamper_integration .
 COPY --from=test-builder /build/tests/build/test_streamer_integration .
+COPY --from=test-builder /build/tests/build/test_scte35_integration .
+COPY --from=test-builder /build/tests/build/test_nal_integration .
 
 # Update library cache
 RUN ldconfig
@@ -203,6 +209,8 @@ RUN echo "=== Running Integration Tests ===" && \
     ./test_analyzer_integration --gtest_output=xml:test_analyzer_integration.xml && \
     ./test_restamper_integration --gtest_output=xml:test_restamper_integration.xml && \
     ./test_streamer_integration --gtest_output=xml:test_streamer_integration.xml && \
+    ./test_scte35_integration --gtest_output=xml:test_scte35_integration.xml && \
+    ./test_nal_integration --gtest_output=xml:test_nal_integration.xml && \
     echo "=== All Integration Tests Passed ==="
 
 # =============================================================================
@@ -235,11 +243,15 @@ COPY --from=test-builder /build/tests/build/test_failover_manager .
 COPY --from=test-builder /build/tests/build/test_quality_switch_trigger .
 COPY --from=test-builder /build/tests/build/test_duckcontext .
 COPY --from=test-builder /build/tests/build/test_psi_monitor .
+COPY --from=test-builder /build/tests/build/test_scte35_monitor .
+COPY --from=test-builder /build/tests/build/test_nal_parser .
 COPY --from=test-builder /build/tests/build/test_tr101290 .
 COPY --from=test-builder /build/tests/build/test_keyframe_aligner .
 COPY --from=test-builder /build/tests/build/test_analyzer_integration .
 COPY --from=test-builder /build/tests/build/test_restamper_integration .
 COPY --from=test-builder /build/tests/build/test_streamer_integration .
+COPY --from=test-builder /build/tests/build/test_scte35_integration .
+COPY --from=test-builder /build/tests/build/test_nal_integration .
 COPY --from=test-builder /build/tests/build/test_stress .
 COPY --from=test-builder /build/tests/build/test_network_simulation .
 
@@ -341,7 +353,19 @@ RUN mkdir -p /fuzz && \
         $(pkg-config --cflags tsduck) \
         tests/fuzz/fuzz_keyframe_aligner.cpp \
         $(pkg-config --libs tsduck) \
-        -o /fuzz/fuzz_keyframe_aligner
+        -o /fuzz/fuzz_keyframe_aligner && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_scte35_monitor.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_scte35_monitor && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_nal_parser.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_nal_parser
 
 # =============================================================================
 # Stage 8: Run fuzz tests (short runs for CI)
@@ -366,7 +390,7 @@ WORKDIR /fuzz
 COPY --from=fuzz-builder /fuzz/ .
 
 # Create corpus directories
-RUN mkdir -p corpus/alignment corpus/pid corpus/psi corpus/pcr corpus/tr101290 corpus/restamper corpus/ring corpus/failover corpus/keyframe
+RUN mkdir -p corpus/alignment corpus/pid corpus/psi corpus/pcr corpus/tr101290 corpus/restamper corpus/ring corpus/failover corpus/keyframe corpus/scte35 corpus/nal
 
 # Copy fuzz runner script
 COPY native/tsduck_interop/tests/scripts/run_fuzz.sh .

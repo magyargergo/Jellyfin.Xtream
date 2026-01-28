@@ -19,6 +19,8 @@ This plugin was originally created by [Kevinjil](https://github.com/Kevinjil). T
 - **Smart Restreaming**: Single connection to provider with multi-client broadcasting (solves HTTP 406 errors)
 - **EPG Support**: Multiple EPG providers with fallback chain and external XMLTV support
 - **Stream Quality Monitoring**: Real-time MPEG-TS quality analysis with TR 101 290 compliance
+- **SCTE-35 Ad Marker Detection**: Real-time splice point detection for ad break notifications
+- **NAL Unit Parsing**: H.264/H.265 parameter set extraction for faster decoder initialization
 - **Automatic Provider Switching**: Quality-driven failover with IDR frame alignment
 - **Fast Channel Change**: Connection pre-warming for sub-100ms provider switches
 - **Discord Notifications**: Stream health alerts, EPG refresh status, and periodic health reports
@@ -59,6 +61,8 @@ graph TB
             TsIndexer[TsIndexer]
             TsDuck[TsDuck Native Analyzer]
             PcrTracker[PcrTimingTracker]
+            Scte35[SCTE-35 Monitor]
+            NalParser[NAL Parser]
         end
 
         subgraph EPG["EPG Services"]
@@ -423,6 +427,7 @@ Configure one or more Xtream-compatible providers in the plugin settings.
 | Notify on Quality Violation | Alert on TR 101 290 violations | On |
 | Notify on A/V Drift | Alert on audio/video sync issues | On |
 | Notify on EPG Refresh | Alert on EPG refresh completion | On |
+| Notify on SCTE-35 Event | Alert on ad break start/end | Off |
 | Periodic Health Reports | Send regular health summaries | Off |
 | Health Report Interval | Minutes between health reports | 60 |
 
@@ -477,6 +482,44 @@ flowchart TD
     Switch -->|No| Continue[Continue Monitoring]
 ```
 
+### SCTE-35 Ad Marker Detection
+
+Real-time detection of SCTE-35 splice points for ad break management:
+
+| Event Type | Command | Description |
+|------------|---------|-------------|
+| Splice Insert | 0x05 | Primary ad insertion/return command |
+| Time Signal | 0x06 | Time-based splice point |
+| Splice Schedule | 0x04 | Scheduled future splice events |
+
+Features:
+- Automatic SCTE-35 PID detection from PMT (stream type 0x86 or CUEI descriptor)
+- Splice state tracking (In Content, In Ad Break, Transitioning)
+- Event ring buffer with thread-safe access
+- Callback support for real-time notifications
+
+### NAL Unit Parsing & Codec Detection
+
+Automatic extraction of video codec parameters for optimized playback:
+
+| Codec | Parameter Sets | Detection |
+|-------|---------------|-----------|
+| H.264/AVC | SPS, PPS | NAL types 7, 8 |
+| H.265/HEVC | VPS, SPS, PPS | NAL types 32, 33, 34 |
+| H.266/VVC | (Future) | - |
+
+Extracted Information:
+- Profile and level
+- Resolution (with cropping/conformance window)
+- Frame rate (from VUI timing info)
+- Interlaced flag
+- IDR frame detection (more accurate than RAI flag)
+
+Benefits:
+- Faster decoder initialization with cached parameter sets
+- Accurate keyframe detection for seamless provider switching
+- Codec information for quality reporting
+
 ### Monitored Metrics
 
 | Check | Priority | Description | Threshold |
@@ -489,6 +532,9 @@ flowchart TD
 | PMT Version | 2 | Stream map changes | Version change |
 | PCR Interval | 2 | Clock update frequency | > 100ms |
 | A/V Drift | - | Audio/video sync | > 20ms (EBU R37) |
+| SCTE-35 Events | - | Ad break splice points | Event-based |
+| IDR Frames | - | Keyframe detection | Per-PID tracking |
+| Codec Info | - | Video parameters | SPS/VPS parsing |
 
 ## Project Structure
 
@@ -561,6 +607,8 @@ graph TD
 | **TsDuckMetrics** | ✅ Complete | Priority 1/2 error tracking, PCR jitter analysis, quality scoring |
 | **Streaming Integration** | ✅ Complete | Wired into CircularBufferWriteStream and Restream |
 | **Discord Integration** | ✅ Complete | TsDuck metrics in stream health notifications |
+| **SCTE-35 Monitor** | ✅ Complete | Real-time splice point detection with state tracking |
+| **NAL Parser** | ✅ Complete | H.264/H.265 parameter set extraction and IDR detection |
 
 #### Provider Management Enhancements
 
@@ -613,14 +661,12 @@ Current limitations and areas where the implementation could be enhanced:
 mindmap
   root((Improvement Areas))
     Streaming
-      Parameter set caching disabled
       No adaptive bitrate ABR
       Single-threaded PSI validation
       FFmpeg 5MB probesize delay
     Protocol Support
       No HLS/DASH output
       No WebRTC low-latency
-      Limited SCTE-35 ad markers
       No DVB subtitles extraction
     Provider Management
       No geo-routing optimization
@@ -638,7 +684,6 @@ mindmap
 
 | Area | Limitation | Impact |
 |------|------------|--------|
-| **Keyframe Detection** | RAI-based only, no NAL parsing | Cannot cache SPS/PPS for injection |
 | **FFmpeg Init** | 5MB probesize blocking | Initial 0.5-2s delay on stream start |
 | **Bitrate** | Single bitrate per channel | No quality adaptation for slow clients |
 | **Output Format** | MPEG-TS only | No HLS/DASH for web clients |

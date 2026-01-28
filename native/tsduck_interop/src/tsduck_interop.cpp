@@ -483,6 +483,146 @@ TSDUCK_API int32_t tsduck_analyzer_get_programs(
 }
 
 // ============================================================================
+// SCTE-35 Splice Information
+// ============================================================================
+
+TSDUCK_API int32_t tsduck_analyzer_get_scte35_events(
+    TsDuckAnalyzerHandle analyzer,
+    Scte35EventNative* out_events,
+    int32_t max_events)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr) {
+        return TSDUCK_ERROR_NULL_HANDLE;
+    }
+    if (out_events == nullptr || max_events <= 0) {
+        return TSDUCK_ERROR_INVALID_DATA;
+    }
+
+    return impl->scte35.get_events(out_events, max_events);
+}
+
+TSDUCK_API bool tsduck_analyzer_get_current_scte35_event(
+    TsDuckAnalyzerHandle analyzer,
+    Scte35EventNative* out_event)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr || out_event == nullptr) {
+        return false;
+    }
+
+    return impl->scte35.get_current_event(out_event);
+}
+
+TSDUCK_API int32_t tsduck_analyzer_get_scte35_state(TsDuckAnalyzerHandle analyzer)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr) {
+        return SCTE35_STATE_IN_CONTENT;
+    }
+
+    return static_cast<int32_t>(impl->scte35.get_splice_state());
+}
+
+TSDUCK_API bool tsduck_analyzer_is_in_ad_break(TsDuckAnalyzerHandle analyzer)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr) {
+        return false;
+    }
+
+    return impl->scte35.is_in_ad_break();
+}
+
+TSDUCK_API int64_t tsduck_analyzer_get_scte35_event_count(TsDuckAnalyzerHandle analyzer)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr) {
+        return 0;
+    }
+
+    return impl->scte35.get_event_count();
+}
+
+TSDUCK_API void tsduck_analyzer_set_scte35_callback(
+    TsDuckAnalyzerHandle analyzer,
+    TsDuckScte35Callback callback,
+    void* user_data)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr) {
+        return;
+    }
+    impl->scte35_user_data.store(user_data, std::memory_order_release);
+    impl->scte35_callback.store(callback, std::memory_order_release);
+}
+
+// ============================================================================
+// NAL Unit Parsing (Video Codec Info / Parameter Sets)
+// ============================================================================
+
+TSDUCK_API bool tsduck_analyzer_get_video_codec_info(
+    TsDuckAnalyzerHandle analyzer,
+    uint16_t video_pid,
+    VideoCodecInfoNative* out_info)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr || out_info == nullptr) {
+        return false;
+    }
+
+    return impl->nal_parser.get_video_codec_info(video_pid, out_info);
+}
+
+TSDUCK_API bool tsduck_analyzer_get_parameter_sets(
+    TsDuckAnalyzerHandle analyzer,
+    uint16_t video_pid,
+    NalParameterSetsNative* out_params)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr || out_params == nullptr) {
+        return false;
+    }
+
+    return impl->nal_parser.get_parameter_sets(video_pid, out_params);
+}
+
+TSDUCK_API bool tsduck_analyzer_has_idr_frame(
+    TsDuckAnalyzerHandle analyzer,
+    uint16_t video_pid)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr) {
+        return false;
+    }
+
+    return impl->nal_parser.check_idr_frame(video_pid);
+}
+
+TSDUCK_API int64_t tsduck_analyzer_get_idr_frame_count(TsDuckAnalyzerHandle analyzer)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr) {
+        return 0;
+    }
+
+    return impl->nal_parser.total_idr_frames.load(std::memory_order_acquire);
+}
+
+TSDUCK_API bool tsduck_analyzer_register_video_pid(
+    TsDuckAnalyzerHandle analyzer,
+    uint16_t video_pid,
+    uint8_t stream_type)
+{
+    auto* impl = toImpl(analyzer);
+    if (impl == nullptr) {
+        return false;
+    }
+
+    return impl->nal_parser.add_video_pid(video_pid, stream_type) >= 0;
+}
+
+// ============================================================================
 // HTTP Streamer
 // ============================================================================
 

@@ -13,9 +13,11 @@
 
 #include "../analysis/av_sync_tracker.hpp"
 #include "../analysis/iat_analyzer.hpp"
+#include "../analysis/nal_parser.hpp"
 #include "../analysis/pcr_analyzer.hpp"
 #include "../analysis/pid_tracker.hpp"
 #include "../analysis/psi_monitor.hpp"
+#include "../analysis/scte35_monitor.hpp"
 #include "../analysis/tr101290.hpp"
 #include "../concurrency/seqlock.hpp"
 #include "../core/constants.hpp"
@@ -73,12 +75,16 @@ public:
     alignas(CACHE_LINE_SIZE) analysis::PidTracker pids;           // Per-PID statistics
     alignas(CACHE_LINE_SIZE) analysis::PsiMonitor psi;            // PAT/PMT parsing
     alignas(CACHE_LINE_SIZE) analysis::Tr101290Monitor tr101290;  // TR 101 290 quality
+    alignas(CACHE_LINE_SIZE) analysis::Scte35Monitor scte35;      // SCTE-35 ad markers
+    alignas(CACHE_LINE_SIZE) analysis::NalParser nal_parser;      // NAL unit parsing
 
     // Callbacks
     std::atomic<TsDuckMetricsCallback> metrics_callback{nullptr};
     std::atomic<void*> metrics_user_data{nullptr};
     std::atomic<TsDuckViolationCallback> violation_callback{nullptr};
     std::atomic<void*> violation_user_data{nullptr};
+    std::atomic<TsDuckScte35Callback> scte35_callback{nullptr};
+    std::atomic<void*> scte35_user_data{nullptr};
 
     // Previous error counts for violation detection
     std::int64_t prev_cc_errors{0};
@@ -113,7 +119,7 @@ public:
     /// @param ctx TsDuck context (must not be null)
     /// @param cfg Configuration (uses defaults if nullptr)
     TsDuckAnalyzer(TsDuckContext* ctx, const TsDuckConfigNative* cfg)
-        : context(ctx), psi(ctx->duck) {
+        : context(ctx), psi(ctx->duck), scte35(ctx->duck), nal_parser(ctx->duck) {
         if (cfg != nullptr) {
             config = *cfg;
         } else {
@@ -488,6 +494,8 @@ public:
         av_sync.reset();   // A/V sync - unique to us
         psi.reset();       // PAT/PMT table parser
         tr101290.reset();  // TR 101 290 quality monitor
+        scte35.reset();    // SCTE-35 monitor
+        nal_parser.reset(); // NAL unit parser
 
         // Reset integrated restamper if present
         if (restamper) {
@@ -632,6 +640,14 @@ private:
         process_pes_pts(pkt, pid, packet_idx,
                        static_cast<std::int64_t>(packet_idx % 1000) *
                        static_cast<std::int32_t>(TS_PACKET_SIZE));
+
+        // SCTE-35 splice information processing
+        scte35.feed_packet(pkt, packet_idx);
+
+        // NAL unit parsing for video PIDs
+        if (pkt.startPES()) {
+            nal_parser.process_pes_start(pkt, pid, packet_idx);
+        }
     }
     /// Apply PSI discoveries to PID tracker and TR 101 290 monitor.
     /// Called after PSI feedPacket when PAT/PMT may have been parsed.
@@ -671,9 +687,19 @@ private:
                 if (es.is_video) {
                     slot.is_video.store(true, std::memory_order_release);
                     slot.is_audio.store(false, std::memory_order_release);
+
+                    // Register video PID for NAL parsing (H.264/H.265/H.266)
+                    if (es.stream_type == 0x1B || es.stream_type == 0x24 || es.stream_type == 0x33) {
+                        nal_parser.add_video_pid(es.pid, es.stream_type);
+                    }
                 } else if (es.is_audio) {
                     slot.is_audio.store(true, std::memory_order_release);
                     slot.is_video.store(false, std::memory_order_release);
+                }
+
+                // Check for SCTE-35 stream type (0x86)
+                if (es.stream_type == 0x86) {
+                    scte35.add_scte35_pid(es.pid);
                 }
 
                 // Mark elementary stream PIDs as expected for timeout tracking

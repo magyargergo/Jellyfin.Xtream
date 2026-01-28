@@ -209,6 +209,20 @@ inline constexpr std::size_t MAX_ELEMENTARY_STREAMS = 64;
 inline constexpr std::size_t PSI_SECTION_MAX_SIZE = 1024;
 
 // ============================================================================
+// SCTE-35 Buffer Sizes
+// ============================================================================
+
+inline constexpr std::size_t SCTE35_EVENT_BUFFER_SIZE = 32;
+static_assert(is_power_of_two(SCTE35_EVENT_BUFFER_SIZE),
+              "SCTE35_EVENT_BUFFER_SIZE must be power of 2");
+
+// ============================================================================
+// NAL Parser Limits
+// ============================================================================
+
+inline constexpr std::size_t MAX_VIDEO_PIDS = 8;
+
+// ============================================================================
 // Cache Line Size
 // ============================================================================
 

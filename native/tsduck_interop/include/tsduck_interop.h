@@ -636,6 +636,187 @@ TSDUCK_API int32_t tsduck_analyzer_get_programs(
 );
 
 // =============================================================================
+// SCTE-35 Splice Information Parsing
+// =============================================================================
+
+// SCTE-35 splice event structure (blittable)
+typedef struct {
+    uint32_t splice_event_id;       // Unique identifier for the splice event
+    uint64_t pts_time;              // 33-bit PTS time when splice should occur
+    uint64_t duration_pts;          // Duration in PTS ticks (0 if not specified)
+    int32_t out_of_network;         // 1 = ad break start, 0 = return to content
+    int32_t splice_immediate;       // 1 = immediate splice, 0 = scheduled
+    uint8_t splice_command_type;    // 0x00=null, 0x04=schedule, 0x05=insert, 0x06=time_signal
+    uint8_t reserved1;              // Padding
+    uint16_t scte35_pid;            // PID carrying this SCTE-35 data
+    int64_t packet_index;           // Packet index where event was detected
+} Scte35EventNative;
+
+// SCTE-35 splice state enumeration
+typedef enum {
+    SCTE35_STATE_IN_CONTENT = 0,    // Normal content playback
+    SCTE35_STATE_IN_BREAK = 1,      // Inside ad break (out_of_network=true)
+    SCTE35_STATE_TRANSITIONING = 2  // Transitioning between states
+} Scte35SpliceState;
+
+// Callback for SCTE-35 events (called from analyzer thread)
+typedef void (*TsDuckScte35Callback)(
+    const Scte35EventNative* event,
+    void* user_data
+);
+
+/// Get pending SCTE-35 splice events from the analyzer.
+/// Events are returned in chronological order (oldest first).
+/// @param analyzer The analyzer handle.
+/// @param out_events Array to receive events.
+/// @param max_events Maximum number of events to return.
+/// @return Number of events returned, or negative error code.
+TSDUCK_API int32_t tsduck_analyzer_get_scte35_events(
+    TsDuckAnalyzerHandle analyzer,
+    Scte35EventNative* out_events,
+    int32_t max_events
+);
+
+/// Get the current/most recent SCTE-35 splice event.
+/// @param analyzer The analyzer handle.
+/// @param out_event Pointer to receive the event.
+/// @return true if an event is available, false otherwise.
+TSDUCK_API bool tsduck_analyzer_get_current_scte35_event(
+    TsDuckAnalyzerHandle analyzer,
+    Scte35EventNative* out_event
+);
+
+/// Get the current splice state (in content, in break, etc.).
+/// @param analyzer The analyzer handle.
+/// @return Scte35SpliceState enum value.
+TSDUCK_API int32_t tsduck_analyzer_get_scte35_state(
+    TsDuckAnalyzerHandle analyzer
+);
+
+/// Check if the stream is currently in an ad break.
+/// @param analyzer The analyzer handle.
+/// @return true if currently in ad break (out_of_network=true).
+TSDUCK_API bool tsduck_analyzer_is_in_ad_break(
+    TsDuckAnalyzerHandle analyzer
+);
+
+/// Get the total number of SCTE-35 events received.
+/// @param analyzer The analyzer handle.
+/// @return Total event count.
+TSDUCK_API int64_t tsduck_analyzer_get_scte35_event_count(
+    TsDuckAnalyzerHandle analyzer
+);
+
+/// Set a callback for SCTE-35 splice events.
+/// The callback is invoked from the analyzer thread when events are detected.
+/// @param analyzer The analyzer handle.
+/// @param callback The callback function, or NULL to disable.
+/// @param user_data User-provided context passed to callback.
+TSDUCK_API void tsduck_analyzer_set_scte35_callback(
+    TsDuckAnalyzerHandle analyzer,
+    TsDuckScte35Callback callback,
+    void* user_data
+);
+
+// =============================================================================
+// NAL Unit Parsing (H.264/H.265 SPS/PPS/VPS Extraction)
+// =============================================================================
+
+// Video codec type enumeration
+typedef enum {
+    VIDEO_CODEC_UNKNOWN = 0,
+    VIDEO_CODEC_H264_AVC = 1,
+    VIDEO_CODEC_H265_HEVC = 2,
+    VIDEO_CODEC_H266_VVC = 3
+} VideoCodecTypeEnum;
+
+// Video codec information structure (blittable)
+typedef struct {
+    uint8_t codec_type;             // VideoCodecTypeEnum value
+    uint8_t profile;                // Profile (profile_idc for H.264)
+    uint8_t level;                  // Level (level_idc for H.264)
+    uint8_t reserved;               // Padding
+    uint16_t width;                 // Picture width in pixels
+    uint16_t height;                // Picture height in pixels
+    uint16_t frame_rate_num;        // Frame rate numerator (0 if unknown)
+    uint16_t frame_rate_den;        // Frame rate denominator (0 if unknown)
+    int32_t interlaced;             // 1 = interlaced, 0 = progressive
+} VideoCodecInfoNative;
+
+// NAL parameter sets structure (blittable)
+// Contains cached SPS/PPS/VPS for stream initialization
+typedef struct {
+    uint16_t video_pid;             // Video PID these parameters belong to
+    uint16_t reserved;              // Padding
+
+    VideoCodecInfoNative codec_info; // Parsed codec information
+
+    uint8_t sps_data[256];          // Cached SPS NAL unit (without start code)
+    uint16_t sps_length;            // SPS data length in bytes
+
+    uint8_t pps_data[128];          // Cached PPS NAL unit (without start code)
+    uint16_t pps_length;            // PPS data length in bytes
+
+    uint8_t vps_data[128];          // HEVC VPS (0 length for H.264)
+    uint16_t vps_length;            // VPS data length in bytes
+
+    int32_t parameters_complete;    // 1 = all required params available
+} NalParameterSetsNative;
+
+/// Get video codec information for a specific video PID.
+/// @param analyzer The analyzer handle.
+/// @param video_pid The video PID to query.
+/// @param out_info Pointer to receive codec information.
+/// @return true if codec info is available, false otherwise.
+TSDUCK_API bool tsduck_analyzer_get_video_codec_info(
+    TsDuckAnalyzerHandle analyzer,
+    uint16_t video_pid,
+    VideoCodecInfoNative* out_info
+);
+
+/// Get cached NAL parameter sets (SPS/PPS/VPS) for a video PID.
+/// These can be used for stream initialization when starting mid-stream.
+/// @param analyzer The analyzer handle.
+/// @param video_pid The video PID to query.
+/// @param out_params Pointer to receive parameter sets.
+/// @return true if parameter sets are available, false otherwise.
+TSDUCK_API bool tsduck_analyzer_get_parameter_sets(
+    TsDuckAnalyzerHandle analyzer,
+    uint16_t video_pid,
+    NalParameterSetsNative* out_params
+);
+
+/// Check if the most recent packet on a PID contained an IDR frame.
+/// This uses NAL unit type detection (more accurate than transport RAI flag).
+/// @param analyzer The analyzer handle.
+/// @param video_pid The video PID to check.
+/// @return true if an IDR frame was detected in the last processed packet.
+TSDUCK_API bool tsduck_analyzer_has_idr_frame(
+    TsDuckAnalyzerHandle analyzer,
+    uint16_t video_pid
+);
+
+/// Get the number of IDR frames detected on all video PIDs.
+/// @param analyzer The analyzer handle.
+/// @return Total IDR frame count.
+TSDUCK_API int64_t tsduck_analyzer_get_idr_frame_count(
+    TsDuckAnalyzerHandle analyzer
+);
+
+/// Register a video PID for NAL parsing.
+/// This is typically called automatically when PMT is parsed, but can be
+/// called manually for streams without proper PMT signaling.
+/// @param analyzer The analyzer handle.
+/// @param video_pid The video PID to register.
+/// @param stream_type MPEG stream type (0x1B=H.264, 0x24=H.265, 0x33=H.266).
+/// @return true if registered successfully.
+TSDUCK_API bool tsduck_analyzer_register_video_pid(
+    TsDuckAnalyzerHandle analyzer,
+    uint16_t video_pid,
+    uint8_t stream_type
+);
+
+// =============================================================================
 // HTTP Streamer (native curl-based streaming with failover)
 // =============================================================================
 
