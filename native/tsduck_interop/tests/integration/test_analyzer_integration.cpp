@@ -120,7 +120,7 @@ TEST_F(AnalyzerIntegrationTest, TracksMultiplePids) {
         createPacket(&data[(20 + i) * ts::PKT_SIZE], 300, i % 16);
     }
 
-    analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
+    (void)analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
 
     EXPECT_EQ(analyzer->pids.get_active_count(), 3);
 }
@@ -135,7 +135,7 @@ TEST_F(AnalyzerIntegrationTest, TracksNullPackets) {
         createNullPacket(&data[i * ts::PKT_SIZE]);
     }
 
-    analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
+    (void)analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
 
     int64_t total = analyzer->total_packet_count.load();
     int64_t null_count = analyzer->null_packet_count.load();
@@ -157,7 +157,7 @@ TEST_F(AnalyzerIntegrationTest, ProcessesPcrPackets) {
         pcr += 2700000;  // 100ms intervals
     }
 
-    analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
+    (void)analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
 
     PcrAnalysisNative pcr_analysis;
     bool has_pcr = analyzer->pcr.get(&pcr_analysis);
@@ -177,7 +177,7 @@ TEST_F(AnalyzerIntegrationTest, GeneratesMetrics) {
         createPacket(&data[i * ts::PKT_SIZE], 100 + (i % 3), i % 16);
     }
 
-    analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
+    (void)analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
 
     // Wait for metrics interval to elapse
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -185,7 +185,7 @@ TEST_F(AnalyzerIntegrationTest, GeneratesMetrics) {
     // Feed a small amount of data to trigger updateMetrics()
     std::vector<uint8_t> trigger_data(ts::PKT_SIZE);
     createPacket(trigger_data.data(), 100, 0);
-    analyzer->feed(trigger_data.data(), static_cast<int32_t>(trigger_data.size()));
+    (void)analyzer->feed(trigger_data.data(), static_cast<int32_t>(trigger_data.size()));
 
     TsDuckMetricsNative metrics;
     bool has_metrics = analyzer->get_metrics(&metrics);
@@ -213,7 +213,7 @@ TEST_F(AnalyzerIntegrationTest, DetectsContinuityErrors) {
     createPacket(&data[8 * ts::PKT_SIZE], 100, 10);
     createPacket(&data[9 * ts::PKT_SIZE], 100, 11);
 
-    analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
+    (void)analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
 
     // Check TSDuck's CC analyzer detected errors
     int64_t cc_errors = analyzer->pids.total_cc_errors.load(std::memory_order_relaxed);
@@ -231,7 +231,7 @@ TEST_F(AnalyzerIntegrationTest, CalculatesBitrateFromPackets) {
         createPacket(&data[i * ts::PKT_SIZE], 100, i % 16);
     }
 
-    analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
+    (void)analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
 
     // Wait for metrics interval to elapse
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -239,7 +239,7 @@ TEST_F(AnalyzerIntegrationTest, CalculatesBitrateFromPackets) {
     // Feed a small amount of data to trigger updateMetrics()
     std::vector<uint8_t> trigger_data(ts::PKT_SIZE);
     createPacket(trigger_data.data(), 100, 0);
-    analyzer->feed(trigger_data.data(), static_cast<int32_t>(trigger_data.size()));
+    (void)analyzer->feed(trigger_data.data(), static_cast<int32_t>(trigger_data.size()));
 
     BitrateAnalysisNative bitrate;
     bool has_bitrate = analyzer->get_bitrate_analysis(&bitrate);
@@ -259,7 +259,7 @@ TEST_F(AnalyzerIntegrationTest, ResetClearsAllState) {
         createPacket(&data[i * ts::PKT_SIZE], 100, i % 16);
     }
 
-    analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
+    (void)analyzer->feed(data.data(), static_cast<int32_t>(data.size()));
     EXPECT_GT(analyzer->packets_processed.load(), 0);
 
     analyzer->reset();

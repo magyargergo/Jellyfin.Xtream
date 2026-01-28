@@ -452,7 +452,7 @@ void StreamPipeline::process_aligned(uint8_t* data, int32_t length) noexcept {
 
     // Feed through analyzer (restamps in-place if enabled)
     if (analyzer_) {
-        analyzer_->feed_and_restamp(data, length);
+        (void)analyzer_->feed_and_restamp(data, length);
     }
 
     // Track last output PTS for switch continuity

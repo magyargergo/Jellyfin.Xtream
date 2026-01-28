@@ -2,18 +2,34 @@
 
 Native C++ library for MPEG-TS stream analysis, restamping, and HTTP streaming with automatic failover. Built on [TsDuck](https://tsduck.io/) for professional-grade transport stream handling.
 
+## Modern C++ Standards
+
+This library is written in modern C++20/23 with emphasis on:
+
+- **Concepts and Constraints**: Type-safe template interfaces (`PidType`, `TimestampType`, `BitrateType`, `SeqlockReadable`)
+- **`constexpr`/`consteval`**: Compile-time computation for constants and validation functions
+- **`[[nodiscard]]`**: Enforced on all functions returning values to prevent ignored results
+- **`std::span`**: Safe array passing without raw pointer/length pairs
+- **Designated Initializers**: Clear struct initialization with named fields
+- **RAII Patterns**: `SeqlockWriteGuard` for exception-safe lock management
+- **`noexcept` Specifications**: Consistent marking for no-throw guarantees
+- **Cache-Line Alignment**: `alignas(CACHE_LINE_SIZE)` for false-sharing prevention
+- **Lock-Free Concurrency**: Seqlock pattern with proper memory ordering
+
 ## Features
 
 ### Stream Analysis
-- **TR 101 290 Monitoring**: Priority 1 and 2 error detection per ETSI standard
-- **PCR Analysis**: Jitter, drift, and accuracy measurement
-- **A/V Sync Tracking**: Video-audio drift detection and monitoring
-- **PSI Parsing**: PAT/PMT parsing via TsDuck's native `SectionDemux`
+- **TR 101 290 Monitoring**: Priority 1 and 2 error detection per ETSI standard (including CAT timeout)
+- **PCR Analysis**: Jitter, drift, accuracy, and ISO/IEC 13818-1 compliance tracking (+/-30 ppm offset, 10 ppm/hr drift rate)
+- **A/V Sync Tracking**: Video-audio drift detection per EBU R37 thresholds
+- **PSI Parsing**: PAT/PMT/CAT parsing via TsDuck's native `SectionDemux`
+- **PID Timeout Detection**: PIDs referenced in PAT/PMT monitored for 5-second timeout
 
 ### Timestamp Correction (Restamping)
 - **PCR Smoothing**: Eliminates jitter from HTTP chunked delivery
 - **PTS/DTS Correction**: Maintains A/V sync across provider switches
-- **Discontinuity Handling**: Seamless mid-stream URL switching
+- **Discontinuity Indicator Management**: Sets discontinuity_indicator flag per ISO 13818-1 Section 2.4.3.5 on provider switch
+- **Seamless URL Switching**: Handles mid-stream failover with proper timestamp offset calculation
 
 ### HTTP Streaming
 - **Multi-URL Failover**: Automatic rotation through backup URLs
@@ -24,24 +40,24 @@ Native C++ library for MPEG-TS stream analysis, restamping, and HTTP streaming w
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        StreamPipeline                            │
-├─────────────────────────────────────────────────────────────────┤
-│  StreamSource     FailoverManager    QualitySwitchTrigger       │
-│  (libcurl)        (state machine)    (TR 101 290 rates)         │
-├─────────────────────────────────────────────────────────────────┤
-│                      AlignmentBuffer                             │
-│                   (TS packet alignment)                          │
-├─────────────────────────────────────────────────────────────────┤
-│                      TsDuckAnalyzer                              │
-│  ┌──────────────┬──────────────┬──────────────┬───────────────┐ │
-│  │ Tr101290     │ PcrAnalyzer  │ AvSyncTracker│ PsiMonitor    │ │
-│  │ Monitor      │              │              │ (SectionDemux)│ │
-│  └──────────────┴──────────────┴──────────────┴───────────────┘ │
-├─────────────────────────────────────────────────────────────────┤
-│                        Restamper                                 │
-│                  (PCR/PTS/DTS correction)                        │
-└─────────────────────────────────────────────────────────────────┘
++------------------------------------------------------------------+
+|                        StreamPipeline                             |
++------------------------------------------------------------------+
+|  StreamSource     FailoverManager    QualitySwitchTrigger        |
+|  (libcurl)        (state machine)    (TR 101 290 rates)          |
++------------------------------------------------------------------+
+|                      AlignmentBuffer                              |
+|                   (TS packet alignment)                           |
++------------------------------------------------------------------+
+|                      TsDuckAnalyzer                               |
+|  +-------------+--------------+--------------+----------------+  |
+|  | Tr101290    | PcrAnalyzer  | AvSyncTracker| PsiMonitor     |  |
+|  | Monitor     |              |              | (SectionDemux) |  |
+|  +-------------+--------------+--------------+----------------+  |
++------------------------------------------------------------------+
+|                        Restamper                                  |
+|                  (PCR/PTS/DTS correction)                         |
++------------------------------------------------------------------+
 ```
 
 ## Building
@@ -200,11 +216,11 @@ tsduck_set_log_callback(NULL, NULL);
 ## Failover State Machine
 
 ```
-IDLE → CONNECTING → STREAMING → (stall/error) → RECONNECTING → CONNECTING
-                                                       ↓ (max retries)
-                                                    FAILED
+IDLE -> CONNECTING -> STREAMING -> (stall/error) -> RECONNECTING -> CONNECTING
+                                                           | (max retries)
+                                                        FAILED
 
-STREAMING → (requestSwitch OR quality degradation) → SWITCHING → CONNECTING (next URL)
+STREAMING -> (requestSwitch OR quality degradation) -> SWITCHING -> CONNECTING (next URL)
 ```
 
 **Switch Triggers:**
@@ -222,20 +238,72 @@ STREAMING → (requestSwitch OR quality degradation) → SWITCHING → CONNECTIN
 - `continuity_count_error`: Packet loss indicator
 - `pmt_error`: PMT not received within 500ms
 - `pid_error`: Referenced PID not seen for 5s
+- `cat_error`: CAT not received within 500ms (when CA descriptors present)
 
 ### Priority 2 (Recommended monitoring)
 - `transport_error`: TEI bit set
 - `crc_error`: PSI section CRC failure
 - `pcr_repetition_error`: >40ms between PCRs
 - `pcr_discontinuity_error`: Unexpected PCR jump
-- `pcr_accuracy_error`: >500ns deviation
+- `pcr_accuracy_error`: >500ns deviation (13 ticks at 27MHz per ISO 13818-1)
 - `pts_error`: >700ms between PTS
+
+### ISO/IEC 13818-1 PCR Compliance
+
+- `pcr_frequency_offset`: +/-30 ppm maximum deviation from nominal 27MHz
+- `pcr_drift_rate`: 75 mHz/sec maximum (10 ppm/hour)
 
 ## Thread Safety
 
 - **Analyzer**: Single-writer (feed), multiple-readers (metrics) via seqlock
 - **Streamer**: Worker thread for I/O, lock-free status queries from any thread
 - **Callbacks**: Invoked on worker thread; keep handlers fast and non-blocking
+
+## Modern C++ Patterns Used
+
+### Concepts (C++20)
+
+```cpp
+template <typename T>
+concept PidType = std::integral<T> && (sizeof(T) >= 2);
+
+template <typename T>
+concept SeqlockReadable = std::is_trivially_copyable_v<T>;
+```
+
+### RAII Lock Guards
+
+```cpp
+class SeqlockWriteGuard {
+public:
+    explicit SeqlockWriteGuard(Seqlock& lock) noexcept
+        : lock_(lock), expected_seq_(lock.begin_write()) {}
+    ~SeqlockWriteGuard() noexcept { lock_.end_write(expected_seq_); }
+    // Non-copyable, non-movable
+};
+```
+
+### Compile-Time Validation
+
+```cpp
+template <std::integral T>
+[[nodiscard]] consteval bool is_power_of_two(T value) noexcept {
+    return value > 0 && (value & (value - 1)) == 0;
+}
+
+static_assert(is_power_of_two(IAT_SAMPLE_WINDOW), "Must be power of 2");
+```
+
+### Designated Initializers
+
+```cpp
+RestampingConfigNative cfg{
+    .mode = RESTAMP_MODE_CORRECT,
+    .smooth_pcr = 1,
+    .fix_discontinuities = 1,
+    .correction_threshold_ms = 45.0
+};
+```
 
 ## Testing
 
@@ -256,15 +324,21 @@ docker run --rm tsduck-tests
 | Component | Tests | Description |
 |-----------|-------|-------------|
 | Seqlock | 9 | Lock-free synchronization |
-| PID Tracker | 23 | Per-PID statistics |
-| PCR Analyzer | 14 | PCR jitter/drift |
+| PID Tracker | 23 | Per-PID statistics and timeout detection |
+| PCR Analyzer | 14 | PCR jitter/drift/ISO 13818-1 compliance |
 | IAT Analyzer | 16 | Inter-arrival time |
 | Alignment Buffer | 14 | TS packet alignment |
 | Failover Manager | 19 | State machine transitions |
 | Quality Switch Trigger | 15 | TR 101 290 rate thresholds |
 | DuckContext | 6 | TsDuck initialization |
-| PSI Monitor | 22 | PAT/PMT parsing |
-| TR 101 290 | 29 | Error detection |
+| PSI Monitor | 22 | PAT/PMT/CAT parsing |
+| TR 101 290 | 29 | Error detection (including CAT timeout) |
+| Keyframe Aligner | 11 | I-frame detection and alignment |
+| **Unit Tests Total** | **165** | |
+| Analyzer Integration | 25 | Full analyzer pipeline |
+| Restamper Integration | 22 | Timestamp correction with discontinuity |
+| Streamer Integration | 18 | HTTP streaming and failover |
+| **Integration Tests Total** | **65** | |
 
 ## Code Formatting
 
@@ -301,7 +375,7 @@ The `.clang-format` configuration is based on LLVM style with project adjustment
 - **Line length**: 120 characters
 - **Braces**: Attached (K&R style)
 - **Pointer alignment**: Left (`int* ptr`)
-- **Include ordering**: Project headers → TsDuck → CURL → C++ stdlib → C stdlib → System
+- **Include ordering**: Project headers -> TsDuck -> CURL -> C++ stdlib -> C stdlib -> System
 
 ## Static Analysis
 
@@ -370,18 +444,17 @@ cmake --build build --target static-analysis
 
 - **Error Reporting**: Current error handling uses return codes; a richer error type with context (e.g., which URL failed, what HTTP status) would improve diagnostics
 - **Configuration Validation**: No bounds checking on configuration values; invalid settings silently produce unexpected behavior
-- **Logging Integration**: No logging infrastructure; debugging requires recompilation with printf statements
-
-### Testing Gaps
-
-- **Stress Testing**: No tests for memory pressure, thread contention under load, or long-running stability
-- **Fuzz Testing**: PSI parsing and alignment buffer could benefit from AFL/libFuzzer coverage
-- **Network Simulation**: Integration tests use real HTTP; mock server with configurable latency/packet loss would improve coverage
 
 ### Platform Support
 
 - **Windows Native Build**: Currently Linux-focused; Windows builds require manual TsDuck installation and path configuration
 - **ARM64 Optimization**: No ARM NEON intrinsics for sync byte search; falls back to scalar code on Raspberry Pi / Apple Silicon
+
+### Standards Compliance
+
+- **EBU R128 Loudness**: No audio loudness monitoring; could add integrated loudness (LUFS) tracking per EBU R128
+- **SCTE-35 Splice Detection**: Ad insertion markers not parsed; would enable ad break detection and reporting
+- **Closed Caption Passthrough**: No validation that CEA-608/708 captions survive restamping intact
 
 ## Future Plans
 

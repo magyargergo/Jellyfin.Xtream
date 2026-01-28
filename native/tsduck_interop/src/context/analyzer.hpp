@@ -4,21 +4,21 @@
 #ifndef TSDUCK_INTEROP_CONTEXT_ANALYZER_HPP
 #define TSDUCK_INTEROP_CONTEXT_ANALYZER_HPP
 
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <chrono>
-#include <cstring>
+#include <cstdint>
 #include <memory>
-#include <vector>
+#include <span>
 
-#include "../core/constants.hpp"
-#include "../concurrency/seqlock.hpp"
-#include "../analysis/pcr_analyzer.hpp"
-#include "../analysis/iat_analyzer.hpp"
-#include "../analysis/pid_tracker.hpp"
 #include "../analysis/av_sync_tracker.hpp"
+#include "../analysis/iat_analyzer.hpp"
+#include "../analysis/pcr_analyzer.hpp"
+#include "../analysis/pid_tracker.hpp"
 #include "../analysis/psi_monitor.hpp"
 #include "../analysis/tr101290.hpp"
+#include "../concurrency/seqlock.hpp"
+#include "../core/constants.hpp"
 #include "../restamping/restamper.hpp"
 #include "context.hpp"
 #include "tsduck_interop.h"
@@ -37,24 +37,42 @@ struct alignas(CACHE_LINE_SIZE) BitrateBuffer {
     concurrency::Seqlock seqlock;
 };
 
+/// TsDuck Analyzer - High-performance MPEG-TS stream analysis.
+///
+/// Provides comprehensive transport stream analysis including:
+/// - PCR timing and jitter analysis
+/// - Inter-arrival time (network jitter) tracking
+/// - Per-PID statistics with continuity counter validation
+/// - PAT/PMT parsing via TsDuck's SectionDemux
+/// - TR 101 290 quality monitoring
+/// - A/V sync drift detection
+/// - Integrated timestamp restamping (optional)
+///
+/// Thread safety:
+/// - Single writer thread (packet processing)
+/// - Multiple reader threads (metrics queries via seqlock)
 class TsDuckAnalyzer {
 public:
+    // ========================================================================
+    // Public Members
+    // ========================================================================
+
     TsDuckContext* context;
     TsDuckConfigNative config;
 
     // Lock-Free Metrics State
     alignas(CACHE_LINE_SIZE) MetricsBuffer metrics;
-    alignas(CACHE_LINE_SIZE) mutable std::atomic<bool> has_new_metrics{false};  // mutable for const get_metrics()
-    alignas(CACHE_LINE_SIZE) std::atomic<int64_t> last_metrics_time_ns{0};
+    alignas(CACHE_LINE_SIZE) mutable std::atomic<bool> has_new_metrics{false};
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> last_metrics_time_ns{0};
 
     // Custom Analysis Components (unique to our implementation)
-    alignas(CACHE_LINE_SIZE) analysis::AvSyncTracker av_sync;  // A/V drift - TSDuck doesn't have this
-    alignas(CACHE_LINE_SIZE) analysis::PcrAnalyzer pcr;        // Our PCR jitter tracking for real-time callbacks
-    alignas(CACHE_LINE_SIZE) analysis::IatAnalyzer iat;        // Network jitter - TSDuck doesn't have this
+    alignas(CACHE_LINE_SIZE) analysis::AvSyncTracker av_sync;     // A/V drift tracking
+    alignas(CACHE_LINE_SIZE) analysis::PcrAnalyzer pcr;           // PCR jitter tracking
+    alignas(CACHE_LINE_SIZE) analysis::IatAnalyzer iat;           // Network jitter
     alignas(CACHE_LINE_SIZE) BitrateBuffer bitrate;
-    alignas(CACHE_LINE_SIZE) analysis::PidTracker pids;           // Per-PID stats (simplified, CC from TSDuck)
-    alignas(CACHE_LINE_SIZE) analysis::PsiMonitor psi;            // PAT/PMT table parsing
-    alignas(CACHE_LINE_SIZE) analysis::Tr101290Monitor tr101290;  // TR 101 290 quality monitor
+    alignas(CACHE_LINE_SIZE) analysis::PidTracker pids;           // Per-PID statistics
+    alignas(CACHE_LINE_SIZE) analysis::PsiMonitor psi;            // PAT/PMT parsing
+    alignas(CACHE_LINE_SIZE) analysis::Tr101290Monitor tr101290;  // TR 101 290 quality
 
     // Callbacks
     std::atomic<TsDuckMetricsCallback> metrics_callback{nullptr};
@@ -63,108 +81,112 @@ public:
     std::atomic<void*> violation_user_data{nullptr};
 
     // Previous error counts for violation detection
-    int64_t prev_cc_errors{0};
-    int64_t prev_transport_errors{0};
-    int64_t prev_crc_errors{0};
-    int64_t prev_pcr_errors{0};
+    std::int64_t prev_cc_errors{0};
+    std::int64_t prev_transport_errors{0};
+    std::int64_t prev_crc_errors{0};
+    std::int64_t prev_pcr_errors{0};
 
     // Packet counter
-    alignas(CACHE_LINE_SIZE) std::atomic<int64_t> packets_processed{0};
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> packets_processed{0};
 
     // Atomic counters for bitrate calculation
-    alignas(CACHE_LINE_SIZE) std::atomic<int64_t> null_packet_count{0};
-    alignas(CACHE_LINE_SIZE) std::atomic<int64_t> total_packet_count{0};
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> null_packet_count{0};
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> total_packet_count{0};
 
     // Thresholds
     std::atomic<double> pcr_jitter_threshold_us{DEFAULT_PCR_JITTER_THRESHOLD_US};
     std::atomic<double> iat_jitter_threshold_us{DEFAULT_IAT_JITTER_THRESHOLD_US};
 
     // Start time for bitrate calculation (reset on first data arrival)
-    alignas(CACHE_LINE_SIZE) std::atomic<int64_t> start_time_ns{0};
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> start_time_ns{0};
     alignas(CACHE_LINE_SIZE) std::atomic<bool> first_feed_received{false};
 
     // Integrated restamping (optional)
     alignas(CACHE_LINE_SIZE) std::unique_ptr<restamping::Restamper> restamper;
     alignas(CACHE_LINE_SIZE) std::atomic<bool> auto_restamp_enabled{false};
 
-    TsDuckAnalyzer(TsDuckContext* ctx, const TsDuckConfigNative* cfg) : context(ctx), psi(ctx->duck) {
-        if (cfg) {
+    // ========================================================================
+    // Constructor
+    // ========================================================================
+
+    /// Construct analyzer with context and optional configuration.
+    /// @param ctx TsDuck context (must not be null)
+    /// @param cfg Configuration (uses defaults if nullptr)
+    TsDuckAnalyzer(TsDuckContext* ctx, const TsDuckConfigNative* cfg)
+        : context(ctx), psi(ctx->duck) {
+        if (cfg != nullptr) {
             config = *cfg;
         } else {
-            config.metrics_interval_ms = 1000;
-            config.enable_tr101290 = 1;
-            config.sample_size_bytes = static_cast<int32_t>(ts::PKT_SIZE) * 1000;
-            config.enable_auto_restamp = 1;
-            config.restamp_mode = RESTAMP_MODE_CORRECT;
-            config.smooth_pcr = 1;
-            config.fix_discontinuities = 1;
-            config.reserved = 0;
-            config.correction_threshold_ms = DEFAULT_CORRECTION_THRESHOLD_MS;
-            config.max_correction_rate_ms = DEFAULT_MAX_CORRECTION_RATE_MS;
-            config.hysteresis_threshold_ms = DEFAULT_HYSTERESIS_THRESHOLD_MS;
-            config.stream_bitrate_hint = 0;
+            config = make_default_config();
         }
 
-        // Initialize integrated restamper if enabled
-        if (config.enable_auto_restamp && config.restamp_mode != RESTAMP_MODE_DISABLED) {
-            RestampingConfigNative restamp_cfg{};
-            restamp_cfg.mode = config.restamp_mode;
-            restamp_cfg.smooth_pcr = config.smooth_pcr;
-            restamp_cfg.fix_discontinuities = config.fix_discontinuities;
-            restamp_cfg.correction_threshold_ms = config.correction_threshold_ms;
-            restamp_cfg.max_correction_rate_ms = config.max_correction_rate_ms;
-            restamp_cfg.hysteresis_threshold_ms = config.hysteresis_threshold_ms;
-            restamp_cfg.stream_bitrate_hint = config.stream_bitrate_hint;
+        initialize_restamper();
 
-            restamper = std::make_unique<restamping::Restamper>(&av_sync, &restamp_cfg);
-            auto_restamp_enabled.store(true, std::memory_order_release);
-        }
-
-        auto now = std::chrono::steady_clock::now().time_since_epoch();
-        auto now_ns_val = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
-
-        start_time_ns.store(now_ns_val, std::memory_order_release);
-        last_metrics_time_ns.store(now_ns_val, std::memory_order_release);
+        std::int64_t now_val = now_ns();
+        start_time_ns.store(now_val, std::memory_order_release);
+        last_metrics_time_ns.store(now_val, std::memory_order_release);
     }
 
-    static int64_t now_ns() noexcept {
-        auto now = std::chrono::steady_clock::now().time_since_epoch();
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    // ========================================================================
+    // Static Utility Functions
+    // ========================================================================
+
+    /// Get current time in nanoseconds.
+    [[nodiscard]] static std::int64_t now_ns() noexcept {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
-    static int64_t get_dotnet_ticks() noexcept {
+    /// Get .NET DateTime.Ticks equivalent.
+    [[nodiscard]] static std::int64_t get_dotnet_ticks() noexcept {
         auto sys_now = std::chrono::system_clock::now();
-        auto duration = sys_now.time_since_epoch();
-        auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count() / 100;
-        return ticks + 621355968000000000LL;
+        auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            sys_now.time_since_epoch()).count() / 100;
+        constexpr std::int64_t DOTNET_EPOCH_OFFSET = 621355968000000000LL;
+        return ticks + DOTNET_EPOCH_OFFSET;
     }
 
-    void process_pcr(ts::TSPacket& pkt, int64_t packet_index) noexcept {
-        if (!pkt.hasPCR())
+    // ========================================================================
+    // Packet Processing
+    // ========================================================================
+
+    /// Process PCR from a packet.
+    void process_pcr(ts::TSPacket& pkt, std::int64_t packet_index) noexcept {
+        if (!pkt.hasPCR()) {
             return;
-        uint64_t pcr_value = pkt.getPCR();
-        if (pcr_value == ts::INVALID_PCR)
+        }
+
+        std::uint64_t pcr_value = pkt.getPCR();
+        if (pcr_value == ts::INVALID_PCR) {
             return;
-        int64_t current_time = now_ns();
+        }
+
+        std::int64_t current_time = now_ns();
         pcr.process(pcr_value, packet_index, current_time);
-        int64_t pcr_base_90khz = static_cast<int64_t>(pcr_value / ts::SYSTEM_CLOCK_SUBFACTOR);
+
+        std::int64_t pcr_base_90khz =
+            static_cast<std::int64_t>(pcr_value / ts::SYSTEM_CLOCK_SUBFACTOR);
         av_sync.update_pcr_reference(pcr_base_90khz);
     }
 
-    void process_iat() noexcept { iat.process(now_ns()); }
+    /// Process inter-arrival time.
+    void process_iat() noexcept {
+        iat.process(now_ns());
+    }
 
-    void process_bitrate(uint16_t pid) noexcept {
+    /// Process bitrate tracking for a packet.
+    void process_bitrate(std::uint16_t pid) noexcept {
         total_packet_count.fetch_add(1, std::memory_order_relaxed);
 
-        // Check for null packet
         if (pid == ts::PID_NULL) {
             null_packet_count.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
-    void process_pid_info(ts::TSPacket& pkt, uint16_t pid) noexcept {
+    /// Process PID information from a packet.
+    void process_pid_info(ts::TSPacket& pkt, std::uint16_t pid) noexcept {
         bool scrambled = pkt.isScrambled();
-        int64_t time = now_ns();
+        std::int64_t time = now_ns();
         pids.process_packet(pid, pkt.getCC(), pkt.hasPayload(), scrambled, time);
 
         if (pkt.hasPCR()) {
@@ -176,10 +198,15 @@ public:
         }
     }
 
+    // ========================================================================
+    // Metrics Updates
+    // ========================================================================
+
+    /// Update metrics if enough time has elapsed.
     void update_metrics() noexcept {
-        int64_t current_time = now_ns();
-        int64_t last_time = last_metrics_time_ns.load(std::memory_order_relaxed);
-        int64_t elapsed_ms = (current_time - last_time) / 1000000;
+        std::int64_t current_time = now_ns();
+        std::int64_t last_time = last_metrics_time_ns.load(std::memory_order_relaxed);
+        std::int64_t elapsed_ms = (current_time - last_time) / 1'000'000;
 
         if (elapsed_ms < config.metrics_interval_ms) {
             return;
@@ -215,6 +242,16 @@ public:
 
             // Check PAT timeout (uses packet-distance timing)
             tr101290.check_pat_timeout(current_pkt_idx);
+
+            // Check CAT timeout (only if CAT is present in stream)
+            tr101290.check_cat_timeout(current_pkt_idx);
+
+            // Check PID timeouts (PIDs referenced in PAT/PMT not seen for 5s)
+            int64_t current_time = now_ns();
+            int32_t pid_timeouts = pids.check_pid_timeouts(current_time, bitrate, current_pkt_idx);
+            for (int32_t t = 0; t < pid_timeouts; t++) {
+                tr101290.on_pid_timeout();
+            }
 
             // Check PMT timeouts for all programs (packet-distance timing)
             if (bitrate > 0) {
@@ -291,67 +328,38 @@ public:
         }
     }
 
-    int32_t feed(const uint8_t* data, int32_t length) noexcept {
-        if (!data || length <= 0) {
+    // ========================================================================
+    // Feed Methods
+    // ========================================================================
+
+    /// Feed MPEG-TS data for analysis (read-only).
+    /// @param data Pointer to MPEG-TS packet data
+    /// @param length Length in bytes (must be multiple of 188)
+    /// @return Number of packets processed, or negative error code
+    [[nodiscard]] std::int32_t feed(const std::uint8_t* data, std::int32_t length) noexcept {
+        if (data == nullptr || length <= 0) {
             return TSDUCK_ERROR_INVALID_DATA;
         }
 
-        int32_t packets = length / static_cast<int32_t>(ts::PKT_SIZE);
+        std::int32_t packets = length / static_cast<std::int32_t>(TS_PACKET_SIZE);
         if (packets == 0) {
             return 0;
         }
 
-        // Reset start time on first data arrival so bitrate isn't diluted
-        // by any pre-data idle period (e.g., delayed HTTP response body).
-        if (!first_feed_received.load(std::memory_order_relaxed)) {
-            first_feed_received.store(true, std::memory_order_release);
-            auto now_val = now_ns();
-            start_time_ns.store(now_val, std::memory_order_release);
-            last_metrics_time_ns.store(now_val, std::memory_order_release);
-        }
+        initialize_timing_on_first_feed();
 
-        int64_t base_packet_index = packets_processed.load(std::memory_order_relaxed);
+        std::int64_t base_packet_index = packets_processed.load(std::memory_order_relaxed);
 
-        const ts::TSPacket* pkt_array = reinterpret_cast<const ts::TSPacket*>(data);
-        for (int32_t i = 0; i < packets; i++) {
+        auto packet_span = std::span{reinterpret_cast<const ts::TSPacket*>(data),
+                                    static_cast<std::size_t>(packets)};
+
+        for (std::int32_t i = 0; const auto& pkt_ref : packet_span) {
             // const_cast safe: feed() is read-only analysis
-            ts::TSPacket& pkt = const_cast<ts::TSPacket&>(pkt_array[i]);
-            int64_t packet_idx = base_packet_index + i;
+            auto& pkt = const_cast<ts::TSPacket&>(pkt_ref);
+            std::int64_t packet_idx = base_packet_index + i;
+            ++i;
 
-            // TR 101 290: sync check (even for invalid packets)
-            bool valid_sync = pkt.hasValidSync();
-            tr101290.check_sync(valid_sync);
-            if (!valid_sync)
-                continue;
-
-            uint16_t pid = pkt.getPID();
-
-            // TR 101 290 Priority 2: Transport Error Indicator
-            tr101290.check_transport_error(pkt);
-
-            // TR 101 290: Track PAT/PMT PID reception for timeout checks
-            track_psi_reception(pid, pkt, packet_idx);
-
-            // PSI accumulation — SectionDemux handles PID filtering internally
-            psi.feed_packet(pkt, packet_idx);
-            apply_psi_updates();
-
-            process_pcr(pkt, packet_idx);
-
-            // TR 101 290: PCR checks
-            if (pkt.hasPCR()) {
-                uint64_t pcr_val = pkt.getPCR();
-                if (pcr_val != ts::INVALID_PCR) {
-                    tr101290.check_pcr_repetition(pid, packet_idx);
-                    tr101290.check_pcr_accuracy(pid, pcr_val, packet_idx);
-                    tr101290.check_pcr_discontinuity(pkt, pid, pcr_val);
-                }
-            }
-
-            process_iat();
-            process_bitrate(pid);
-            process_pid_info(pkt, pid);
-            process_pes_pts(pkt, pid, packet_idx, i * static_cast<int32_t>(ts::PKT_SIZE));
+            process_single_packet(pkt, packet_idx);
         }
 
         packets_processed.fetch_add(packets, std::memory_order_release);
@@ -361,76 +369,37 @@ public:
     }
 
     /// Feed MPEG-TS data with integrated restamping.
-    /// This function modifies data IN-PLACE to apply timestamp corrections,
-    /// then analyzes the corrected data.
-    /// @param data MPEG-TS data to process (will be modified if restamping enabled).
-    /// @param length Number of bytes.
-    /// @return Number of packets processed, or negative error code.
-    int32_t feed_and_restamp(uint8_t* data, int32_t length) noexcept {
-        if (!data || length <= 0) {
+    /// Modifies data IN-PLACE to apply timestamp corrections, then analyzes.
+    /// @param data MPEG-TS data to process (will be modified if restamping enabled)
+    /// @param length Number of bytes
+    /// @return Number of packets processed, or negative error code
+    [[nodiscard]] std::int32_t feed_and_restamp(std::uint8_t* data, std::int32_t length) noexcept {
+        if (data == nullptr || length <= 0) {
             return TSDUCK_ERROR_INVALID_DATA;
         }
 
-        int32_t packets = length / static_cast<int32_t>(ts::PKT_SIZE);
+        std::int32_t packets = length / static_cast<std::int32_t>(TS_PACKET_SIZE);
         if (packets == 0) {
             return 0;
         }
 
-        // Reset start time on first data arrival so bitrate isn't diluted
-        // by any pre-data idle period (e.g., delayed HTTP response body).
-        if (!first_feed_received.load(std::memory_order_relaxed)) {
-            first_feed_received.store(true, std::memory_order_release);
-            auto now_val = now_ns();
-            start_time_ns.store(now_val, std::memory_order_release);
-            last_metrics_time_ns.store(now_val, std::memory_order_release);
-        }
+        initialize_timing_on_first_feed();
 
-        int64_t base_packet_index = packets_processed.load(std::memory_order_relaxed);
+        std::int64_t base_packet_index = packets_processed.load(std::memory_order_relaxed);
 
         // Apply restamping BEFORE analysis (modifies data in-place)
         if (auto_restamp_enabled.load(std::memory_order_acquire) && restamper) {
-            restamper->process(data, length, base_packet_index);
+            (void)restamper->process(data, length, base_packet_index);
         }
 
-        ts::TSPacket* pkt_array = reinterpret_cast<ts::TSPacket*>(data);
-        for (int32_t i = 0; i < packets; i++) {
-            ts::TSPacket& pkt = pkt_array[i];
-            int64_t packet_idx = base_packet_index + i;
+        auto packet_span = std::span{reinterpret_cast<ts::TSPacket*>(data),
+                                    static_cast<std::size_t>(packets)};
 
-            // TR 101 290: sync check (even for invalid packets)
-            bool valid_sync = pkt.hasValidSync();
-            tr101290.check_sync(valid_sync);
-            if (!valid_sync)
-                continue;
+        for (std::int32_t i = 0; auto& pkt : packet_span) {
+            std::int64_t packet_idx = base_packet_index + i;
+            ++i;
 
-            uint16_t pid = pkt.getPID();
-
-            // TR 101 290 Priority 2: Transport Error Indicator
-            tr101290.check_transport_error(pkt);
-
-            // TR 101 290: Track PAT/PMT PID reception for timeout checks
-            track_psi_reception(pid, pkt, packet_idx);
-
-            // PSI accumulation — SectionDemux handles PID filtering internally
-            psi.feed_packet(pkt, packet_idx);
-            apply_psi_updates();
-
-            process_pcr(pkt, packet_idx);
-
-            // TR 101 290: PCR checks
-            if (pkt.hasPCR()) {
-                uint64_t pcr_val = pkt.getPCR();
-                if (pcr_val != ts::INVALID_PCR) {
-                    tr101290.check_pcr_repetition(pid, packet_idx);
-                    tr101290.check_pcr_accuracy(pid, pcr_val, packet_idx);
-                    tr101290.check_pcr_discontinuity(pkt, pid, pcr_val);
-                }
-            }
-
-            process_iat();
-            process_bitrate(pid);
-            process_pid_info(pkt, pid);
-            process_pes_pts(pkt, pid, packet_idx, i * static_cast<int32_t>(ts::PKT_SIZE));
+            process_single_packet(pkt, packet_idx);
         }
 
         packets_processed.fetch_add(packets, std::memory_order_release);
@@ -439,27 +408,34 @@ public:
         return packets;
     }
 
+    // ========================================================================
+    // Restamping Configuration
+    // ========================================================================
+
     /// Configure integrated restamping at runtime.
-    void configure_restamp(int32_t mode, int32_t smooth_pcr, int32_t fix_discontinuities) noexcept {
+    /// @param mode Restamp mode (DISABLED, MONITOR, or CORRECT)
+    /// @param smooth_pcr Enable PCR smoothing (1 = enable)
+    /// @param fix_discontinuities Fix discontinuities (1 = enable)
+    void configure_restamp(std::int32_t mode, std::int32_t smooth_pcr,
+                          std::int32_t fix_discontinuities) noexcept {
         if (mode == RESTAMP_MODE_DISABLED) {
             auto_restamp_enabled.store(false, std::memory_order_release);
             return;
         }
 
-        // Create restamper if it doesn't exist
         if (!restamper) {
-            RestampingConfigNative cfg{};
-            cfg.mode = mode;
-            cfg.smooth_pcr = smooth_pcr;
-            cfg.fix_discontinuities = fix_discontinuities;
-            cfg.correction_threshold_ms = config.correction_threshold_ms;
-            cfg.max_correction_rate_ms = config.max_correction_rate_ms;
-            cfg.hysteresis_threshold_ms = config.hysteresis_threshold_ms;
-            cfg.stream_bitrate_hint = config.stream_bitrate_hint;
-
+            RestampingConfigNative cfg{
+                .mode = mode,
+                .smooth_pcr = smooth_pcr,
+                .fix_discontinuities = fix_discontinuities,
+                .reserved = 0,
+                .correction_threshold_ms = config.correction_threshold_ms,
+                .max_correction_rate_ms = config.max_correction_rate_ms,
+                .hysteresis_threshold_ms = config.hysteresis_threshold_ms,
+                .stream_bitrate_hint = config.stream_bitrate_hint
+            };
             restamper = std::make_unique<restamping::Restamper>(&av_sync, &cfg);
         } else {
-            // Update existing restamper configuration
             restamper->config.mode = mode;
             restamper->config.smooth_pcr = smooth_pcr;
             restamper->config.fix_discontinuities = fix_discontinuities;
@@ -469,22 +445,29 @@ public:
     }
 
     /// Handle provider switch for timestamp continuity.
-    void handle_switch(int64_t last_output_pts, int64_t new_input_first_pts) noexcept {
+    /// @param last_output_pts Last PTS value output before switch (90kHz)
+    /// @param new_input_first_pts First PTS from new provider (90kHz)
+    void handle_switch(std::int64_t last_output_pts,
+                      std::int64_t new_input_first_pts) noexcept {
         if (restamper) {
             restamper->handle_switch(last_output_pts, new_input_first_pts);
         }
     }
 
     /// Get restamping statistics.
-    bool get_restamp_statistics(RestampingStatisticsNative* out) const noexcept {
-        if (!restamper || !out) {
+    /// @param out Pointer to receive statistics
+    /// @return true if statistics available
+    [[nodiscard]] bool get_restamp_statistics(RestampingStatisticsNative* out) const noexcept {
+        if (restamper == nullptr || out == nullptr) {
             return false;
         }
         return restamper->get_statistics(out);
     }
 
     /// Check if restamping is enabled.
-    bool is_restamping_enabled() const noexcept { return auto_restamp_enabled.load(std::memory_order_acquire); }
+    [[nodiscard]] bool is_restamping_enabled() const noexcept {
+        return auto_restamp_enabled.load(std::memory_order_acquire);
+    }
 
     void reset() noexcept {
         packets_processed.store(0, std::memory_order_release);
@@ -529,34 +512,127 @@ public:
         last_metrics_time_ns.store(now_ns_val, std::memory_order_release);
     }
 
-    bool get_metrics(TsDuckMetricsNative* out) const noexcept {
-        if (!out)
+    // ========================================================================
+    // Metrics Retrieval
+    // ========================================================================
+
+    /// Get current metrics.
+    /// @param out Pointer to receive metrics
+    /// @return true if metrics available
+    [[nodiscard]] bool get_metrics(TsDuckMetricsNative* out) const noexcept {
+        if (out == nullptr) {
             return false;
+        }
 
-        uint64_t seq;
-        do {
-            seq = metrics.seqlock.begin_read();
-            *out = metrics.data;
-        } while (!metrics.seqlock.read_consistent(seq));
-
+        *out = concurrency::seqlock_read(metrics.seqlock, metrics.data);
         has_new_metrics.store(false, std::memory_order_release);
         return true;
     }
 
-    bool get_bitrate_analysis(BitrateAnalysisNative* out) const noexcept {
-        if (!out)
+    /// Get bitrate analysis.
+    /// @param out Pointer to receive analysis
+    /// @return true if data available
+    [[nodiscard]] bool get_bitrate_analysis(BitrateAnalysisNative* out) const noexcept {
+        if (out == nullptr) {
             return false;
+        }
 
-        uint64_t seq;
-        do {
-            seq = bitrate.seqlock.begin_read();
-            *out = bitrate.data;
-        } while (!bitrate.seqlock.read_consistent(seq));
-
+        *out = concurrency::seqlock_read(bitrate.seqlock, bitrate.data);
         return total_packet_count.load(std::memory_order_acquire) > 0;
     }
 
 private:
+    // ========================================================================
+    // Private Helper Functions
+    // ========================================================================
+
+    /// Create default configuration.
+    [[nodiscard]] static constexpr TsDuckConfigNative make_default_config() noexcept {
+        return TsDuckConfigNative{
+            .metrics_interval_ms = 1000,
+            .enable_tr101290 = 1,
+            .sample_size_bytes = static_cast<std::int32_t>(TS_PACKET_SIZE) * 1000,
+            .enable_auto_restamp = 1,
+            .restamp_mode = RESTAMP_MODE_CORRECT,
+            .smooth_pcr = 1,
+            .fix_discontinuities = 1,
+            .reserved = 0,
+            .correction_threshold_ms = DEFAULT_CORRECTION_THRESHOLD_MS,
+            .max_correction_rate_ms = DEFAULT_MAX_CORRECTION_RATE_MS,
+            .hysteresis_threshold_ms = DEFAULT_HYSTERESIS_THRESHOLD_MS,
+            .stream_bitrate_hint = 0
+        };
+    }
+
+    /// Initialize restamper if enabled in configuration.
+    void initialize_restamper() noexcept {
+        if (config.enable_auto_restamp != 0 &&
+            config.restamp_mode != RESTAMP_MODE_DISABLED) {
+            RestampingConfigNative restamp_cfg{
+                .mode = config.restamp_mode,
+                .smooth_pcr = config.smooth_pcr,
+                .fix_discontinuities = config.fix_discontinuities,
+                .reserved = 0,
+                .correction_threshold_ms = config.correction_threshold_ms,
+                .max_correction_rate_ms = config.max_correction_rate_ms,
+                .hysteresis_threshold_ms = config.hysteresis_threshold_ms,
+                .stream_bitrate_hint = config.stream_bitrate_hint
+            };
+            restamper = std::make_unique<restamping::Restamper>(&av_sync, &restamp_cfg);
+            auto_restamp_enabled.store(true, std::memory_order_release);
+        }
+    }
+
+    /// Initialize timing on first data arrival.
+    void initialize_timing_on_first_feed() noexcept {
+        if (!first_feed_received.load(std::memory_order_relaxed)) {
+            first_feed_received.store(true, std::memory_order_release);
+            std::int64_t now_val = now_ns();
+            start_time_ns.store(now_val, std::memory_order_release);
+            last_metrics_time_ns.store(now_val, std::memory_order_release);
+        }
+    }
+
+    /// Process a single packet (shared logic for feed and feed_and_restamp).
+    void process_single_packet(ts::TSPacket& pkt, std::int64_t packet_idx) noexcept {
+        // TR 101 290: sync check (even for invalid packets)
+        bool valid_sync = pkt.hasValidSync();
+        tr101290.check_sync(valid_sync);
+        if (!valid_sync) {
+            return;
+        }
+
+        std::uint16_t pid = pkt.getPID();
+
+        // TR 101 290 Priority 2: Transport Error Indicator
+        tr101290.check_transport_error(pkt);
+
+        // TR 101 290: Track PAT/PMT PID reception for timeout checks
+        track_psi_reception(pid, pkt, packet_idx);
+
+        // PSI accumulation
+        psi.feed_packet(pkt, packet_idx);
+        apply_psi_updates();
+
+        process_pcr(pkt, packet_idx);
+
+        // TR 101 290: PCR checks
+        if (pkt.hasPCR()) {
+            std::uint64_t pcr_val = pkt.getPCR();
+            if (pcr_val != ts::INVALID_PCR) {
+                tr101290.check_pcr_repetition(pid, packet_idx);
+                tr101290.check_pcr_accuracy(pid, pcr_val, packet_idx);
+                tr101290.check_pcr_discontinuity(pkt, pid, pcr_val);
+            }
+        }
+
+        process_iat();
+        process_bitrate(pid);
+        process_pid_info(pkt, pid);
+        process_pes_pts(pkt, pid, packet_idx,
+                       static_cast<std::int64_t>(packet_idx % 1000) *
+                       static_cast<std::int32_t>(TS_PACKET_SIZE));
+    }
     /// Apply PSI discoveries to PID tracker and TR 101 290 monitor.
     /// Called after PSI feedPacket when PAT/PMT may have been parsed.
     void apply_psi_updates() noexcept {
@@ -565,6 +641,9 @@ private:
         // filtering, so handlePat/handlePmt only fire on version changes.
         // TR 101 290 requires tracking every PAT/PMT packet reception.
 
+        // PAT PID (0x0000) is always expected in a valid transport stream
+        pids.mark_expected(ts::PID_PAT);
+
         // Apply PMT stream types to PID tracker (overrides PES stream_id guesses)
         int32_t prog_count = psi.get_program_count();
         for (int32_t p = 0; p < prog_count; p++) {
@@ -572,10 +651,14 @@ private:
             if (!prog.active || !prog.pmt_received)
                 continue;
 
-            // Set PCR PID
+            // Set PCR PID and mark as expected
             if (prog.pcr_pid != 0x1FFF) {
                 pids.set_pcr_pid(prog.pcr_pid, true);
+                pids.mark_expected(prog.pcr_pid);
             }
+
+            // Mark PMT PID as expected
+            pids.mark_expected(prog.pmt_pid);
 
             // Apply authoritative stream types from PMT
             for (int32_t s = 0; s < prog.stream_count; s++) {
@@ -592,6 +675,9 @@ private:
                     slot.is_audio.store(true, std::memory_order_release);
                     slot.is_video.store(false, std::memory_order_release);
                 }
+
+                // Mark elementary stream PIDs as expected for timeout tracking
+                pids.mark_expected(es.pid);
             }
         }
 
@@ -655,17 +741,23 @@ private:
         }
     }
 
-    /// Track PAT/PMT PID reception for TR 101 290 timeout checks.
-    /// This operates at the packet level: every PAT/PMT packet with payload
+    /// Track PAT/PMT/CAT PID reception for TR 101 290 timeout checks.
+    /// This operates at the packet level: every PAT/PMT/CAT packet with payload
     /// updates the timing baseline. This is independent of SectionDemux's
     /// version-filtered table delivery (which only fires on version changes).
     void track_psi_reception(uint16_t pid, ts::TSPacket& pkt, int64_t packet_idx) noexcept {
         if (!pkt.hasPayload())
             return;
 
-        // PAT reception (PID 0)
+        // PAT reception (PID 0x0000)
         if (pid == ts::PID_PAT) {
             tr101290.on_pat_received(packet_idx);
+            return;
+        }
+
+        // CAT reception (PID 0x0001) - Conditional Access Table
+        if (pid == ts::PID_CAT) {
+            tr101290.on_cat_received(packet_idx);
             return;
         }
 

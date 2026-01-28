@@ -150,7 +150,7 @@ TEST_F(RestamperIntegrationTest, HandlesProviderSwitch) {
 
     restamper->handle_switch(last_output_pts, new_input_first_pts);
 
-    int64_t switch_offset = restamper->switch_offset_90khz.load();
+    int64_t switch_offset = restamper->get_switch_offset_90khz();
 
     // Offset should bridge the gap
     EXPECT_NE(switch_offset, 0);
@@ -165,7 +165,7 @@ TEST_F(RestamperIntegrationTest, AppliesSwitchOffsetToPts) {
     createPesPacket(packet, 0x100, 0, 90000, true);
 
     // Process with restamper (in CORRECT mode)
-    restamper->process(packet, static_cast<int32_t>(ts::PKT_SIZE), 0);
+    (void)restamper->process(packet, static_cast<int32_t>(ts::PKT_SIZE), 0);
 
     // The PTS should have been modified
     int64_t new_pts = extractPts(packet);
@@ -193,7 +193,7 @@ TEST_F(RestamperIntegrationTest, TracksStatistics) {
         }
     }
 
-    restamper->process(data.data(), static_cast<int32_t>(data.size()), 0);
+    (void)restamper->process(data.data(), static_cast<int32_t>(data.size()), 0);
 
     RestampingStatisticsNative stats;
     bool has_stats = restamper->get_statistics(&stats);
@@ -212,7 +212,7 @@ TEST_F(RestamperIntegrationTest, ResetClearsState) {
     for (int i = 0; i < 10; i++) {
         createPcrPacket(&data[i * ts::PKT_SIZE], 256, i % 16, 90000 + i * 900);
     }
-    restamper->process(data.data(), static_cast<int32_t>(data.size()), 0);
+    (void)restamper->process(data.data(), static_cast<int32_t>(data.size()), 0);
 
     // Set switch offset
     restamper->handle_switch(270000, 90000);
@@ -221,10 +221,10 @@ TEST_F(RestamperIntegrationTest, ResetClearsState) {
     restamper->reset();
 
     RestampingStatisticsNative stats;
-    restamper->get_statistics(&stats);
+    (void)restamper->get_statistics(&stats);
 
     EXPECT_EQ(stats.packets_processed, 0);
-    EXPECT_EQ(restamper->switch_offset_90khz.load(), 0);
+    EXPECT_EQ(restamper->get_switch_offset_90khz(), 0);
 }
 
 // ============================================================================
@@ -250,7 +250,7 @@ TEST_F(RestamperIntegrationTest, MonitorModeDoesNotModify) {
     ts::TSPacket& pkt = *reinterpret_cast<ts::TSPacket*>(packet);
     int64_t original_pcr = static_cast<int64_t>(pkt.getPCR() / ts::SYSTEM_CLOCK_SUBFACTOR);
 
-    restamper->process(packet, static_cast<int32_t>(ts::PKT_SIZE), 0);
+    (void)restamper->process(packet, static_cast<int32_t>(ts::PKT_SIZE), 0);
 
     // PCR should be unchanged in monitor mode
     int64_t new_pcr = static_cast<int64_t>(pkt.getPCR() / ts::SYSTEM_CLOCK_SUBFACTOR);

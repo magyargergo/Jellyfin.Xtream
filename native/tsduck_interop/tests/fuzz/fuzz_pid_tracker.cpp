@@ -49,21 +49,21 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             bool has_payload = (flags & 0x01) != 0;
             bool scrambled = (flags & 0x02) != 0;
 
-            tracker.processPacket(pid, cc, has_payload, scrambled, time_ns++);
+            tracker.process_packet(pid, cc, has_payload, scrambled, time_ns++);
         } else if (cmd < 0xC0) {
             // reset
             tracker.reset();
 
             // Verify invariants after reset
             TsDuckPidInfoExtended pids[8192];
-            int32_t count = tracker.getCount(pids, 8192);
+            int32_t count = tracker.get_count(pids, 8192);
             if (count != 0) {
                 __builtin_trap();
             }
         } else {
             // query getCount
             TsDuckPidInfoExtended pids[8192];
-            int32_t count = tracker.getCount(pids, 8192);
+            int32_t count = tracker.get_count(pids, 8192);
 
             // Verify count is valid
             if (count < 0 || count > 8192) {
@@ -84,7 +84,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // Final verification
     TsDuckPidInfoExtended final_pids[8192];
-    int32_t final_count = tracker.getCount(final_pids, 8192);
+    int32_t final_count = tracker.get_count(final_pids, 8192);
 
     if (final_count < 0 || final_count > 8192) {
         __builtin_trap();

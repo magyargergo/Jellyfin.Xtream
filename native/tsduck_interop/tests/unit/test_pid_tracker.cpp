@@ -309,7 +309,7 @@ TEST_F(PidTrackerTest, ConcurrentReadWrite) {
     std::thread reader([&]() {
         TsDuckPidInfoExtended pids[10];
         while (!stop.load(std::memory_order_acquire)) {
-            tracker.get_count(pids, 10);
+            (void)tracker.get_count(pids, 10);
             read_count.fetch_add(1, std::memory_order_relaxed);
         }
     });

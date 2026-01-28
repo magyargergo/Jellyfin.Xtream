@@ -104,15 +104,28 @@ typedef struct {
 } TsDuckConfigNative;
 
 // PCR Analysis structure (Phase 2a - blittable)
+// Tracks PCR timing per ISO/IEC 13818-1 requirements:
+// - Accuracy: ±500ns phase tolerance
+// - Frequency offset: ±30 ppm (±810 Hz at 27MHz)
+// - Drift rate: 75 mHz/sec (10 ppm/hr)
 typedef struct {
     double pcr_jitter_us;           // Current PCR jitter in microseconds
     double pcr_jitter_max_us;       // Maximum PCR jitter observed
     double pcr_jitter_avg_us;       // Average PCR jitter
     int64_t pcr_interval_packets;   // Packets between PCRs
     double pcr_interval_ms;         // Time between PCRs in milliseconds
-    double pcr_drift_ppm;           // PCR drift in parts-per-million
+    double pcr_drift_ppm;           // PCR frequency offset in parts-per-million
     int64_t pcr_count;              // Total PCRs received
     int64_t pcr_valid_count;        // Valid PCRs (within tolerance)
+
+    // ISO/IEC 13818-1 compliance tracking (new fields)
+    double pcr_frequency_offset_ppm; // Current frequency offset (limit: ±30 ppm)
+    double pcr_drift_rate_ppm_hr;   // Drift rate in ppm/hour (limit: 10 ppm/hr)
+    int32_t frequency_offset_valid; // 1=within ±30 ppm limit
+    int32_t drift_rate_valid;       // 1=within 10 ppm/hr limit
+    double pcr_accuracy_ns;         // Current PCR accuracy in nanoseconds
+    int32_t accuracy_valid;         // 1=within ±500ns limit
+    int32_t reserved;               // Padding for alignment
 } PcrAnalysisNative;
 
 // IAT (Inter-packet Arrival Time) Analysis structure (Phase 2a - blittable)

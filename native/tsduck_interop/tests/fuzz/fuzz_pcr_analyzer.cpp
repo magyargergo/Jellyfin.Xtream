@@ -91,10 +91,10 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         } else if (cmd < 0xC0) {
             // Get analysis
             PcrAnalysisNative result;
-            analyzer.get(&result);
+            (void)analyzer.get(&result);
 
-            // Verify lastPcrBase90khz consistency
-            int64_t last_pcr_90khz = analyzer.lastPcrBase90khz();
+            // Verify last_pcr_base_90khz consistency
+            int64_t last_pcr_90khz = analyzer.last_pcr_base_90khz();
             // Should be -1 if no PCR processed, or >= 0 otherwise
             if (result.pcr_count == 0 && last_pcr_90khz != -1) {
                 __builtin_trap();
@@ -109,7 +109,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 // Should return false after reset (no data)
                 __builtin_trap();
             }
-            if (analyzer.lastPcrBase90khz() != -1) {
+            if (analyzer.last_pcr_base_90khz() != -1) {
                 __builtin_trap();
             }
         }
@@ -117,7 +117,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // Final verification
     PcrAnalysisNative final_result;
-    analyzer.get(&final_result);
+    (void)analyzer.get(&final_result);
 
     // If we have data, verify consistency
     if (final_result.pcr_count > 0) {

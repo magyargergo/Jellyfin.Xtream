@@ -52,10 +52,10 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         pkt.b[0] = ts::SYNC_BYTE;
 
         // Feed to PSI monitor
-        monitor.feedPacket(pkt, packet_idx++);
+        monitor.feed_packet(pkt, packet_idx++);
 
         // Verify invariants
-        int32_t prog_count = monitor.getProgramCount();
+        int32_t prog_count = monitor.get_program_count();
         if (prog_count < 0 || prog_count > static_cast<int32_t>(MAX_PROGRAMS)) {
             __builtin_trap();
         }
@@ -63,16 +63,16 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         offset += ts::PKT_SIZE;
     }
 
-    // Test getPrograms API
+    // Test get_programs API
     TsDuckProgramInfoNative progs[MAX_PROGRAMS];
-    int32_t count = monitor.getPrograms(progs, MAX_PROGRAMS);
+    int32_t count = monitor.get_programs(progs, MAX_PROGRAMS);
     if (count < 0 || count > static_cast<int32_t>(MAX_PROGRAMS)) {
         __builtin_trap();
     }
 
     // Test reset
     monitor.reset();
-    if (monitor.getProgramCount() != 0) {
+    if (monitor.get_program_count() != 0) {
         __builtin_trap();
     }
 

@@ -176,7 +176,7 @@ TEST_F(SeqlockStressTest, RapidWriteBursts) {
     std::thread reader([&]() {
         while (!stop_flag.load(std::memory_order_relaxed)) {
             uint64_t seq = seqlock.begin_read();
-            seqlock.read_consistent(seq);
+            (void)seqlock.read_consistent(seq);
             reads_performed.fetch_add(1, std::memory_order_relaxed);
         }
     });

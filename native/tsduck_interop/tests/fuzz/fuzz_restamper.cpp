@@ -71,7 +71,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // Get statistics
     RestampingStatisticsNative stats;
-    if (restamper.getStatistics(&stats)) {
+    if (restamper.get_statistics(&stats)) {
         // Packets processed should match (only when mode is not DISABLED)
         // When mode is DISABLED, process() returns early without counting packets
         if (config.mode != RESTAMP_MODE_DISABLED) {
@@ -106,15 +106,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     }
 
     // Test switch handling
-    restamper.handleSwitch(1000000, 500000);  // last_output=1M, new_input=500K
+    restamper.handle_switch(1000000, 500000);  // last_output=1M, new_input=500K
 
     // Process more packets after switch
     packet_idx += static_cast<int64_t>(num_packets);
-    restamper.process(buffer.data(), static_cast<int32_t>(aligned_size), packet_idx);
+    (void)restamper.process(buffer.data(), static_cast<int32_t>(aligned_size), packet_idx);
 
     // Test reset
     restamper.reset();
-    if (restamper.getStatistics(&stats)) {
+    if (restamper.get_statistics(&stats)) {
         if (stats.packets_processed != 0 || stats.pcr_smoothed != 0 ||
             stats.pts_corrected != 0 || stats.dts_corrected != 0) {
             __builtin_trap();
