@@ -80,9 +80,44 @@ void StreamPipeline::init_common(const TsDuckConfigNative* analyzer_config) {
     });
 }
 
+bool StreamPipeline::set_shared_memory_output(const std::string& name,
+                                              std::size_t slot_count,
+                                              std::size_t slot_size) noexcept {
+    if (running_.load(std::memory_order_acquire)) {
+        LOG_WARNING(kPipeline, "cannot set shared memory while running");
+        return false;
+    }
+
+    std::error_code ec;
+    shm_producer_ = ipc::SharedMemoryProducer::create(name, slot_count, slot_size, &ec);
+
+    if (!shm_producer_) {
+        LOG_ERROR(kPipeline, "failed to create shared memory '%s': %s",
+                  name.c_str(), ec.message().c_str());
+        return false;
+    }
+
+    shm_name_ = name;
+
+    // Disable callback mode when using shared memory
+    output_callback_ = nullptr;
+    output_user_data_ = nullptr;
+    config_.output_fd = -1;
+
+    LOG_INFO(kPipeline, "shared memory output configured: %s (slots=%zu, size=%zu)",
+             name.c_str(), slot_count, slot_size);
+    return true;
+}
+
 StreamPipeline::~StreamPipeline() {
     LOG_DEBUG(kPipeline, "dtor this=%p running=%d worker_finished=%d",
               static_cast<const void*>(this), running_.load(), worker_finished_.load());
+
+    // Signal end of stream to shared memory consumer
+    if (shm_producer_) {
+        shm_producer_->set_end_of_stream();
+        shm_producer_->signal_data_available();
+    }
 
     // Ensure worker is stopped. If called from the worker thread itself
     // (deferred destruction), the thread is already at its exit point.
@@ -159,6 +194,12 @@ void StreamPipeline::stop() noexcept {
 
     if (!running_.load(std::memory_order_acquire)) {
         return;
+    }
+
+    // Signal end of stream to shared memory consumer
+    if (shm_producer_) {
+        shm_producer_->set_end_of_stream();
+        shm_producer_->signal_data_available();
     }
 
     running_.store(false, std::memory_order_release);
@@ -474,7 +515,24 @@ void StreamPipeline::process_aligned(uint8_t* data, int32_t length) noexcept {
 }
 
 void StreamPipeline::write_output(const uint8_t* data, int32_t length) noexcept {
-    if (config_.output_fd >= 0) {
+    // Priority: shared memory > file descriptor > callback
+    if (shm_producer_) {
+        // Shared memory mode: write to ring buffer
+        auto result = shm_producer_->write(
+            std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(data),
+                static_cast<std::size_t>(length)
+            )
+        );
+
+        if (result.overflow) {
+            LOG_WARNING(kPipeline, "shared memory overflow: %zu bytes written of %d",
+                        result.bytes_written, length);
+        }
+
+        // Signal consumer after each write for low latency
+        shm_producer_->signal_data_available();
+    } else if (config_.output_fd >= 0) {
         // Pipe mode: write to file descriptor
         int32_t written = 0;
         while (written < length) {
@@ -524,6 +582,12 @@ void StreamPipeline::perform_switch() noexcept {
 
     // Reset alignment buffer (discard partial packets from old stream)
     alignment_.reset();
+
+    // Signal discontinuity to shared memory consumer
+    if (shm_producer_) {
+        shm_producer_->set_discontinuity();
+        shm_producer_->signal_data_available();
+    }
 
     // Start keyframe aligner - buffer data until IDR frame is found
     // This prevents decoder corruption from starting mid-GOP

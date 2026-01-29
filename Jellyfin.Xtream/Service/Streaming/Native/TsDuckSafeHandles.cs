@@ -162,3 +162,48 @@ internal sealed class TsDuckStreamerSafeHandle : SafeHandleZeroOrMinusOneIsInval
         return new TsDuckStreamerSafeHandle(rawHandle, ownsHandle: true);
     }
 }
+
+/// <summary>
+/// Safe handle wrapper for shared memory producer handles.
+/// Ensures proper cleanup even if Dispose is not called.
+/// </summary>
+internal sealed class SharedMemoryProducerSafeHandle : SafeHandleZeroOrMinusOneIsInvalid
+{
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SharedMemoryProducerSafeHandle"/> class.
+    /// </summary>
+    public SharedMemoryProducerSafeHandle()
+        : base(ownsHandle: true) { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SharedMemoryProducerSafeHandle"/> class
+    /// with an existing handle value.
+    /// </summary>
+    /// <param name="existingHandle">The existing handle value.</param>
+    /// <param name="ownsHandle">Whether this wrapper owns the handle.</param>
+    public SharedMemoryProducerSafeHandle(nint existingHandle, bool ownsHandle)
+        : base(ownsHandle)
+    {
+        SetHandle(existingHandle);
+    }
+
+    /// <inheritdoc/>
+    protected override bool ReleaseHandle()
+    {
+        TsDuckNativeMethods.ShmProducerDestroy(handle);
+        return true;
+    }
+
+    /// <summary>
+    /// Creates a new shared memory producer.
+    /// </summary>
+    /// <param name="name">Unique name for the shared memory region.</param>
+    /// <param name="slotCount">Number of slots in ring buffer (must be power of 2).</param>
+    /// <param name="slotSize">Size of each slot in bytes (must be multiple of 188).</param>
+    /// <returns>A safe handle wrapping the producer, or an invalid handle on failure.</returns>
+    public static SharedMemoryProducerSafeHandle Create(string name, uint slotCount, uint slotSize)
+    {
+        var rawHandle = TsDuckNativeMethods.ShmProducerCreate(name, slotCount, slotSize);
+        return new SharedMemoryProducerSafeHandle(rawHandle, ownsHandle: true);
+    }
+}

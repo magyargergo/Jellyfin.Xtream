@@ -418,16 +418,6 @@ internal static partial class TsDuckNativeMethods
     internal static partial nint StreamerGetAnalyzer(nint streamer);
 
     /// <summary>
-    /// Callback signature for streamer output data.
-    /// Called from the streaming thread with restamped TS data.
-    /// </summary>
-    /// <param name="data">Pointer to TS data (always multiple of 188 bytes).</param>
-    /// <param name="length">Length of data in bytes.</param>
-    /// <param name="userData">User-provided context pointer.</param>
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate void StreamerOutputCallback(nint data, int length, nint userData);
-
-    /// <summary>
     /// Callback signature for streamer events.
     /// Called from the streaming thread on state changes.
     /// </summary>
@@ -438,16 +428,135 @@ internal static partial class TsDuckNativeMethods
     internal delegate void StreamerEventCallback(int eventType, int detail, nint userData);
 
     /// <summary>
-    /// Sets the output data callback for the streamer.
-    /// Called from the streaming thread with restamped TS data.
-    /// </summary>
-    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_set_output_callback")]
-    internal static partial void StreamerSetOutputCallback(nint streamer, nint callback, nint userData);
-
-    /// <summary>
     /// Sets the event callback for the streamer.
     /// Called from the streaming thread on state changes.
     /// </summary>
     [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_set_event_callback")]
     internal static partial void StreamerSetEventCallback(nint streamer, nint callback, nint userData);
+
+    // =========================================================================
+    // Streamer Shared Memory Output Mode
+    // =========================================================================
+
+    /// <summary>
+    /// Configures the streamer to use shared memory for output instead of callbacks.
+    /// Must be called before StreamerStart().
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="name">Unique name for the shared memory region.</param>
+    /// <param name="slotCount">Number of slots in ring buffer (power of 2, 0 for default 1024).</param>
+    /// <param name="slotSize">Size of each slot in bytes (multiple of 188, 0 for default 1316).</param>
+    /// <returns>TSDUCK_OK on success, error code on failure.</returns>
+    [LibraryImport(
+        LibraryName,
+        EntryPoint = "tsduck_streamer_set_shared_memory_output",
+        StringMarshalling = StringMarshalling.Utf8
+    )]
+    internal static partial int StreamerSetSharedMemoryOutput(
+        nint streamer,
+        string name,
+        uint slotCount,
+        uint slotSize
+    );
+
+    /// <summary>
+    /// Gets the shared memory name configured for the streamer.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <returns>Pointer to name string, or zero if not in shared memory mode.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_shared_memory_name")]
+    internal static partial nint StreamerGetSharedMemoryName(nint streamer);
+
+    /// <summary>
+    /// Checks if the streamer is in shared memory output mode.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <returns>1 if in shared memory mode, 0 otherwise.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_is_shared_memory_mode")]
+    internal static partial int StreamerIsSharedMemoryMode(nint streamer);
+
+    // =========================================================================
+    // Shared Memory Producer (for E2E testing)
+    // =========================================================================
+
+    /// <summary>
+    /// Creates a shared memory producer for streaming TS data.
+    /// </summary>
+    /// <param name="name">Unique name for the shared memory region.</param>
+    /// <param name="slotCount">Number of slots in ring buffer (must be power of 2).</param>
+    /// <param name="slotSize">Size of each slot in bytes (must be multiple of 188).</param>
+    /// <returns>Handle to the producer, or zero on failure.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_create", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial nint ShmProducerCreate(string name, uint slotCount, uint slotSize);
+
+    /// <summary>
+    /// Destroys a shared memory producer and frees all resources.
+    /// Safe to call with zero handle.
+    /// </summary>
+    /// <param name="producer">The producer handle.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_destroy")]
+    internal static partial void ShmProducerDestroy(nint producer);
+
+    /// <summary>
+    /// Writes TS packet data to the shared memory ring buffer.
+    /// </summary>
+    /// <param name="producer">The producer handle.</param>
+    /// <param name="data">Pointer to TS data (must be multiple of 188 bytes).</param>
+    /// <param name="length">Number of bytes to write.</param>
+    /// <param name="bytesWritten">Output: number of bytes actually written.</param>
+    /// <returns>1 if overflow occurred, 0 otherwise, -1 on error.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_write")]
+    internal static partial int ShmProducerWrite(nint producer, nint data, uint length, out uint bytesWritten);
+
+    /// <summary>
+    /// Signals the consumer that data is available.
+    /// Call after writing a batch of data for efficient wakeup.
+    /// </summary>
+    /// <param name="producer">The producer handle.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_signal")]
+    internal static partial void ShmProducerSignal(nint producer);
+
+    /// <summary>
+    /// Sets the end-of-stream flag.
+    /// Consumer will complete after reading remaining data.
+    /// </summary>
+    /// <param name="producer">The producer handle.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_set_eos")]
+    internal static partial void ShmProducerSetEndOfStream(nint producer);
+
+    /// <summary>
+    /// Sets an error condition.
+    /// </summary>
+    /// <param name="producer">The producer handle.</param>
+    /// <param name="code">Error code.</param>
+    /// <param name="message">Human-readable error message.</param>
+    [LibraryImport(
+        LibraryName,
+        EntryPoint = "tsduck_shm_producer_set_error",
+        StringMarshalling = StringMarshalling.Utf8
+    )]
+    internal static partial void ShmProducerSetError(nint producer, uint code, string message);
+
+    /// <summary>
+    /// Sets the discontinuity flag.
+    /// Consumer should handle stream discontinuity (e.g., after URL switch).
+    /// </summary>
+    /// <param name="producer">The producer handle.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_set_discontinuity")]
+    internal static partial void ShmProducerSetDiscontinuity(nint producer);
+
+    /// <summary>
+    /// Clears the discontinuity flag.
+    /// </summary>
+    /// <param name="producer">The producer handle.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_clear_discontinuity")]
+    internal static partial void ShmProducerClearDiscontinuity(nint producer);
+
+    /// <summary>
+    /// Checks if consumer is attached to the shared memory region.
+    /// </summary>
+    /// <param name="producer">The producer handle.</param>
+    /// <returns>1 if consumer is attached, 0 otherwise.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_is_consumer_attached")]
+    internal static partial int ShmProducerIsConsumerAttached(nint producer);
 }

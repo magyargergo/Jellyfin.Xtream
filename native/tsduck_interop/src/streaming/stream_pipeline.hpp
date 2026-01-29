@@ -20,6 +20,7 @@
 #include "../context/analyzer.hpp"
 #include "../context/context.hpp"
 #include "../concurrency/seqlock.hpp"
+#include "../ipc/shared_memory_channel.hpp"
 
 namespace tsduck_interop::streaming {
 
@@ -96,6 +97,23 @@ public:
         event_user_data_ = user_data;
     }
 
+    /// Configure shared memory output mode.
+    /// Must be called before start(). Disables callback and fd modes.
+    /// @param name Unique name for the shared memory region
+    /// @param slot_count Number of slots (must be power of 2, default 1024)
+    /// @param slot_size Size of each slot in bytes (default 1316 = 7*188)
+    /// @return true if setup succeeded, false on error
+    bool set_shared_memory_output(const std::string& name,
+                                  std::size_t slot_count = ipc::DEFAULT_SLOT_COUNT,
+                                  std::size_t slot_size = ipc::DEFAULT_SLOT_SIZE) noexcept;
+
+    /// Get the shared memory name (for C# to connect).
+    /// @return The shared memory name, or empty string if not configured.
+    const std::string& shared_memory_name() const noexcept { return shm_name_; }
+
+    /// Check if the pipeline is in shared memory output mode.
+    bool is_shared_memory_mode() const noexcept { return shm_producer_ != nullptr; }
+
     // ========================================================================
     // Control (thread-safe)
     // ========================================================================
@@ -164,6 +182,10 @@ private:
     void* output_user_data_{nullptr};
     StreamerEventCallback event_callback_{nullptr};
     void* event_user_data_{nullptr};
+
+    // Shared memory output (alternative to callback)
+    std::unique_ptr<ipc::SharedMemoryProducer> shm_producer_;
+    std::string shm_name_;
 
     // Timing state for mid-stream switch
     int64_t last_output_pts_{-1};

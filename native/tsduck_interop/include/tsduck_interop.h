@@ -1028,6 +1028,105 @@ TSDUCK_API TsDuckAnalyzerHandle tsduck_streamer_get_analyzer(
     TsDuckStreamerHandle streamer
 );
 
+// =============================================================================
+// Streamer Shared Memory Output Mode
+// =============================================================================
+
+/// Configure the streamer to use shared memory for output instead of callbacks.
+/// Must be called before tsduck_streamer_start().
+/// @param streamer The streamer handle.
+/// @param name Unique name for the shared memory region (null-terminated).
+/// @param slot_count Number of slots in ring buffer (power of 2, 0 for default 1024).
+/// @param slot_size Size of each slot in bytes (multiple of 188, 0 for default 1316).
+/// @return TSDUCK_OK on success, error code on failure.
+TSDUCK_API int32_t tsduck_streamer_set_shared_memory_output(
+    TsDuckStreamerHandle streamer,
+    const char* name,
+    uint32_t slot_count,
+    uint32_t slot_size
+);
+
+/// Get the shared memory name configured for the streamer.
+/// @param streamer The streamer handle.
+/// @return The shared memory name, or NULL if not in shared memory mode.
+TSDUCK_API const char* tsduck_streamer_get_shared_memory_name(
+    TsDuckStreamerHandle streamer
+);
+
+/// Check if the streamer is in shared memory output mode.
+/// @param streamer The streamer handle.
+/// @return 1 if in shared memory mode, 0 otherwise.
+TSDUCK_API int32_t tsduck_streamer_is_shared_memory_mode(
+    TsDuckStreamerHandle streamer
+);
+
+// =============================================================================
+// Shared Memory Producer (for E2E testing)
+// =============================================================================
+
+/// Create a shared memory producer for streaming TS data.
+/// @param name Unique name for the shared memory region (null-terminated).
+/// @param slot_count Number of slots in ring buffer (must be power of 2).
+/// @param slot_size Size of each slot in bytes (must be multiple of 188).
+/// @return Opaque handle to the producer, or NULL on failure.
+TSDUCK_API void* tsduck_shm_producer_create(
+    const char* name,
+    uint32_t slot_count,
+    uint32_t slot_size
+);
+
+/// Destroy a shared memory producer and free all resources.
+/// Safe to call with NULL handle.
+/// @param producer The producer handle.
+TSDUCK_API void tsduck_shm_producer_destroy(void* producer);
+
+/// Write TS packet data to the shared memory ring buffer.
+/// @param producer The producer handle.
+/// @param data Pointer to TS data (must be multiple of 188 bytes).
+/// @param length Number of bytes to write.
+/// @param bytes_written Output: number of bytes actually written.
+/// @return 1 if overflow occurred (data may be lost), 0 otherwise, -1 on error.
+TSDUCK_API int32_t tsduck_shm_producer_write(
+    void* producer,
+    const uint8_t* data,
+    uint32_t length,
+    uint32_t* bytes_written
+);
+
+/// Signal the consumer that data is available.
+/// Call after writing a batch of data for efficient wakeup.
+/// @param producer The producer handle.
+TSDUCK_API void tsduck_shm_producer_signal(void* producer);
+
+/// Set the end-of-stream flag.
+/// Consumer will complete after reading remaining data.
+/// @param producer The producer handle.
+TSDUCK_API void tsduck_shm_producer_set_eos(void* producer);
+
+/// Set an error condition.
+/// @param producer The producer handle.
+/// @param code Error code.
+/// @param message Human-readable error message (null-terminated).
+TSDUCK_API void tsduck_shm_producer_set_error(
+    void* producer,
+    uint32_t code,
+    const char* message
+);
+
+/// Set the discontinuity flag.
+/// Consumer should handle stream discontinuity (e.g., after URL switch).
+/// @param producer The producer handle.
+TSDUCK_API void tsduck_shm_producer_set_discontinuity(void* producer);
+
+/// Clear the discontinuity flag.
+/// @param producer The producer handle.
+TSDUCK_API void tsduck_shm_producer_clear_discontinuity(void* producer);
+
+/// Check if consumer is attached to the shared memory region.
+/// @param producer The producer handle.
+/// @return 1 if consumer is attached, 0 otherwise.
+TSDUCK_API int32_t tsduck_shm_producer_is_consumer_attached(void* producer);
+
 #ifdef __cplusplus
 }
 #endif

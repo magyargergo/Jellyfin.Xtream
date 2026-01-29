@@ -22,6 +22,7 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.Streaming.Native;
+using Jellyfin.Xtream.Service.Streaming.SharedMemory;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
@@ -102,6 +103,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     // Native HTTP streamer with failover and mid-stream switching
     private NativeStreamer? _nativeStreamer;
 
+    // Shared memory for data transfer from native streamer
+    private readonly string _sharedMemoryName;
+    private SharedMemoryConsumer? _shmConsumer;
+
     /// <inheritdoc />
     public int ConsumerCount
     {
@@ -169,6 +174,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         );
         OriginalStreamId = MediaSource.Id;
         UniqueId = Guid.NewGuid().ToString();
+        _sharedMemoryName = $"jellyfin_stream_{UniqueId.Replace("-", string.Empty, StringComparison.Ordinal)}";
         _sourceUrl = _urls.Count > 0 ? _urls[0] : "unknown";
         var path = "/LiveTv/LiveStreamFiles/" + UniqueId + "/stream.ts";
         MediaSource.Path = appHost.GetSmartApiUrl(IPAddress.Any) + path;
@@ -412,7 +418,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// Broadcasts data from the native HTTP streamer to the circular buffer.
     /// The native C++ code handles HTTP connections, redirects, retry/backoff, stall detection,
     /// packet alignment, restamping, failover/rotation, and outcome recording.
-    /// Data is received via callback from the native worker thread.
+    /// Data is transferred via shared memory for high-performance zero-copy IPC.
     /// </summary>
     private async Task BroadcastFromSourceAsync(CancellationToken cancellationToken)
     {
@@ -440,9 +446,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 _nativeStreamer.AddUrlWithScore(url, healthScore);
             }
 
-            // Set up the output callback to receive data from native streamer
-            // This callback is invoked from the native worker thread
-            _nativeStreamer.SetOutputCallback(OnNativeDataReceived);
+            // Configure shared memory output (replaces callback-based data transfer)
+            // Slot count 2048 for ~2.5MB buffer, slot size 1316 (7 TS packets)
+            _nativeStreamer.SetSharedMemoryOutput(_sharedMemoryName, slotCount: 2048, slotSize: 1316);
 
             // Set up event callback for stream events (connected, disconnected, switched, etc.)
             _nativeStreamer.SetEventCallback(OnNativeEvent);
@@ -456,36 +462,104 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             _receivingData = true;
             _buffer.SignalSourceConnected();
 
-            // Wait for streaming to complete or cancellation
-            // The native worker thread calls our callback with data
-            // We just need to wait and do periodic health checks
-            await MonitorStreamingAsync(cancellationToken).ConfigureAwait(false);
+            // Connect to shared memory and read data in a loop
+            await ConnectAndReadSharedMemoryAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _receivingData = false;
-            _nativeStreamer.SetOutputCallback(null);
             _nativeStreamer.SetEventCallback(null);
             _nativeStreamer.Stop();
+            _shmConsumer?.Dispose();
+            _shmConsumer = null;
             _buffer.SignalSourceDisconnected();
         }
     }
 
     /// <summary>
-    /// Callback invoked by the native streamer when data is received.
-    /// This is called from the native worker thread.
+    /// Connects to shared memory and reads data in a loop, writing to the circular buffer.
+    /// Handles discontinuity, overflow, end-of-stream, and error flags from the producer.
     /// </summary>
-    /// <param name="data">The TS data received (always a multiple of 188 bytes).</param>
-    private void OnNativeDataReceived(ReadOnlySpan<byte> data)
+    private async Task ConnectAndReadSharedMemoryAsync(CancellationToken cancellationToken)
     {
-        if (_isDisposed || !_receivingData)
+        // Wait briefly for producer to initialize shared memory
+        await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+
+        try
         {
+            // Dispose any previous consumer before creating new one
+            _shmConsumer?.Dispose();
+            _shmConsumer = new SharedMemoryConsumer(_sharedMemoryName);
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(ex, "Failed to connect to shared memory: {Name}", _sharedMemoryName);
+            _killReason = "Shared memory connection failed";
             return;
         }
 
-        // Write data to the circular buffer
-        // CircularBufferWriteStream is designed for single-writer usage
-        _buffer.Write(data);
+        _logger.LogDebugIfEnabled("Connected to shared memory: {Name}", _sharedMemoryName);
+
+        // Read buffer - sized for multiple slots (16 slots × 1316 bytes ≈ 21KB)
+        var readBuffer = new byte[1316 * 16];
+        var lastHealthCheckTime = DateTime.UtcNow;
+
+        while (!cancellationToken.IsCancellationRequested && _receivingData)
+        {
+            // Wait for data with timeout
+            if (!_shmConsumer.WaitForData(TimeSpan.FromMilliseconds(100), cancellationToken))
+            {
+                // Check for terminal conditions
+                if (_shmConsumer.IsEndOfStream && _shmConsumer.AvailableBytes == 0)
+                {
+                    _logger.PluginLogInformation("Shared memory end of stream for {ChannelId}", MediaSource.Id);
+                    _killReason = "Stream ended";
+                    break;
+                }
+
+                if (_shmConsumer.HasError)
+                {
+                    _logger.PluginLogWarning(
+                        "Shared memory error {Code}: {Message}",
+                        _shmConsumer.ErrorCode,
+                        _shmConsumer.ErrorMessage
+                    );
+                    _killReason = $"Shared memory error: {_shmConsumer.ErrorCode}";
+                    break;
+                }
+
+                continue;
+            }
+
+            // Handle discontinuity (URL switch in native streamer)
+            if (_shmConsumer.ConsumeDiscontinuity())
+            {
+                _logger.LogDebugIfEnabled("Discontinuity detected for {ChannelId}", MediaSource.Id);
+                _buffer.MarkDiscontinuityAligned();
+            }
+
+            // Handle overflow (slow consumer - data was dropped)
+            if (_shmConsumer.ConsumeOverflow())
+            {
+                _logger.PluginLogWarning("Shared memory overflow for {ChannelId}", MediaSource.Id);
+            }
+
+            // Read available data
+            int bytesRead = _shmConsumer.Read(readBuffer);
+            if (bytesRead > 0)
+            {
+                // Write to circular buffer
+                _buffer.Write(readBuffer.AsSpan(0, bytesRead));
+            }
+
+            // Periodic health check
+            var now = DateTime.UtcNow;
+            if ((now - lastHealthCheckTime).TotalSeconds >= HealthCheckIntervalSeconds)
+            {
+                lastHealthCheckTime = now;
+                PerformHealthCheck();
+            }
+        }
     }
 
     /// <summary>
@@ -517,8 +591,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     detail,
                     MediaSource.Id
                 );
-                // Mark discontinuity when stream source switches
-                _buffer.MarkDiscontinuityAligned();
+                // Note: Discontinuity is handled via shared memory flag in ConnectAndReadSharedMemoryAsync
                 break;
 
             case StreamerEvent.Stalled:
@@ -541,41 +614,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             case StreamerEvent.QualityDegraded:
                 _logger.PluginLogWarning("Quality degraded for channel {ChannelId}, switching URL", MediaSource.Id);
                 break;
-        }
-    }
-
-    /// <summary>
-    /// Monitors the streaming state and performs periodic health checks.
-    /// The actual data transfer happens via callbacks from the native worker thread.
-    /// </summary>
-    private async Task MonitorStreamingAsync(CancellationToken cancellationToken)
-    {
-        var lastHealthCheckTime = DateTime.UtcNow;
-
-        while (!cancellationToken.IsCancellationRequested && _receivingData)
-        {
-            // Check if the native streamer has reached a terminal state
-            if (TryGetStreamerStatus(out var status) && status.IsTerminal)
-            {
-                _logger.PluginLogInformation(
-                    "Native streamer reached terminal state {State} for channel {ChannelId}",
-                    status.State,
-                    MediaSource.Id
-                );
-                _killReason = $"Streamer: {status.State}";
-                break;
-            }
-
-            // Periodic health check
-            var now = DateTime.UtcNow;
-            if ((now - lastHealthCheckTime).TotalSeconds >= HealthCheckIntervalSeconds)
-            {
-                lastHealthCheckTime = now;
-                PerformHealthCheck();
-            }
-
-            // Brief wait before next check
-            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -822,6 +860,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         _buffer.Dispose();
+        _shmConsumer?.Dispose();
+        _shmConsumer = null;
         Interlocked.Exchange(ref _nativeStreamer, null)?.Dispose();
         _openLock.Dispose();
         _readerPool.Dispose();

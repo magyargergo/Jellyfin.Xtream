@@ -32,6 +32,7 @@
 #include "context/analyzer.hpp"
 #include "context/context.hpp"
 #include "core/logging.hpp"
+#include "ipc/shared_memory_channel.hpp"
 #include "streaming/stream_pipeline.hpp"
 
 
@@ -926,4 +927,204 @@ TSDUCK_API TsDuckAnalyzerHandle tsduck_streamer_get_analyzer(
         return nullptr;
     }
     return toHandle(impl->analyzer());
+}
+
+// ============================================================================
+// Streamer Shared Memory Output Mode
+// ============================================================================
+
+TSDUCK_API int32_t tsduck_streamer_set_shared_memory_output(
+    TsDuckStreamerHandle streamer,
+    const char* name,
+    uint32_t slot_count,
+    uint32_t slot_size)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_set_shared_memory_output null handle");
+        return TSDUCK_ERROR_NULL_HANDLE;
+    }
+    if (name == nullptr || name[0] == '\0') {
+        LOG_WARNING(kStreamer, "tsduck_streamer_set_shared_memory_output null/empty name");
+        return TSDUCK_ERROR_INVALID_DATA;
+    }
+
+    // Use defaults if zero
+    if (slot_count == 0) slot_count = static_cast<uint32_t>(ipc::DEFAULT_SLOT_COUNT);
+    if (slot_size == 0) slot_size = static_cast<uint32_t>(ipc::DEFAULT_SLOT_SIZE);
+
+    bool ok = impl->set_shared_memory_output(
+        std::string(name),
+        static_cast<std::size_t>(slot_count),
+        static_cast<std::size_t>(slot_size)
+    );
+
+    if (ok) {
+        LOG_INFO(kStreamer, "tsduck_streamer_set_shared_memory_output: %s (slots=%u, size=%u)",
+                 name, slot_count, slot_size);
+        return TSDUCK_OK;
+    }
+    return TSDUCK_ERROR_INTERNAL;
+}
+
+TSDUCK_API const char* tsduck_streamer_get_shared_memory_name(
+    TsDuckStreamerHandle streamer)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        return nullptr;
+    }
+    const auto& name = impl->shared_memory_name();
+    return name.empty() ? nullptr : name.c_str();
+}
+
+TSDUCK_API int32_t tsduck_streamer_is_shared_memory_mode(
+    TsDuckStreamerHandle streamer)
+{
+    auto* impl = toImpl(streamer);
+    return (impl != nullptr && impl->is_shared_memory_mode()) ? 1 : 0;
+}
+
+// ============================================================================
+// Shared Memory Producer API
+// ============================================================================
+
+namespace {
+constexpr const char* kSharedMemory = "SharedMemory";
+}  // namespace
+
+TSDUCK_API void* tsduck_shm_producer_create(
+    const char* name,
+    uint32_t slot_count,
+    uint32_t slot_size)
+{
+    if (name == nullptr) {
+        LOG_ERROR(kSharedMemory, "tsduck_shm_producer_create called with null name");
+        return nullptr;
+    }
+
+    LOG_DEBUG(kSharedMemory, "Creating shared memory producer '%s' (%u slots x %u bytes)",
+              name, slot_count, slot_size);
+
+    try {
+        std::error_code ec;
+        auto producer = ipc::SharedMemoryProducer::create(
+            name,
+            static_cast<std::size_t>(slot_count),
+            static_cast<std::size_t>(slot_size),
+            &ec);
+
+        if (!producer) {
+            LOG_ERROR(kSharedMemory, "Failed to create shared memory producer: %s",
+                      ec.message().c_str());
+            return nullptr;
+        }
+
+        // Release ownership from unique_ptr and return opaque pointer
+        LOG_INFO(kSharedMemory, "Shared memory producer '%s' created successfully", name);
+        return producer.release();
+    } catch (const std::exception& e) {
+        LOG_ERROR(kSharedMemory, "tsduck_shm_producer_create exception: %s", e.what());
+        return nullptr;
+    } catch (...) {
+        LOG_ERROR(kSharedMemory, "tsduck_shm_producer_create unknown exception");
+        return nullptr;
+    }
+}
+
+TSDUCK_API void tsduck_shm_producer_destroy(void* producer) {
+    if (producer == nullptr) {
+        return;
+    }
+
+    LOG_DEBUG(kSharedMemory, "Destroying shared memory producer");
+
+    // NOLINTBEGIN(cppcoreguidelines-owning-memory) - C API requires raw pointers
+    auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
+    delete impl;
+    // NOLINTEND(cppcoreguidelines-owning-memory)
+
+    LOG_DEBUG(kSharedMemory, "Shared memory producer destroyed");
+}
+
+TSDUCK_API int32_t tsduck_shm_producer_write(
+    void* producer,
+    const uint8_t* data,
+    uint32_t length,
+    uint32_t* bytes_written)
+{
+    if (producer == nullptr || data == nullptr) {
+        return -1;
+    }
+
+    auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
+
+    auto result = impl->write(
+        std::span<const std::byte>(reinterpret_cast<const std::byte*>(data), length));
+
+    if (bytes_written != nullptr) {
+        *bytes_written = static_cast<uint32_t>(result.bytes_written);
+    }
+
+    return result.overflow ? 1 : 0;
+}
+
+TSDUCK_API void tsduck_shm_producer_signal(void* producer) {
+    if (producer == nullptr) {
+        return;
+    }
+
+    auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
+    impl->signal_data_available();
+}
+
+TSDUCK_API void tsduck_shm_producer_set_eos(void* producer) {
+    if (producer == nullptr) {
+        return;
+    }
+
+    auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
+    impl->set_end_of_stream();
+}
+
+TSDUCK_API void tsduck_shm_producer_set_error(
+    void* producer,
+    uint32_t code,
+    const char* message)
+{
+    if (producer == nullptr) {
+        return;
+    }
+
+    auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
+    impl->set_error(
+        static_cast<ipc::SharedMemoryError>(code),
+        message != nullptr ? message : "");
+}
+
+TSDUCK_API void tsduck_shm_producer_set_discontinuity(void* producer) {
+    if (producer == nullptr) {
+        return;
+    }
+
+    auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
+    impl->set_discontinuity();
+}
+
+TSDUCK_API void tsduck_shm_producer_clear_discontinuity(void* producer) {
+    if (producer == nullptr) {
+        return;
+    }
+
+    auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
+    impl->clear_discontinuity();
+}
+
+TSDUCK_API int32_t tsduck_shm_producer_is_consumer_attached(void* producer) {
+    if (producer == nullptr) {
+        return 0;
+    }
+
+    auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
+    return impl->is_consumer_attached() ? 1 : 0;
 }

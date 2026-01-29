@@ -15,11 +15,6 @@ project(tsduck_interop_tests VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Ensure C++20 for MSVC
-if(MSVC)
-    add_compile_options(/std:c++20)
-endif()
-
 # Option for Docker builds (enables additional integration tests)
 option(DOCKER_BUILD "Build with pre-built interop library" OFF)
 
@@ -79,6 +74,23 @@ foreach(test ${UNIT_TESTS})
     target_link_directories(${test} PRIVATE ${TSDUCK_LIBRARY_DIRS})
 endforeach()
 
+# Shared memory channel test (needs implementation file and platform libs)
+add_executable(test_shared_memory_channel
+    unit/test_shared_memory_channel.cpp
+    ${SRC_DIR}/ipc/shared_memory_channel.cpp
+)
+target_include_directories(test_shared_memory_channel PRIVATE
+    ${SRC_DIR} ${INCLUDE_DIR} ${TSDUCK_INCLUDE_DIRS})
+target_link_libraries(test_shared_memory_channel
+    GTest::gtest_main Threads::Threads ${TSDUCK_LIBRARIES})
+target_link_directories(test_shared_memory_channel PRIVATE ${TSDUCK_LIBRARY_DIRS})
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_shared_memory_channel rt)  # For shm_open/sem_open
+endif()
+
+# Add shared memory to unit tests list for test discovery
+list(APPEND UNIT_TESTS test_shared_memory_channel)
+
 include(GoogleTest)
 foreach(test ${UNIT_TESTS})
     gtest_discover_tests(${test}
@@ -134,6 +146,7 @@ if(CURL_FOUND)
         ${SRC_DIR}/tsduck_interop.cpp
         ${SRC_DIR}/streaming/stream_source.cpp
         ${SRC_DIR}/streaming/stream_pipeline.cpp
+        ${SRC_DIR}/ipc/shared_memory_channel.cpp
     )
     target_include_directories(test_streamer_integration PRIVATE
         ${SRC_DIR}
@@ -149,6 +162,9 @@ if(CURL_FOUND)
     )
     target_link_directories(test_streamer_integration PRIVATE ${TSDUCK_LIBRARY_DIRS})
     target_compile_options(test_streamer_integration PRIVATE ${TSDUCK_CFLAGS_OTHER})
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(test_streamer_integration rt)  # For shm_open/sem_open
+    endif()
 
     gtest_discover_tests(test_streamer_integration
         PROPERTIES LABELS "integration"
@@ -196,6 +212,7 @@ if(CURL_FOUND)
             ${SRC_DIR}/tsduck_interop.cpp
             ${SRC_DIR}/streaming/stream_source.cpp
             ${SRC_DIR}/streaming/stream_pipeline.cpp
+            ${SRC_DIR}/ipc/shared_memory_channel.cpp
         )
         target_include_directories(${test} PRIVATE
             ${SRC_DIR} ${INCLUDE_DIR} ${CURL_INCLUDE_DIRS} ${TSDUCK_INCLUDE_DIRS}
@@ -205,6 +222,8 @@ if(CURL_FOUND)
         target_link_directories(${test} PRIVATE ${TSDUCK_LIBRARY_DIRS})
         if(WIN32)
             target_link_libraries(${test} ws2_32)
+        elseif(UNIX AND NOT APPLE)
+            target_link_libraries(${test} rt)  # For shm_open/sem_open
         endif()
     endforeach()
 

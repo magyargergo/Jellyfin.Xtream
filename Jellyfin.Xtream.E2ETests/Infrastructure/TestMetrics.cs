@@ -132,27 +132,6 @@ internal sealed class TestMetrics
     }
 
     /// <summary>
-    /// Processes received TS data directly from a native pointer.
-    /// Use this in the output callback for zero-copy metric collection.
-    /// </summary>
-    /// <param name="dataPtr">Pointer to the TS data.</param>
-    /// <param name="length">Number of valid bytes.</param>
-    public unsafe void ProcessReceivedData(byte* dataPtr, int length)
-    {
-        var span = new ReadOnlySpan<byte>(dataPtr, length);
-        var tempBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
-        try
-        {
-            span.CopyTo(tempBuffer);
-            ProcessReceivedData(tempBuffer, length);
-        }
-        finally
-        {
-            System.Buffers.ArrayPool<byte>.Shared.Return(tempBuffer);
-        }
-    }
-
-    /// <summary>
     /// Processes received TS data, checking sync bytes and continuity counters.
     /// </summary>
     /// <param name="data">Buffer containing received TS data.</param>

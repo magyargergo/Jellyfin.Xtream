@@ -116,29 +116,42 @@ graph TB
 
 ### Restreaming Architecture
 
-The plugin maintains a single HTTP connection to each provider stream and broadcasts to multiple Jellyfin clients using an optimized circular buffer with SIMD-accelerated operations.
+The plugin uses a native C++ streaming layer that handles HTTP connections, failover, and quality monitoring. Data flows from the native layer to C# via direct callbacks (188-byte aligned TS packets), then broadcasts to multiple Jellyfin clients using an optimized circular buffer.
 
 ```mermaid
 flowchart LR
-    subgraph Provider["Xtream Provider"]
-        Stream[(Live Stream)]
+    subgraph Provider["Xtream Providers"]
+        P1[(Provider 1)]
+        P2[(Provider 2)]
+        PN[(Provider N)]
     end
 
-    subgraph Buffer["Circular Buffer System"]
+    subgraph Native["TsDuck Native Layer (C++)"]
         direction TB
-        HTTP[HTTP Client]
-        Write[WriteStream<br/>SIMD Optimized]
+        Pipeline[StreamPipeline]
+        Source[StreamSource<br/>Health-based URL selection]
+        Failover[FailoverManager<br/>Automatic rotation]
+        Quality[QualityTrigger<br/>TR 101 290]
+        Aligner[PacketAligner<br/>188-byte alignment]
+        Restamper[Restamper<br/>Timestamp correction]
+        Analyzer[Analyzer<br/>SCTE-35 + NAL]
+    end
+
+    subgraph Callbacks["Native Callbacks"]
+        DataCB[OnNativeDataReceived<br/>TS packets]
+        EventCB[OnStreamEvent<br/>State changes]
+    end
+
+    subgraph Managed["Managed Layer (C#)"]
+        direction TB
+        Restream[Restream Manager]
+        HealthScorer[ProviderHealthScorer]
+        Write[CircularBuffer<br/>WriteStream]
         Ring[(Ring Buffer<br/>32-128 MB)]
         Sessions[ReaderSessionManager]
         Read1[ReadStream 1]
         Read2[ReadStream 2]
         ReadN[ReadStream N]
-    end
-
-    subgraph Processing["Real-time Processing"]
-        Indexer[TsIndexer]
-        Quality[Quality Monitor]
-        Keyframes[Keyframe Index]
     end
 
     subgraph Clients["Jellyfin Clients"]
@@ -147,12 +160,24 @@ flowchart LR
         CN[Client N<br/>TV]
     end
 
-    Stream --> HTTP
-    HTTP --> Write
+    P1 --> Source
+    P2 --> Source
+    PN --> Source
+    Source --> Pipeline
+    Pipeline --> Failover
+    Pipeline --> Quality
+    Pipeline --> Aligner
+    Pipeline --> Restamper
+    Pipeline --> Analyzer
+
+    Aligner --> DataCB
+    Pipeline --> EventCB
+
+    DataCB --> Restream
+    EventCB --> Restream
+    EventCB --> HealthScorer
+    Restream --> Write
     Write --> Ring
-    Write --> Indexer
-    Indexer --> Quality
-    Indexer --> Keyframes
 
     Ring --> Sessions
     Sessions --> Read1
@@ -597,6 +622,46 @@ graph TD
 
 ### Recent Changes (January 2025)
 
+#### Native Streaming Architecture Refactor
+
+The streaming architecture has been significantly refactored. C++ is now the main orchestrator for streaming, failover, and URL selection, while C# serves as a thin setup and consumption layer.
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **Callback-Based Data Transfer** | ✅ Complete | Direct callbacks from C++ worker thread replace shared memory |
+| **P/Invoke Callback Methods** | ✅ Complete | `StreamerSetOutputCallback()`, `StreamerSetEventCallback()` |
+| **GCHandle Management** | ✅ Complete | Prevents GC of callback delegates during native execution |
+| **StreamPipeline (C++)** | ✅ Complete | Orchestrates URL selection, failover, quality monitoring |
+| **StreamSource (C++)** | ✅ Complete | Health-based URL selection with quarantine logic |
+| **Quarantine Logic** | ✅ Complete | Exponential backoff (30s initial, 5min max) for failed URLs |
+| **V2 API Removal** | ✅ Complete | Removed SQLite metrics database and shared memory buffer |
+| **E2E Test Coverage** | ✅ Complete | 107 tests passing with native interop validation |
+
+#### Health-Based Provider Selection
+
+Bidirectional health management: C# manages long-term patterns, C++ handles instant decisions.
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **ProviderHealthScorer** | ✅ Complete | Weighted health scoring for provider selection |
+| **StreamingOutcomeRecorder** | ✅ Complete | Tracks streaming success/failure outcomes |
+| **Health Score Algorithm** | ✅ Complete | 50.0 initial, +0.5 success, -5.0 failure, range 0-100 |
+| **Quality-Based Switching** | ✅ Complete | Configurable thresholds trigger provider switches |
+
+#### SCTE-35 and NAL Parser Integration
+
+Integrated into the native analyzer API for real-time stream analysis.
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **SCTE-35 Event Retrieval** | ✅ Complete | `tsduck_analyzer_get_scte35_events()` for pending splice events |
+| **SCTE-35 State Tracking** | ✅ Complete | `tsduck_analyzer_get_scte35_state()` for ad break state |
+| **SCTE-35 Callbacks** | ✅ Complete | `tsduck_analyzer_set_scte35_callback()` for event notifications |
+| **Video Codec Info** | ✅ Complete | `tsduck_analyzer_get_video_codec_info()` for H.264/H.265/H.266 |
+| **Parameter Set Caching** | ✅ Complete | `tsduck_analyzer_get_parameter_sets()` for SPS/PPS/VPS |
+| **NAL-Based IDR Detection** | ✅ Complete | `tsduck_analyzer_has_idr_frame()` more accurate than RAI flag |
+| **Automatic PID Detection** | ✅ Complete | SCTE-35 and video PIDs detected from PMT |
+
 #### TsDuck Native TR 101 290 Integration
 
 | Component | Status | Description |
@@ -605,10 +670,8 @@ graph TD
 | **Native Build System** | ✅ Complete | Docker-based build for Linux, MSBuild integration |
 | **ITsDuckAnalyzer Interface** | ✅ Complete | Abstraction with NativeTsDuckAnalyzer and NullTsDuckAnalyzer |
 | **TsDuckMetrics** | ✅ Complete | Priority 1/2 error tracking, PCR jitter analysis, quality scoring |
-| **Streaming Integration** | ✅ Complete | Wired into CircularBufferWriteStream and Restream |
+| **Streaming Integration** | ✅ Complete | Wired into Restream via native callbacks |
 | **Discord Integration** | ✅ Complete | TsDuck metrics in stream health notifications |
-| **SCTE-35 Monitor** | ✅ Complete | Real-time splice point detection with state tracking |
-| **NAL Parser** | ✅ Complete | H.264/H.265 parameter set extraction and IDR detection |
 
 #### Provider Management Enhancements
 
@@ -624,7 +687,7 @@ graph TD
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **Unicode Separators** | ✅ Complete | Support for ⭐★▶►•●○–—~ in channel name prefixes |
+| **Unicode Separators** | ✅ Complete | Support for various Unicode characters in channel name prefixes |
 | **Country Fallback** | ✅ Complete | Country-prefixed source can match country-less target |
 
 #### Code Quality & Infrastructure
@@ -640,9 +703,6 @@ graph TD
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **NativeTsDuckAnalyzer Tests** | 🔄 In Progress | Unit tests for native interop |
-| **Native Library Loading** | 🔄 In Progress | Ensure plugin finds .so files in Jellyfin plugin directory |
-| **Ubuntu Build Fine-tuning** | 🔄 In Progress | Optimize Docker build for Ubuntu/Debian deployments |
 | **Real-time Metrics Dashboard** | 📋 Planned | Web UI for live stream quality visualization |
 | **Historical Metrics Storage** | 📋 Planned | Persist quality metrics for trend analysis |
 
@@ -650,7 +710,6 @@ graph TD
 
 | Issue | Priority | Status |
 |-------|----------|--------|
-| Native library path resolution in Jellyfin | High | Fixing DllImport search paths |
 | Channel name lookup can timeout on slow providers | Fixed | 2s timeout added in LiveTvService |
 
 ## Areas of Improvement
@@ -705,12 +764,23 @@ timeline
     section Mid Term
         Q2 2025 : WebRTC low-latency mode
                 : GPU-accelerated transcoding
-                : SCTE-35 ad marker handling
+                : SCTE-35 ad replacement
     section Long Term
         Q3 2025 : ML-based quality prediction
                 : Multi-region geo-routing
                 : Cloud hybrid failover
 ```
+
+### Recently Completed Features
+
+These features were previously planned and are now complete:
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| **SCTE-35 Detection** | ✅ Complete | Real-time ad marker detection with state tracking and callbacks |
+| **Parameter Set Caching** | ✅ Complete | NAL unit parsing for SPS/PPS/VPS, faster decoder initialization |
+| **Health-Based Failover** | ✅ Complete | Bidirectional health scoring with C++/C# coordination |
+| **Native Streaming Pipeline** | ✅ Complete | C++ orchestration with callback-based data transfer |
 
 ### Planned Features
 
@@ -729,8 +799,7 @@ timeline
 |---------|-------------|---------|
 | **WebRTC Mode** | Sub-second latency streaming | Live sports/events viewing |
 | **GPU Transcoding** | NVENC/QSV/VAAPI acceleration | Lower CPU, higher quality |
-| **SCTE-35 Handling** | Ad marker detection/replacement | Custom ad insertion |
-| **Parameter Set Caching** | NAL unit parsing for SPS/PPS | Faster decoder initialization |
+| **SCTE-35 Ad Replacement** | Replace detected ad breaks with custom content | Custom ad insertion |
 
 #### Long-Term (Q3+ 2025)
 

@@ -8,7 +8,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(tsduck_interop VERSION 1.0.0 LANGUAGES CXX)
 
-# C++20 required for TsDuck v3.43+ headers
+# C++20 required (TsDuck v3.43+ headers require C++20 at minimum)
+# Note: std::expected replaced with std::unique_ptr for GCC compatibility
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -236,6 +237,7 @@ set(TSDUCK_INTEROP_SOURCES
     src/tsduck_interop.cpp
     src/streaming/stream_source.cpp
     src/streaming/stream_pipeline.cpp
+    src/ipc/shared_memory_channel.cpp
 )
 
 add_library(tsduck_interop SHARED ${TSDUCK_INTEROP_SOURCES})
@@ -255,6 +257,7 @@ target_include_directories(tsduck_interop
         ${CMAKE_CURRENT_SOURCE_DIR}/src/restamping
         ${CMAKE_CURRENT_SOURCE_DIR}/src/context
         ${CMAKE_CURRENT_SOURCE_DIR}/src/streaming
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc
         ${CURL_INCLUDE_DIRS}
 )
 
