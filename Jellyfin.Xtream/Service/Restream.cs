@@ -16,11 +16,13 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Service.Resilience;
 using Jellyfin.Xtream.Service.Streaming.Native;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
@@ -69,7 +71,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private readonly ILogger<Restream> _logger;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IDiscordNotificationService? _discordService;
+    private readonly StreamingOutcomeRecorder? _outcomeRecorder;
     private readonly IReadOnlyList<string> _urls;
+    private readonly IReadOnlyList<string> _providerIds;
     private readonly string _sourceUrl;
     private readonly SemaphoreSlim _openLock = new(1, 1);
     private readonly CircularBufferWriteStream _buffer;
@@ -88,6 +92,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
     // Native HTTP streamer with failover and mid-stream switching
     private NativeStreamer? _nativeStreamer;
+
+    // Track current provider for outcome recording (captured at connection time)
+    private volatile string? _currentConnectedProviderId;
+    private volatile int _currentConnectedUrlIndex = -1;
+    private long _connectionStartTicks;
 
     /// <inheritdoc />
     public int ConsumerCount
@@ -125,20 +134,26 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <param name="loggerFactory">Instance of the <see cref="ILoggerFactory"/> interface.</param>
     /// <param name="mediaSource">The media which must be restreamed.</param>
     /// <param name="urls">The list of URLs to use for streaming (native handles failover/rotation).</param>
+    /// <param name="providerIds">The provider IDs corresponding to each URL (same order as urls).</param>
     /// <param name="discordService">Optional Discord notification service.</param>
+    /// <param name="outcomeRecorder">Optional streaming outcome recorder for health tracking.</param>
     public Restream(
         IServerApplicationHost appHost,
         ILogger<Restream> logger,
         ILoggerFactory loggerFactory,
         MediaSourceInfo mediaSource,
         IReadOnlyList<string> urls,
-        IDiscordNotificationService? discordService = null
+        IReadOnlyList<string> providerIds,
+        IDiscordNotificationService? discordService = null,
+        StreamingOutcomeRecorder? outcomeRecorder = null
     )
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
         _discordService = discordService;
+        _outcomeRecorder = outcomeRecorder;
         _urls = urls;
+        _providerIds = providerIds;
         MediaSource = mediaSource;
         _tokenSource = new CancellationTokenSource();
         _streamQuality = DetectStreamQuality(mediaSource);
@@ -452,44 +467,189 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
     /// <summary>
     /// Handles events from the native streamer (connected, disconnected, switched, etc.).
+    /// Records streaming outcomes for health-based provider selection.
     /// </summary>
+    /// <remarks>
+    /// This handler is invoked on the native worker thread. Must be thread-safe.
+    /// For events Connected, Switched, DataReceived, QualityDegraded: detail = URL index.
+    /// For Error: detail = curl error code or HTTP status.
+    /// For Stalled: detail = milliseconds since last data.
+    /// For Disconnected: detail = HTTP status.
+    /// For Reconnecting: detail = backoff delay in ms.
+    /// </remarks>
     private void OnNativeStreamerEvent(object? sender, StreamerEventArgs e)
     {
         switch (e.EventType)
         {
             case StreamerEvent.Connected:
+                // detail = URL index for Connected event
+                var connectedUrlIndex = e.Detail;
+                var connectedProviderId = GetProviderIdByIndex(connectedUrlIndex);
+
+                // Capture connection state for subsequent events (Error, Stalled, etc.)
+                _currentConnectedUrlIndex = connectedUrlIndex;
+                _currentConnectedProviderId = connectedProviderId;
+                Interlocked.Exchange(ref _connectionStartTicks, Stopwatch.GetTimestamp());
 
                 _buffer.SignalSourceConnected();
+                break;
+
+            case StreamerEvent.DataReceived:
+                // detail = URL index for DataReceived event (first data after switch)
+                var dataProviderId = GetProviderIdByIndex(e.Detail);
+                if (dataProviderId != null)
+                {
+                    var connectionTicks = Stopwatch.GetTimestamp() - Interlocked.Read(ref _connectionStartTicks);
+                    var connectionTimeMs = (connectionTicks * 1000.0) / Stopwatch.Frequency;
+                    // Use a good default quality score; real quality comes from TR 101 290 analysis
+                    _outcomeRecorder?.RecordSuccess(dataProviderId, qualityScore: 80, connectionTimeMs);
+                }
 
                 break;
 
-            case StreamerEvent.Disconnected:
-
-                _buffer.SignalSourceDisconnected();
-
-                _buffer.MarkDiscontinuityAligned();
-
-                break;
-
-            case StreamerEvent.Reconnecting:
-
-                _buffer.SignalReconnecting();
-
-                break;
-
-            case StreamerEvent.Switched:
-
-                _buffer.MarkDiscontinuityAligned();
+            case StreamerEvent.QualityDegraded:
+                // detail = URL index for QualityDegraded event
+                var degradedProviderId = GetProviderIdByIndex(e.Detail);
+                if (degradedProviderId != null)
+                {
+                    _outcomeRecorder?.RecordFailure(degradedProviderId, FailureType.QualityDegradation);
+                }
 
                 break;
 
             case StreamerEvent.Stalled:
-            case StreamerEvent.Error:
-            case StreamerEvent.DataReceived:
-            case StreamerEvent.Stopped:
+                // detail = milliseconds since last data, use captured provider ID
+                var stalledProviderId = _currentConnectedProviderId;
+                if (stalledProviderId != null)
+                {
+                    _outcomeRecorder?.RecordFailure(stalledProviderId, FailureType.DataStall);
+                }
 
                 break;
+
+            case StreamerEvent.Error:
+                // detail = curl error code or HTTP status, use captured provider ID
+                var errorProviderId = _currentConnectedProviderId;
+                if (errorProviderId != null)
+                {
+                    var failureType = MapCurlErrorToFailureType(e.Detail);
+                    _outcomeRecorder?.RecordFailure(errorProviderId, failureType);
+                }
+
+                break;
+
+            case StreamerEvent.Disconnected:
+                // detail = HTTP status, use captured provider ID
+                var disconnectedProviderId = _currentConnectedProviderId;
+                if (disconnectedProviderId != null && e.Detail >= 400)
+                {
+                    // Record HTTP error disconnections (4xx, 5xx)
+                    var failureType = StreamingOutcomeRecorder.MapHttpStatusToFailureType(e.Detail);
+                    _outcomeRecorder?.RecordFailure(disconnectedProviderId, failureType);
+                }
+
+                _buffer.SignalSourceDisconnected();
+                _buffer.MarkDiscontinuityAligned();
+                break;
+
+            case StreamerEvent.Reconnecting:
+                // detail = backoff delay in ms
+                // Record soft failure - the provider needed reconnection
+                var reconnectProviderId = _currentConnectedProviderId;
+                if (reconnectProviderId != null)
+                {
+                    // Use DataStall as a soft failure indicator for reconnection needs
+                    _outcomeRecorder?.RecordFailure(reconnectProviderId, FailureType.DataStall);
+                }
+
+                // Reset connection timing for the retry
+                Interlocked.Exchange(ref _connectionStartTicks, Stopwatch.GetTimestamp());
+                _buffer.SignalReconnecting();
+                break;
+
+            case StreamerEvent.Switched:
+                // detail = new URL index after switch
+                var newUrlIndex = e.Detail;
+                var newProviderId = GetProviderIdByIndex(newUrlIndex);
+
+                // Update tracked provider for new connection
+                _currentConnectedUrlIndex = newUrlIndex;
+                _currentConnectedProviderId = newProviderId;
+                Interlocked.Exchange(ref _connectionStartTicks, Stopwatch.GetTimestamp());
+
+                _buffer.MarkDiscontinuityAligned();
+                break;
+
+            case StreamerEvent.Stopped:
+                // Clear tracked provider
+                _currentConnectedProviderId = null;
+                _currentConnectedUrlIndex = -1;
+                break;
         }
+    }
+
+    /// <summary>
+    /// Gets the provider ID for a given URL index.
+    /// </summary>
+    /// <param name="urlIndex">The 0-based URL index from native events.</param>
+    /// <returns>The provider ID, or null if index is out of range.</returns>
+    private string? GetProviderIdByIndex(int urlIndex)
+    {
+        return urlIndex >= 0 && urlIndex < _providerIds.Count ? _providerIds[urlIndex] : null;
+    }
+
+    /// <summary>
+    /// Gets the current provider ID based on the native streamer's current URL index.
+    /// Thread-safe by reading status through a helper method.
+    /// </summary>
+    private string? GetCurrentProviderId()
+    {
+        if (_providerIds.Count == 0 || !TryGetStreamerStatus(out var status))
+        {
+            return null;
+        }
+
+        return GetProviderIdByIndex(status.CurrentUrlIndex);
+    }
+
+    /// <summary>
+    /// Safely retrieves the current streamer status in a thread-safe manner.
+    /// </summary>
+    /// <param name="status">The streamer status if available.</param>
+    /// <returns>True if status was retrieved, false if streamer is null or disposed.</returns>
+    private bool TryGetStreamerStatus(out StreamerStatus status)
+    {
+        // Access the field directly - the NativeStreamer.GetStatus() method is thread-safe
+        // and handles internal synchronization. We check for null to avoid NRE.
+        var streamer = _nativeStreamer;
+        if (streamer == null)
+        {
+            status = default;
+            return false;
+        }
+
+        status = streamer.GetStatus();
+        return true;
+    }
+
+    /// <summary>
+    /// Maps a libcurl error code to a <see cref="FailureType"/>.
+    /// </summary>
+    private static FailureType MapCurlErrorToFailureType(int curlError)
+    {
+        return curlError switch
+        {
+            28 => FailureType.ConnectionTimeout, // CURLE_OPERATION_TIMEDOUT
+            7 => FailureType.ConnectionTimeout, // CURLE_COULDNT_CONNECT
+            6 => FailureType.ConnectionTimeout, // CURLE_COULDNT_RESOLVE_HOST
+            22 => FailureType.HttpError, // CURLE_HTTP_RETURNED_ERROR
+            94 => FailureType.AuthenticationFailed, // CURLE_AUTH_ERROR
+            47 => FailureType.CapacityExceeded, // CURLE_TOO_MANY_REDIRECTS
+            56 => FailureType.DataStall, // CURLE_RECV_ERROR
+            55 => FailureType.DataStall, // CURLE_SEND_ERROR
+            18 => FailureType.DataStall, // CURLE_PARTIAL_FILE
+            _ => FailureType.Unknown,
+        };
     }
 
     /// <summary>
@@ -504,7 +664,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         {
             await Task.Delay(HealthCheckIntervalSeconds * 1000, cancellationToken).ConfigureAwait(false);
 
-            var status = _nativeStreamer?.GetStatus() ?? default;
+            if (!TryGetStreamerStatus(out var status))
+            {
+                // Streamer was disposed, exit monitoring
+                return;
+            }
 
             if (status.IsTerminal)
             {
@@ -750,8 +914,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         _buffer.Dispose();
-        _nativeStreamer?.Dispose();
-        _nativeStreamer = null;
+        Interlocked.Exchange(ref _nativeStreamer, null)?.Dispose();
         _openLock.Dispose();
         _readerPool.Dispose();
 

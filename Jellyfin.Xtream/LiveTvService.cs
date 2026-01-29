@@ -26,6 +26,7 @@ using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Epg;
+using Jellyfin.Xtream.Service.Resilience;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
@@ -51,6 +52,8 @@ namespace Jellyfin.Xtream;
 /// <param name="epgProvider">Instance of the <see cref="IEpgProvider"/> interface.</param>
 /// <param name="externalEpgProvider">Instance of the <see cref="ExternalXmltvEpgProvider"/> for logo fallback.</param>
 /// <param name="epgRefreshTracker">Instance of the <see cref="EpgRefreshTracker"/> for batch tracking.</param>
+/// <param name="healthScorer">Instance of the <see cref="ProviderHealthScorer"/> for provider health tracking.</param>
+/// <param name="outcomeRecorder">Instance of the <see cref="StreamingOutcomeRecorder"/> for recording streaming outcomes.</param>
 public class LiveTvService(
     IServerApplicationHost appHost,
     IHttpClientFactory httpClientFactory,
@@ -60,7 +63,9 @@ public class LiveTvService(
     IDiscordNotificationService discordService,
     IEpgProvider epgProvider,
     ExternalXmltvEpgProvider externalEpgProvider,
-    EpgRefreshTracker epgRefreshTracker
+    EpgRefreshTracker epgRefreshTracker,
+    ProviderHealthScorer healthScorer,
+    StreamingOutcomeRecorder outcomeRecorder
 ) : ILiveTvService, ISupportsDirectStreamProvider
 {
     private const int MaxParallelEpgRequests = 10;
@@ -74,6 +79,8 @@ public class LiveTvService(
     private readonly IEpgProvider _epgProvider = epgProvider;
     private readonly ExternalXmltvEpgProvider _externalEpgProvider = externalEpgProvider;
     private readonly EpgRefreshTracker _epgRefreshTracker = epgRefreshTracker;
+    private readonly ProviderHealthScorer _healthScorer = healthScorer;
+    private readonly StreamingOutcomeRecorder _outcomeRecorder = outcomeRecorder;
 
     private volatile ChannelProviderMap? _channelProviderMap;
 
@@ -858,14 +865,14 @@ public class LiveTvService(
             throw new ArgumentException("Unsupported channel");
         }
 
-        // Gather all providers for this channel
-        var providers = GetProvidersForChannel(guid).ToList();
+        // Gather all providers for this channel, sorted by health score
+        var providers = GetProvidersForChannelByHealth(guid);
         if (providers.Count == 0)
         {
             throw new InvalidOperationException($"No providers available for channel {channelId}");
         }
 
-        // Use the first provider's stream info for media source creation
+        // Use the healthiest provider's stream info for media source creation
         var primaryProvider = providers[0].Provider;
         var primaryStreamId = providers[0].Stream.StreamId;
         string? channelName = null;
@@ -902,18 +909,36 @@ public class LiveTvService(
             }
         }
 
-        // Build URLs for all providers (native streamer handles failover/rotation)
+        // Build URLs and provider IDs for all providers (native streamer handles failover/rotation)
+        // Order is preserved from health-sorted providers list
         var urls = providers
             .Select(p =>
                 $"{p.Provider.BaseUrl}/live/{p.Provider.Username}/{p.Provider.Password}/{p.Stream.StreamId}.ts"
             )
             .ToList();
 
-        _logger.PluginLogInformation(
-            "Creating Restream for stream {StreamId} with {UrlCount} provider URL(s)",
-            primaryStreamId,
-            urls.Count
-        );
+        var providerIds = providers.Select(p => p.Provider.Id).ToList();
+
+        if (providers.Count > 1)
+        {
+            _logger.PluginLogInformation(
+                "Creating Restream for stream {StreamId} with {UrlCount} provider URL(s), ordered by health: {ProviderOrder}",
+                primaryStreamId,
+                urls.Count,
+                string.Join(
+                    " > ",
+                    providers.Select(p => $"{p.Provider.Name}({_healthScorer.GetScore(p.Provider.Id):F0})")
+                )
+            );
+        }
+        else
+        {
+            _logger.PluginLogInformation(
+                "Creating Restream for stream {StreamId} with {UrlCount} provider URL(s)",
+                primaryStreamId,
+                urls.Count
+            );
+        }
 
         var newStream = new Restream(
             appHost: _appHost,
@@ -921,7 +946,9 @@ public class LiveTvService(
             loggerFactory: _loggerFactory,
             mediaSource: mediaSourceInfo,
             urls: urls,
-            discordService: _discordService
+            providerIds: providerIds,
+            discordService: _discordService,
+            outcomeRecorder: _outcomeRecorder
         );
 
         try
@@ -937,6 +964,30 @@ public class LiveTvService(
 
         await EnforceConnectionLimitAsync(cancellationToken).ConfigureAwait(false);
         return newStream;
+    }
+
+    /// <summary>
+    /// Gets providers for a channel, sorted by health score (healthiest first).
+    /// </summary>
+    private List<ProviderStreamInfo> GetProvidersForChannelByHealth(Guid channelGuid)
+    {
+        var providers = GetProvidersForChannel(channelGuid).ToList();
+        if (providers.Count <= 1)
+        {
+            return providers;
+        }
+
+        // Sort by health score descending (healthiest first)
+        providers.Sort(
+            (a, b) =>
+            {
+                var scoreA = _healthScorer.GetScore(a.Provider.Id);
+                var scoreB = _healthScorer.GetScore(b.Provider.Id);
+                return scoreB.CompareTo(scoreA);
+            }
+        );
+
+        return providers;
     }
 
     private IEnumerable<ProviderStreamInfo> GetProvidersForChannel(Guid channelGuid)

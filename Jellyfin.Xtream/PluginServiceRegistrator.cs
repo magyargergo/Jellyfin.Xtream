@@ -21,6 +21,7 @@ using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Discovery;
 using Jellyfin.Xtream.Service.Epg;
 using Jellyfin.Xtream.Service.Logging;
+using Jellyfin.Xtream.Service.Resilience;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
@@ -85,6 +86,10 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Register provider discovery services
         _ = serviceCollection.AddSingleton<ICredentialParser, CredentialParser>();
         _ = serviceCollection.AddSingleton<IProviderDiscoveryService, ProviderDiscoveryService>();
+
+        // Register resilience services for intelligent provider selection
+        _ = serviceCollection.AddSingleton<ProviderHealthScorer>();
+        _ = serviceCollection.AddSingleton<StreamingOutcomeRecorder>();
 
         // Register plugin log service and initialize PluginLogger
         _ = serviceCollection.AddSingleton<IPluginLogService>(sp =>

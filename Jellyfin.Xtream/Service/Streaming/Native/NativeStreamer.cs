@@ -140,6 +140,18 @@ public sealed unsafe class NativeStreamer : IDisposable
     /// <summary>
     /// Occurs when a streamer event is raised (connected, disconnected, error, etc.).
     /// </summary>
+    /// <remarks>
+    /// <para>This event is invoked on the native worker thread. Handlers must be thread-safe.</para>
+    /// <para>Event detail parameter meanings:</para>
+    /// <list type="bullet">
+    /// <item><description>Connected, Switched, DataReceived, QualityDegraded: detail = URL index (0-based)</description></item>
+    /// <item><description>Error: detail = curl error code or HTTP status</description></item>
+    /// <item><description>Stalled: detail = milliseconds since last data</description></item>
+    /// <item><description>Disconnected: detail = HTTP status code</description></item>
+    /// <item><description>Reconnecting: detail = backoff delay in milliseconds</description></item>
+    /// <item><description>Stopped: detail = retry count (if max retries exhausted) or 0</description></item>
+    /// </list>
+    /// </remarks>
     public event EventHandler<StreamerEventArgs>? StreamEvent;
 
     /// <summary>
