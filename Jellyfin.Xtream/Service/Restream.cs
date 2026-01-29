@@ -71,8 +71,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private const double BufferNearFullThresholdPercent = 90.0;
     private const int BufferUnderrunNotificationThreshold = 5;
 
-    // Shared memory read buffer size
-    private const int SharedMemoryReadSize = 65536;
+    // Data flow synchronization
+    private volatile bool _receivingData;
 
     /// <summary>
     /// Global registry of all active Restream instances for monitoring and management.
@@ -410,9 +410,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
     /// <summary>
     /// Broadcasts data from the native HTTP streamer to the circular buffer.
-    /// Reads from shared memory that C++ writes to.
-    /// C++ handles HTTP connections, redirects, retry/backoff, stall detection,
+    /// The native C++ code handles HTTP connections, redirects, retry/backoff, stall detection,
     /// packet alignment, restamping, failover/rotation, and outcome recording.
+    /// Data is received via callback from the native worker thread.
     /// </summary>
     private async Task BroadcastFromSourceAsync(CancellationToken cancellationToken)
     {
@@ -440,68 +440,130 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 _nativeStreamer.AddUrlWithScore(url, healthScore);
             }
 
+            // Set up the output callback to receive data from native streamer
+            // This callback is invoked from the native worker thread
+            _nativeStreamer.SetOutputCallback(OnNativeDataReceived);
+
+            // Set up event callback for stream events (connected, disconnected, switched, etc.)
+            _nativeStreamer.SetEventCallback(OnNativeEvent);
+
             if (!_nativeStreamer.Start())
             {
                 _killReason = "Native streamer start failed";
                 return;
             }
 
+            _receivingData = true;
             _buffer.SignalSourceConnected();
 
-            // Read from shared memory and write to our buffer
-            await ReadFromSharedMemoryAsync(cancellationToken).ConfigureAwait(false);
+            // Wait for streaming to complete or cancellation
+            // The native worker thread calls our callback with data
+            // We just need to wait and do periodic health checks
+            await MonitorStreamingAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
+            _receivingData = false;
+            _nativeStreamer.SetOutputCallback(null);
+            _nativeStreamer.SetEventCallback(null);
             _nativeStreamer.Stop();
             _buffer.SignalSourceDisconnected();
         }
     }
 
     /// <summary>
-    /// Reads data from shared memory ring buffer and writes to the circular buffer.
+    /// Callback invoked by the native streamer when data is received.
+    /// This is called from the native worker thread.
     /// </summary>
-    private async Task ReadFromSharedMemoryAsync(CancellationToken cancellationToken)
+    /// <param name="data">The TS data received (always a multiple of 188 bytes).</param>
+    private void OnNativeDataReceived(ReadOnlySpan<byte> data)
     {
-        using var sharedMemReader = _nativeStreamer!.CreateReader();
-        var readBuffer = new byte[SharedMemoryReadSize];
-        var lastHealthCheckTime = DateTime.UtcNow;
-
-        while (!cancellationToken.IsCancellationRequested)
+        if (_isDisposed || !_receivingData)
         {
-            // Read available data from shared memory
-            var bytesRead = sharedMemReader.Read(readBuffer);
+            return;
+        }
 
-            if (bytesRead > 0)
-            {
-                // Write to our circular buffer
-                _buffer.Write(readBuffer.AsSpan(0, bytesRead));
+        // Write data to the circular buffer
+        // CircularBufferWriteStream is designed for single-writer usage
+        _buffer.Write(data);
+    }
 
-                // Check for discontinuity flag from C++ (stream switch happened)
-                if (sharedMemReader.ConsumeDiscontinuityFlag())
-                {
-                    _buffer.MarkDiscontinuityAligned();
-                }
-            }
-            else if (sharedMemReader.IsEndOfStream)
-            {
+    /// <summary>
+    /// Callback invoked by the native streamer when an event occurs.
+    /// This is called from the native worker thread.
+    /// </summary>
+    /// <param name="eventType">The type of event.</param>
+    /// <param name="detail">Event-specific detail.</param>
+    private void OnNativeEvent(StreamerEvent eventType, int detail)
+    {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        switch (eventType)
+        {
+            case StreamerEvent.Connected:
+                _logger.LogDebugIfEnabled("Native streamer connected for channel {ChannelId}", MediaSource.Id);
+                break;
+
+            case StreamerEvent.Disconnected:
+                _logger.LogDebugIfEnabled("Native streamer disconnected for channel {ChannelId}", MediaSource.Id);
+                break;
+
+            case StreamerEvent.Switched:
                 _logger.PluginLogInformation(
-                    "Shared memory signaled end of stream for channel {ChannelId}",
+                    "Native streamer switched to URL index {UrlIndex} for channel {ChannelId}",
+                    detail,
                     MediaSource.Id
                 );
-                _killReason = "Stream ended";
+                // Mark discontinuity when stream source switches
+                _buffer.MarkDiscontinuityAligned();
                 break;
-            }
-            else if (sharedMemReader.HasError)
-            {
-                _logger.PluginLogWarning("Shared memory signaled error for channel {ChannelId}", MediaSource.Id);
-                _killReason = "Stream error";
+
+            case StreamerEvent.Stalled:
+                _logger.PluginLogWarning("Native streamer stalled for channel {ChannelId}", MediaSource.Id);
                 break;
-            }
-            else
+
+            case StreamerEvent.Error:
+                _logger.PluginLogWarning(
+                    "Native streamer error (code={ErrorCode}) for channel {ChannelId}",
+                    detail,
+                    MediaSource.Id
+                );
+                break;
+
+            case StreamerEvent.Stopped:
+                _logger.LogDebugIfEnabled("Native streamer stopped for channel {ChannelId}", MediaSource.Id);
+                _killReason = "Stream stopped";
+                break;
+
+            case StreamerEvent.QualityDegraded:
+                _logger.PluginLogWarning("Quality degraded for channel {ChannelId}, switching URL", MediaSource.Id);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Monitors the streaming state and performs periodic health checks.
+    /// The actual data transfer happens via callbacks from the native worker thread.
+    /// </summary>
+    private async Task MonitorStreamingAsync(CancellationToken cancellationToken)
+    {
+        var lastHealthCheckTime = DateTime.UtcNow;
+
+        while (!cancellationToken.IsCancellationRequested && _receivingData)
+        {
+            // Check if the native streamer has reached a terminal state
+            if (TryGetStreamerStatus(out var status) && status.IsTerminal)
             {
-                // No data available, brief wait
-                await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                _logger.PluginLogInformation(
+                    "Native streamer reached terminal state {State} for channel {ChannelId}",
+                    status.State,
+                    MediaSource.Id
+                );
+                _killReason = $"Streamer: {status.State}";
+                break;
             }
 
             // Periodic health check
@@ -511,6 +573,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 lastHealthCheckTime = now;
                 PerformHealthCheck();
             }
+
+            // Brief wait before next check
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
     }
 

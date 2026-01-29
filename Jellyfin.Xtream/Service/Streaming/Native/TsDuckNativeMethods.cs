@@ -416,4 +416,38 @@ internal static partial class TsDuckNativeMethods
     /// </summary>
     [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_analyzer")]
     internal static partial nint StreamerGetAnalyzer(nint streamer);
+
+    /// <summary>
+    /// Callback signature for streamer output data.
+    /// Called from the streaming thread with restamped TS data.
+    /// </summary>
+    /// <param name="data">Pointer to TS data (always multiple of 188 bytes).</param>
+    /// <param name="length">Length of data in bytes.</param>
+    /// <param name="userData">User-provided context pointer.</param>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate void StreamerOutputCallback(nint data, int length, nint userData);
+
+    /// <summary>
+    /// Callback signature for streamer events.
+    /// Called from the streaming thread on state changes.
+    /// </summary>
+    /// <param name="eventType">Event type (StreamerEvent enum value).</param>
+    /// <param name="detail">Event-specific detail (HTTP status, curl code, URL index).</param>
+    /// <param name="userData">User-provided context pointer.</param>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate void StreamerEventCallback(int eventType, int detail, nint userData);
+
+    /// <summary>
+    /// Sets the output data callback for the streamer.
+    /// Called from the streaming thread with restamped TS data.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_set_output_callback")]
+    internal static partial void StreamerSetOutputCallback(nint streamer, nint callback, nint userData);
+
+    /// <summary>
+    /// Sets the event callback for the streamer.
+    /// Called from the streaming thread on state changes.
+    /// </summary>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_set_event_callback")]
+    internal static partial void StreamerSetEventCallback(nint streamer, nint callback, nint userData);
 }

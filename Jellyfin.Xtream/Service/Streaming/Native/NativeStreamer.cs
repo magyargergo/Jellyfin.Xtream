@@ -14,9 +14,23 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.Streaming.Native;
+
+/// <summary>
+/// Callback delegate for receiving streaming data from the native streamer.
+/// </summary>
+/// <param name="data">The TS data received (always a multiple of 188 bytes).</param>
+public delegate void NativeOutputCallback(ReadOnlySpan<byte> data);
+
+/// <summary>
+/// Callback delegate for receiving streamer events from the native streamer.
+/// </summary>
+/// <param name="eventType">The type of event.</param>
+/// <param name="detail">Event-specific detail (HTTP status, curl code, URL index).</param>
+public delegate void NativeEventCallback(StreamerEvent eventType, int detail);
 
 /// <summary>
 /// Native HTTP streamer with failover and mid-stream switching.
@@ -26,23 +40,27 @@ namespace Jellyfin.Xtream.Service.Streaming.Native;
 /// <para>
 /// This is a thin wrapper that sets up providers with URLs and initial health scores.
 /// C++ handles all decision making: URL selection, failover, health tracking.
-/// C# reads buffer data from shared memory.
+/// C# receives data via callback from the native streaming thread.
 /// </para>
 /// <para>
 /// Thread safety: Start/Stop/RequestSwitch/GetStatus are safe to call from any thread.
+/// The output callback is invoked from the native worker thread.
 /// </para>
 /// </remarks>
 public sealed class NativeStreamer : IDisposable
 {
-    /// <summary>
-    /// Default shared buffer size (64MB).
-    /// </summary>
-    public const long DefaultSharedBufferSize = 67108864L;
-
     private readonly TsDuckStreamerSafeHandle _streamer;
     private readonly ILogger? _logger;
-    private readonly string _sharedBufferName;
-    private readonly long _sharedBufferSize;
+
+    // Keep delegate instances alive to prevent GC during native callback
+    private TsDuckNativeMethods.StreamerOutputCallback? _nativeOutputCallback;
+    private TsDuckNativeMethods.StreamerEventCallback? _nativeEventCallback;
+    private GCHandle _outputCallbackHandle;
+    private GCHandle _eventCallbackHandle;
+
+    // User-provided callbacks
+    private NativeOutputCallback? _outputCallback;
+    private NativeEventCallback? _eventCallback;
 
     private bool _disposed;
 
@@ -52,20 +70,14 @@ public sealed class NativeStreamer : IDisposable
     /// <param name="config">Streamer configuration. Uses defaults if null.</param>
     /// <param name="analyzerConfig">Optional analyzer configuration. If provided, an internal analyzer is created.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
-    /// <param name="sharedBufferName">Name for the shared memory region. Auto-generated if null.</param>
-    /// <param name="sharedBufferSize">Size of the shared buffer in bytes.</param>
     /// <exception cref="TsDuckNativeException">Thrown if native streamer creation fails.</exception>
     internal NativeStreamer(
         TsDuckStreamerConfigNative? config = null,
         TsDuckConfigNative? analyzerConfig = null,
-        ILogger? logger = null,
-        string? sharedBufferName = null,
-        long sharedBufferSize = DefaultSharedBufferSize
+        ILogger? logger = null
     )
     {
         _logger = logger;
-        _sharedBufferName = sharedBufferName ?? $"xtream-stream-{Guid.NewGuid():N}";
-        _sharedBufferSize = sharedBufferSize;
 
         // Initialize native logging (idempotent - safe to call multiple times)
         NativeLogging.Initialize(logger);
@@ -78,11 +90,7 @@ public sealed class NativeStreamer : IDisposable
             throw new TsDuckNativeException("Failed to create native streamer");
         }
 
-        _logger?.LogDebugIfEnabled(
-            "NativeStreamer created with shared buffer: {BufferName} ({SizeMB}MB)",
-            _sharedBufferName,
-            _sharedBufferSize / 1048576.0
-        );
+        _logger?.LogDebugIfEnabled("NativeStreamer created");
     }
 
     /// <summary>
@@ -92,20 +100,16 @@ public sealed class NativeStreamer : IDisposable
     /// <param name="config">Streamer configuration.</param>
     /// <param name="analyzerConfig">Optional analyzer configuration.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
-    /// <param name="sharedBufferName">Name for the shared memory region. Auto-generated if null.</param>
-    /// <param name="sharedBufferSize">Size of the shared buffer in bytes.</param>
     /// <returns>A new streamer instance, or null if creation failed.</returns>
     internal static NativeStreamer? TryCreate(
         TsDuckStreamerConfigNative? config = null,
         TsDuckConfigNative? analyzerConfig = null,
-        ILogger? logger = null,
-        string? sharedBufferName = null,
-        long sharedBufferSize = DefaultSharedBufferSize
+        ILogger? logger = null
     )
     {
         try
         {
-            return new NativeStreamer(config, analyzerConfig, logger, sharedBufferName, sharedBufferSize);
+            return new NativeStreamer(config, analyzerConfig, logger);
         }
         catch (TsDuckNativeException ex)
         {
@@ -123,16 +127,6 @@ public sealed class NativeStreamer : IDisposable
             return null;
         }
     }
-
-    /// <summary>
-    /// Gets the name of the shared memory buffer for reading stream data.
-    /// </summary>
-    public string SharedBufferName => _sharedBufferName;
-
-    /// <summary>
-    /// Gets the size of the shared memory buffer in bytes.
-    /// </summary>
-    public long SharedBufferSize => _sharedBufferSize;
 
     /// <summary>
     /// Adds a URL to the streamer's URL list for failover rotation with default health score.
@@ -206,17 +200,114 @@ public sealed class NativeStreamer : IDisposable
     }
 
     /// <summary>
-    /// Creates a shared memory reader for consuming stream data.
-    /// Call this after Start() to read from the buffer that C++ writes to.
+    /// Sets the output callback that receives streaming data from the native streamer.
+    /// Must be called before Start(). The callback is invoked from the native worker thread.
     /// </summary>
-    /// <returns>A new SharedMemoryReader instance. Caller is responsible for disposal.</returns>
+    /// <param name="callback">The callback to receive data, or null to disable.</param>
     /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed.</exception>
-    /// <exception cref="System.IO.FileNotFoundException">Thrown if shared memory hasn't been created yet (call Start first).</exception>
-    public SharedMemoryReader CreateReader()
+    public void SetOutputCallback(NativeOutputCallback? callback)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        return new SharedMemoryReader(_sharedBufferName, _sharedBufferSize);
+        _outputCallback = callback;
+
+        if (callback == null)
+        {
+            // Clear the callback
+            if (_outputCallbackHandle.IsAllocated)
+            {
+                _outputCallbackHandle.Free();
+            }
+
+            _nativeOutputCallback = null;
+            TsDuckNativeMethods.StreamerSetOutputCallback(_streamer.DangerousGetHandle(), 0, 0);
+            return;
+        }
+
+        // Create native callback that wraps the managed one
+        _nativeOutputCallback = NativeOutputCallbackHandler;
+        _outputCallbackHandle = GCHandle.Alloc(_nativeOutputCallback);
+
+        var callbackPtr = Marshal.GetFunctionPointerForDelegate(_nativeOutputCallback);
+        TsDuckNativeMethods.StreamerSetOutputCallback(_streamer.DangerousGetHandle(), callbackPtr, 0);
+    }
+
+    /// <summary>
+    /// Sets the event callback that receives events from the native streamer.
+    /// Must be called before Start(). The callback is invoked from the native worker thread.
+    /// </summary>
+    /// <param name="callback">The callback to receive events, or null to disable.</param>
+    /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed.</exception>
+    public void SetEventCallback(NativeEventCallback? callback)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        _eventCallback = callback;
+
+        if (callback == null)
+        {
+            // Clear the callback
+            if (_eventCallbackHandle.IsAllocated)
+            {
+                _eventCallbackHandle.Free();
+            }
+
+            _nativeEventCallback = null;
+            TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), 0, 0);
+            return;
+        }
+
+        // Create native callback that wraps the managed one
+        _nativeEventCallback = NativeEventCallbackHandler;
+        _eventCallbackHandle = GCHandle.Alloc(_nativeEventCallback);
+
+        var callbackPtr = Marshal.GetFunctionPointerForDelegate(_nativeEventCallback);
+        TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), callbackPtr, 0);
+    }
+
+    /// <summary>
+    /// Native callback handler that marshals data to the managed callback.
+    /// Uses unsafe code to create a span from the native pointer without copying.
+    /// </summary>
+    private void NativeOutputCallbackHandler(nint data, int length, nint userData)
+    {
+        if (_disposed || _outputCallback == null)
+        {
+            return;
+        }
+
+        try
+        {
+            unsafe
+            {
+                var span = new ReadOnlySpan<byte>((byte*)data, length);
+                _outputCallback(span);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.PluginLogWarning(ex, "Exception in output callback: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Native event callback handler that marshals events to the managed callback.
+    /// </summary>
+    private void NativeEventCallbackHandler(int eventType, int detail, nint userData)
+    {
+        if (_disposed || _eventCallback == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _eventCallback((StreamerEvent)eventType, detail);
+        }
+        catch (Exception ex)
+        {
+            _logger?.PluginLogWarning(ex, "Exception in event callback: {Message}", ex.Message);
+        }
     }
 
     /// <summary>
@@ -369,14 +460,29 @@ public sealed class NativeStreamer : IDisposable
 
         _disposed = true;
 
+        // Clear callbacks before stopping to prevent callbacks during shutdown
+        _outputCallback = null;
+        _eventCallback = null;
+
         // Stop streaming before disposing handle
         if (!_streamer.IsInvalid)
         {
             TsDuckNativeMethods.StreamerStop(_streamer.DangerousGetHandle());
         }
 
-        // SafeHandle calls StreamerDestroy which cleans up the worker thread,
-        // shared memory, and all native resources
+        // Free GCHandles for callbacks
+        if (_outputCallbackHandle.IsAllocated)
+        {
+            _outputCallbackHandle.Free();
+        }
+
+        if (_eventCallbackHandle.IsAllocated)
+        {
+            _eventCallbackHandle.Free();
+        }
+
+        // SafeHandle calls StreamerDestroy which cleans up the worker thread
+        // and all native resources
         _streamer.Dispose();
 
         _logger?.LogDebugIfEnabled("NativeStreamer disposed");
