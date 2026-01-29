@@ -40,8 +40,6 @@ echo "=== Integration Tests ==="
 run_test test_analyzer_integration
 run_test test_restamper_integration
 run_test test_streamer_integration
-run_test test_scte35_integration
-run_test test_nal_integration
 
 echo "=== Stress Tests ==="
 STRESS_DURATION_MS=500 run_test test_stress

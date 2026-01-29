@@ -32,7 +32,7 @@ public class StreamQualityTests
     public async Task BitrateEstimation_CleanStream_WithinTolerance(int bitrateKbps)
     {
         // Arrange - stream at known bitrate and verify the estimated bitrate
-        // is within ±25% of the target. This validates the core assumption
+        // is within +/-25% of the target. This validates the core assumption
         // that packet-distance timing uses for PAT/PMT/PCR checks.
         var url = $"{_fixture.BaseUrl}/stream/{bitrateKbps}";
 
@@ -43,8 +43,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -64,7 +62,7 @@ public class StreamQualityTests
 
         Assert.True(
             ratio >= 0.75 && ratio <= 1.25,
-            $"Bitrate estimate {estimatedBps} should be within ±25% of target {targetBps} (ratio: {ratio:F3})"
+            $"Bitrate estimate {estimatedBps} should be within +/-25% of target {targetBps} (ratio: {ratio:F3})"
         );
     }
 
@@ -87,8 +85,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -125,8 +121,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -162,8 +156,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -197,8 +189,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -235,8 +225,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -244,17 +232,17 @@ public class StreamQualityTests
         await Task.Delay(TimeSpan.FromSeconds(8));
 
         var metrics = streamer.GetMetrics();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
         Assert.NotNull(metrics);
-        var bytes = Interlocked.Read(ref totalBytes);
-        _output.WriteLine($"Total bytes: {bytes:N0}");
+        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
         _output.WriteLine($"Services: {metrics.ServiceCount}, PIDs: {metrics.PidCount}");
         _output.WriteLine($"PAT errors: {metrics.Priority1.PatError}");
 
         // Should have received data after the delay
-        Assert.True(bytes > 0, "Should receive data after delay period");
+        Assert.True(status.BytesReceived > 0, "Should receive data after delay period");
         // Service detection should work after delayed start
         Assert.True(metrics.ServiceCount >= 1, "Should detect services after delayed start");
         // No PAT errors (startup grace period should cover the delay)
@@ -280,8 +268,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url1);
         streamer.AddUrl(url2);
 
@@ -341,8 +327,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -355,7 +339,7 @@ public class StreamQualityTests
         // Assert
         Assert.NotNull(metrics);
         var qualityScore = metrics.CalculateQualityScore();
-        _output.WriteLine($"Bitrate: {bitrateKbps} Kbps → Quality: {qualityScore}/100");
+        _output.WriteLine($"Bitrate: {bitrateKbps} Kbps -> Quality: {qualityScore}/100");
         _output.WriteLine($"P1: {metrics.Priority1.TotalErrors}, P2: {metrics.Priority2.TotalErrors}");
         _output.WriteLine($"PAT: {metrics.Priority1.PatError}, PMT: {metrics.Priority1.PmtError}");
         _output.WriteLine(
@@ -387,8 +371,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -429,8 +411,6 @@ public class StreamQualityTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(stableUrl);
 
@@ -445,14 +425,14 @@ public class StreamQualityTests
         // Assert
         Assert.NotNull(metrics);
         _output.WriteLine($"State: {status.State}, URL index: {status.CurrentUrlIndex}");
-        _output.WriteLine($"Total bytes: {Interlocked.Read(ref totalBytes):N0}");
+        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
         _output.WriteLine($"Bitrate: {metrics.TsBitrate / 1000.0:F1} Kbps");
         _output.WriteLine($"Services: {metrics.ServiceCount}");
         _output.WriteLine($"PAT errors: {metrics.Priority1.PatError}");
         _output.WriteLine($"Sync errors: {metrics.Priority1.SyncByteError}");
 
         // Should have recovered and be producing valid metrics
-        Assert.True(Interlocked.Read(ref totalBytes) > 0, "Should have received data after recovery");
+        Assert.True(status.BytesReceived > 0, "Should have received data after recovery");
         Assert.True(metrics.TsBitrate > 0, "Bitrate should be detected after recovery");
         Assert.True(metrics.ServiceCount >= 1, "Services should be detected after recovery");
         // No sync errors (all stream data from either URL should have valid sync)
@@ -482,7 +462,6 @@ public class StreamQualityTests
             LowSpeedLimitBytes = 100,
             LowSpeedTimeSec = 5,
             StallsBeforeSwitch = 2,
-            Reserved = 0,
         };
 
         var analyzerConfig = TsDuckConfigNative.FromManaged(

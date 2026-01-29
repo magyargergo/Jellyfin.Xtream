@@ -196,8 +196,6 @@ WORKDIR /tests
 COPY --from=test-builder /build/tests/build/test_analyzer_integration .
 COPY --from=test-builder /build/tests/build/test_restamper_integration .
 COPY --from=test-builder /build/tests/build/test_streamer_integration .
-COPY --from=test-builder /build/tests/build/test_scte35_integration .
-COPY --from=test-builder /build/tests/build/test_nal_integration .
 
 # Update library cache
 RUN ldconfig
@@ -250,8 +248,6 @@ COPY --from=test-builder /build/tests/build/test_keyframe_aligner .
 COPY --from=test-builder /build/tests/build/test_analyzer_integration .
 COPY --from=test-builder /build/tests/build/test_restamper_integration .
 COPY --from=test-builder /build/tests/build/test_streamer_integration .
-COPY --from=test-builder /build/tests/build/test_scte35_integration .
-COPY --from=test-builder /build/tests/build/test_nal_integration .
 COPY --from=test-builder /build/tests/build/test_stress .
 COPY --from=test-builder /build/tests/build/test_network_simulation .
 

@@ -33,8 +33,6 @@ public class ProgramDetectionTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -44,12 +42,13 @@ public class ProgramDetectionTests
         await Task.Delay(TimeSpan.FromSeconds(3));
 
         var metrics = streamer.GetMetrics();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
         Assert.NotNull(metrics);
         _output.WriteLine($"Service count: {metrics.ServiceCount}");
-        _output.WriteLine($"Total bytes: {Interlocked.Read(ref totalBytes):N0}");
+        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
 
         // Test stream generator produces 1 program with PAT pointing to PMT
         Assert.True(metrics.ServiceCount >= 1, $"Expected at least 1 service, got {metrics.ServiceCount}");
@@ -68,8 +67,6 @@ public class ProgramDetectionTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -100,8 +97,6 @@ public class ProgramDetectionTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -133,18 +128,17 @@ public class ProgramDetectionTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
         await WaitForStreamerFinish(streamer, TimeSpan.FromSeconds(10));
 
         var metrics = streamer.GetMetrics();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Total bytes received: {Interlocked.Read(ref totalBytes):N0}");
+        _output.WriteLine($"Total bytes received: {status.BytesReceived:N0}");
         _output.WriteLine($"Metrics: {(metrics != null ? "available" : "null")}");
 
         if (metrics != null)
@@ -173,8 +167,6 @@ public class ProgramDetectionTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -212,8 +204,6 @@ public class ProgramDetectionTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -252,8 +242,6 @@ public class ProgramDetectionTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -289,7 +277,6 @@ public class ProgramDetectionTests
             LowSpeedLimitBytes = 100,
             LowSpeedTimeSec = 5,
             StallsBeforeSwitch = 2,
-            Reserved = 0,
         };
 
         var analyzerConfig = TsDuckConfigNative.FromManaged(

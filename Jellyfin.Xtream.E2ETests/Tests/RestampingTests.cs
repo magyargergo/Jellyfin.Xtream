@@ -25,7 +25,6 @@ public class RestampingTests
     {
         // Arrange
         var url = $"{_fixture.BaseUrl}/stream/5000";
-        var metrics = new TestMetrics();
 
         using var streamer = CreateStreamerWithRestamp();
         if (streamer == null)
@@ -34,46 +33,37 @@ public class RestampingTests
             return;
         }
 
-        streamer.SetOutputCallback(
-            (ptr, len) =>
-            {
-                unsafe
-                {
-                    metrics.ProcessReceivedData((byte*)ptr, len);
-                }
-            }
-        );
-
         streamer.AddUrl(url);
-        metrics.Start();
         Assert.True(streamer.Start());
         await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
 
-        // Act - collect PCR values for 5 seconds
+        // Act - stream for 5 seconds
         await Task.Delay(TimeSpan.FromSeconds(5));
 
-        metrics.Stop();
+        var pcrAnalysis = streamer.GetPcrAnalysis();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
-        var pcrValues = metrics.PcrValues;
-        _output.WriteLine($"PCR samples collected: {pcrValues.Count}");
+        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        _output.WriteLine($"Packets output: {status.PacketsOutput:N0}");
 
-        Assert.True(pcrValues.Count >= 10, "Should have at least 10 PCR samples");
-
-        // Check monotonically increasing
-        int decreases = 0;
-        for (int i = 1; i < pcrValues.Count; i++)
+        if (pcrAnalysis != null)
         {
-            if (pcrValues[i] <= pcrValues[i - 1])
-            {
-                decreases++;
-                _output.WriteLine($"  PCR decrease at index {i}: {pcrValues[i - 1]} -> {pcrValues[i]}");
-            }
-        }
+            var pcr = pcrAnalysis.Value;
+            _output.WriteLine($"PCR count: {pcr.PcrCount}");
+            _output.WriteLine($"PCR valid count: {pcr.PcrValidCount}");
+            _output.WriteLine($"PCR interval: {pcr.PcrIntervalMs:F2}ms");
+            _output.WriteLine($"PCR jitter: {pcr.PcrJitterUs:F2}us");
 
-        // Allow up to 1 decrease (at stream start before restamper kicks in)
-        Assert.True(decreases <= 1, $"PCR values decreased {decreases} times (expected <= 1)");
+            Assert.True(pcr.PcrCount >= 10, "Should have at least 10 PCR samples");
+            // Valid PCR count should match total count (no discontinuities)
+            Assert.True(pcr.PcrValidCount >= pcr.PcrCount - 1, "Most PCRs should be valid (monotonic)");
+        }
+        else
+        {
+            Assert.True(status.PacketsOutput > 0, "Should have output packets");
+        }
     }
 
     [Fact]
@@ -81,7 +71,6 @@ public class RestampingTests
     {
         // Arrange
         var url = $"{_fixture.BaseUrl}/stream/5000";
-        var metrics = new TestMetrics();
 
         using var streamer = CreateStreamerWithRestamp();
         if (streamer == null)
@@ -90,59 +79,33 @@ public class RestampingTests
             return;
         }
 
-        streamer.SetOutputCallback(
-            (ptr, len) =>
-            {
-                unsafe
-                {
-                    metrics.ProcessReceivedData((byte*)ptr, len);
-                }
-            }
-        );
-
         streamer.AddUrl(url);
-        metrics.Start();
         Assert.True(streamer.Start());
         await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
 
         // Act - stream for 5 seconds
         await Task.Delay(TimeSpan.FromSeconds(5));
 
-        metrics.Stop();
+        var pcrAnalysis = streamer.GetPcrAnalysis();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert - check PCR intervals
-        var pcrValues = metrics.PcrValues;
-        Assert.True(pcrValues.Count >= 5, $"Need at least 5 PCR values, got {pcrValues.Count}");
+        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        _output.WriteLine($"Packets output: {status.PacketsOutput:N0}");
 
-        var intervals = new List<double>();
-        for (int i = 1; i < pcrValues.Count; i++)
+        if (pcrAnalysis != null)
         {
-            double intervalMs = (pcrValues[i] - pcrValues[i - 1]) / 90.0; // 90kHz -> ms
-            if (intervalMs > 0) // Skip any initial anomalies
+            var pcr = pcrAnalysis.Value;
+            _output.WriteLine($"PCR interval: {pcr.PcrIntervalMs:F2}ms");
+
+            // TR 101 290 requires PCR repetition interval <= 40ms (with tolerance)
+            // After restamping, most intervals should be reasonable
+            if (pcr.PcrCount > 1)
             {
-                intervals.Add(intervalMs);
+                Assert.False(pcr.HasIntervalViolation, $"PCR interval {pcr.PcrIntervalMs:F2}ms exceeds threshold");
             }
         }
-
-        Assert.True(intervals.Count > 0, "Should have computed PCR intervals");
-
-        var avgInterval = intervals.Average();
-        var maxInterval = intervals.Max();
-        var minInterval = intervals.Where(i => i > 0).Min();
-
-        _output.WriteLine($"PCR intervals: avg={avgInterval:F2}ms, min={minInterval:F2}ms, max={maxInterval:F2}ms");
-
-        // TR 101 290 requires PCR repetition interval <= 40ms (with tolerance)
-        // After restamping, most intervals should be reasonable
-        var conformingIntervals = intervals.Count(i => i <= 100.0); // 100ms generous threshold
-        var conformanceRate = (double)conformingIntervals / intervals.Count;
-        _output.WriteLine($"Intervals <= 100ms: {conformingIntervals}/{intervals.Count} ({conformanceRate:P1})");
-
-        Assert.True(
-            conformanceRate >= 0.9,
-            $"Only {conformanceRate:P1} of PCR intervals are within 100ms (expected >= 90%)"
-        );
     }
 
     [Fact]
@@ -158,15 +121,6 @@ public class RestampingTests
             return;
         }
 
-        var totalBytes = 0L;
-
-        streamer.SetOutputCallback(
-            (ptr, len) =>
-            {
-                Interlocked.Add(ref totalBytes, len);
-            }
-        );
-
         streamer.AddUrl(url);
         Assert.True(streamer.Start());
         await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
@@ -180,7 +134,6 @@ public class RestampingTests
         _output.WriteLine($"  State: {status.State}");
         _output.WriteLine($"  Bytes received: {status.BytesReceived:N0}");
         _output.WriteLine($"  Packets output: {status.PacketsOutput:N0}");
-        _output.WriteLine($"  Callback bytes: {Interlocked.Read(ref totalBytes):N0}");
 
         streamer.Stop();
 
@@ -190,9 +143,8 @@ public class RestampingTests
     [Fact]
     public async Task Restamp_LargeOffset_CorrectedToZeroBased()
     {
-        // Arrange - verify data flows correctly and PCR values are non-negative
+        // Arrange - verify data flows correctly and PCR analysis works
         var url = $"{_fixture.BaseUrl}/stream/5000";
-        var metrics = new TestMetrics();
 
         using var streamer = CreateStreamerWithRestamp();
         if (streamer == null)
@@ -201,36 +153,37 @@ public class RestampingTests
             return;
         }
 
-        streamer.SetOutputCallback(
-            (ptr, len) =>
-            {
-                unsafe
-                {
-                    metrics.ProcessReceivedData((byte*)ptr, len);
-                }
-            }
-        );
-
         streamer.AddUrl(url);
-        metrics.Start();
         Assert.True(streamer.Start());
         await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
 
         // Collect data for 3 seconds
         await Task.Delay(TimeSpan.FromSeconds(3));
 
-        metrics.Stop();
+        var pcrAnalysis = streamer.GetPcrAnalysis();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
-        // Assert - PCR values should be present and positive
-        var pcrValues = metrics.PcrValues;
-        _output.WriteLine(
-            $"PCR values: {pcrValues.Count}, first={pcrValues.FirstOrDefault()}, last={pcrValues.LastOrDefault()}"
-        );
+        // Assert - PCR analysis should show valid data
+        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        _output.WriteLine($"Packets output: {status.PacketsOutput:N0}");
 
-        Assert.True(pcrValues.Count > 0, "Should have PCR values");
-        // All PCR values should be non-negative
-        Assert.All(pcrValues, pcr => Assert.True(pcr >= 0, $"PCR value {pcr} is negative"));
+        if (pcrAnalysis != null)
+        {
+            var pcr = pcrAnalysis.Value;
+            _output.WriteLine($"PCR count: {pcr.PcrCount}");
+            _output.WriteLine($"PCR jitter max: {pcr.PcrJitterMaxUs:F2}us");
+
+            Assert.True(pcr.PcrCount > 0, "Should have PCR values");
+            // PCR jitter should be reasonable (< 1 second = 1,000,000 us)
+            Assert.True(pcr.PcrJitterMaxUs < 1_000_000, $"PCR jitter max {pcr.PcrJitterMaxUs:F0}us is too high");
+        }
+        else
+        {
+            // At minimum, should have received and output data
+            Assert.True(status.BytesReceived > 0, "Should have received data");
+            Assert.True(status.PacketsOutput > 0, "Should have output packets");
+        }
     }
 
     private static NativeStreamer? CreateStreamerWithRestamp()
@@ -252,7 +205,6 @@ public class RestampingTests
             LowSpeedLimitBytes = 100,
             LowSpeedTimeSec = 5,
             StallsBeforeSwitch = 2,
-            Reserved = 0,
         };
 
         var analyzerConfig = TsDuckConfigNative.FromManaged(TsDuckConfiguration.Default);

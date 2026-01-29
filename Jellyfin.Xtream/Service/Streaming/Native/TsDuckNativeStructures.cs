@@ -173,8 +173,8 @@ internal readonly struct TsDuckConfigNative
 /// Native PCR analysis structure.
 /// Layout must match PcrAnalysisNative in tsduck_interop.h exactly.
 /// Tracks PCR timing per ISO/IEC 13818-1 requirements:
-/// - Accuracy: ±500ns phase tolerance
-/// - Frequency offset: ±30 ppm (±810 Hz at 27MHz)
+/// - Accuracy: +/-500ns phase tolerance
+/// - Frequency offset: +/-30 ppm (+/-810 Hz at 27MHz)
 /// - Drift rate: 75 mHz/sec (10 ppm/hr)
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
@@ -221,99 +221,6 @@ internal struct PcrAnalysisNative
 }
 
 /// <summary>
-/// Native IAT (Inter-packet Arrival Time) analysis structure.
-/// Layout must match IatAnalysisNative in tsduck_interop.h exactly.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct IatAnalysisNative
-{
-    public double IatAvgUs;
-    public double IatMinUs;
-    public double IatMaxUs;
-    public double IatJitterUs;
-    public double IatStddevUs;
-    public long LatePackets;
-    public long EarlyPackets;
-    public long BurstCount;
-
-    /// <summary>
-    /// Converts to managed IatAnalysis.
-    /// </summary>
-    public readonly IatAnalysis ToManaged() =>
-        new(IatAvgUs, IatMinUs, IatMaxUs, IatJitterUs, IatStddevUs, LatePackets, EarlyPackets, BurstCount);
-}
-
-/// <summary>
-/// Native bitrate analysis structure.
-/// Layout must match BitrateAnalysisNative in tsduck_interop.h exactly.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct BitrateAnalysisNative
-{
-    public long TsBitrateNominal;
-    public long TsBitratePcr;
-    public long TsBitrateDts;
-    public double BitrateAccuracy;
-    public long NullPacketBitrate;
-    public double NullPacketRatio;
-    public long UsefulBitrate;
-
-    /// <summary>
-    /// Converts to managed BitrateAnalysis.
-    /// </summary>
-    public readonly BitrateAnalysis ToManaged() =>
-        new(
-            TsBitrateNominal,
-            TsBitratePcr,
-            TsBitrateDts,
-            BitrateAccuracy,
-            NullPacketBitrate,
-            NullPacketRatio,
-            UsefulBitrate
-        );
-}
-
-/// <summary>
-/// Native extended PID information structure (Phase 2b).
-/// Layout must match TsDuckPidInfoExtended in tsduck_interop.h exactly.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct TsDuckPidInfoExtendedNative
-{
-    public int Pid;
-    public int StreamType;
-    public long Packets;
-    public long Bitrate;
-    public long ContinuityErrors;
-    public long DuplicatePackets;
-    public long ScrambledPackets;
-    public int IsScrambled;
-    public int IsPcrPid;
-    public double PcrJitterUs;
-    public int IsVideo;
-    public int IsAudio;
-
-    /// <summary>
-    /// Converts to managed TsDuckPidInfoExtended.
-    /// </summary>
-    public readonly TsDuckPidInfoExtended ToManaged() =>
-        new(
-            Pid,
-            StreamType,
-            Packets,
-            Bitrate,
-            ContinuityErrors,
-            DuplicatePackets,
-            ScrambledPackets,
-            IsScrambled != 0,
-            IsPcrPid != 0,
-            PcrJitterUs,
-            IsVideo != 0,
-            IsAudio != 0
-        );
-}
-
-/// <summary>
 /// Error codes returned by native functions.
 /// </summary>
 internal enum TsDuckNativeError
@@ -327,7 +234,7 @@ internal enum TsDuckNativeError
 }
 
 // =============================================================================
-// A/V Sync Analysis Structures (Phase 3 - Restamping)
+// A/V Sync Analysis Structures
 // =============================================================================
 
 /// <summary>
@@ -338,7 +245,7 @@ public enum AvSyncStatus
     /// <summary>Not enough data to determine sync status.</summary>
     Unknown = 0,
 
-    /// <summary>Audio and video are synchronized within tolerance (±20ms).</summary>
+    /// <summary>Audio and video are synchronized within tolerance (+/-20ms).</summary>
     Synchronized = 1,
 
     /// <summary>Drift detected but within correctable range.</summary>
@@ -352,43 +259,6 @@ public enum AvSyncStatus
 
     /// <summary>No video PTS detected in stream.</summary>
     NoVideo = 5,
-}
-
-/// <summary>
-/// Native PTS/DTS sample structure.
-/// Layout must match PtsDtsSampleNative in tsduck_interop.h exactly.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct PtsDtsSampleNative
-{
-    public int Pid;
-    public int StreamType;
-    public long Pts90Khz;
-    public long Dts90Khz;
-    public long Pcr90Khz;
-    public long PacketIndex;
-    public long ByteOffset;
-    public int IsVideo;
-    public int IsAudio;
-    public int IsKeyframe;
-    public int Reserved;
-
-    /// <summary>
-    /// Converts to managed PtsDtsSample.
-    /// </summary>
-    public readonly PtsDtsSample ToManaged() =>
-        new(
-            Pid,
-            StreamType,
-            Pts90Khz,
-            Dts90Khz,
-            Pcr90Khz,
-            PacketIndex,
-            ByteOffset,
-            IsVideo != 0,
-            IsAudio != 0,
-            IsKeyframe != 0
-        );
 }
 
 /// <summary>
@@ -464,41 +334,6 @@ public enum RestampingMode
 
     /// <summary>Detect drift and apply corrections.</summary>
     Correct = 2,
-}
-
-/// <summary>
-/// Native restamping statistics structure.
-/// Layout must match RestampingStatisticsNative in tsduck_interop.h exactly.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal struct RestampingStatisticsNative
-{
-    public long PacketsProcessed;
-    public long PcrSmoothed;
-    public long PtsCorrected;
-    public long DtsCorrected;
-    public long DiscontinuitiesFixed;
-    public double TotalCorrectionMs;
-    public double CurrentOffsetMs;
-    public long LastCorrectionTimeTicks;
-    public int CorrectionActive;
-    public int Reserved;
-
-    /// <summary>
-    /// Converts to managed RestampingStatistics.
-    /// </summary>
-    public readonly RestampingStatistics ToManaged() =>
-        new(
-            PacketsProcessed,
-            PcrSmoothed,
-            PtsCorrected,
-            DtsCorrected,
-            DiscontinuitiesFixed,
-            TotalCorrectionMs,
-            CurrentOffsetMs,
-            LastCorrectionTimeTicks > 0 ? new DateTime(LastCorrectionTimeTicks, DateTimeKind.Utc) : null,
-            CorrectionActive != 0
-        );
 }
 
 // =============================================================================
@@ -697,44 +532,6 @@ internal struct TsDuckStreamerStatusNative
 // =============================================================================
 
 /// <summary>
-/// PTS/DTS sample from stream analysis.
-/// </summary>
-/// <param name="Pid">PID carrying this timestamp.</param>
-/// <param name="StreamType">MPEG stream type.</param>
-/// <param name="Pts90Khz">Presentation timestamp (90kHz).</param>
-/// <param name="Dts90Khz">Decoding timestamp (-1 if not present).</param>
-/// <param name="Pcr90Khz">Reference PCR at sample time (-1 if N/A).</param>
-/// <param name="PacketIndex">Packet position in stream.</param>
-/// <param name="ByteOffset">Byte offset in stream.</param>
-/// <param name="IsVideo">True if video stream.</param>
-/// <param name="IsAudio">True if audio stream.</param>
-/// <param name="IsKeyframe">True if keyframe (video only).</param>
-[StructLayout(LayoutKind.Auto)]
-public readonly record struct PtsDtsSample(
-    int Pid,
-    int StreamType,
-    long Pts90Khz,
-    long Dts90Khz,
-    long Pcr90Khz,
-    long PacketIndex,
-    long ByteOffset,
-    bool IsVideo,
-    bool IsAudio,
-    bool IsKeyframe
-)
-{
-    /// <summary>
-    /// Gets the PTS in milliseconds.
-    /// </summary>
-    public double PtsMs => Pts90Khz / 90.0;
-
-    /// <summary>
-    /// Gets the DTS in milliseconds, or null if not present.
-    /// </summary>
-    public double? DtsMs => Dts90Khz >= 0 ? Dts90Khz / 90.0 : null;
-}
-
-/// <summary>
 /// A/V synchronization analysis result.
 /// </summary>
 /// <param name="VideoAudioDriftMs">Current A/V drift (positive = audio ahead).</param>
@@ -805,37 +602,6 @@ public readonly record struct AvSyncAnalysis(
             AvSyncStatus.NoVideo => "No video",
             _ => "Unknown",
         };
-}
-
-/// <summary>
-/// Restamping statistics.
-/// </summary>
-/// <param name="PacketsProcessed">Total packets analyzed.</param>
-/// <param name="PcrSmoothed">PCRs that were smoothed.</param>
-/// <param name="PtsCorrected">PTS values corrected.</param>
-/// <param name="DtsCorrected">DTS values corrected.</param>
-/// <param name="DiscontinuitiesFixed">Discontinuities repaired.</param>
-/// <param name="TotalCorrectionMs">Cumulative correction applied.</param>
-/// <param name="CurrentOffsetMs">Current correction offset.</param>
-/// <param name="LastCorrectionTime">Time of last correction.</param>
-/// <param name="CorrectionActive">Currently applying corrections.</param>
-[StructLayout(LayoutKind.Auto)]
-public readonly record struct RestampingStatistics(
-    long PacketsProcessed,
-    long PcrSmoothed,
-    long PtsCorrected,
-    long DtsCorrected,
-    long DiscontinuitiesFixed,
-    double TotalCorrectionMs,
-    double CurrentOffsetMs,
-    DateTime? LastCorrectionTime,
-    bool CorrectionActive
-)
-{
-    /// <summary>
-    /// Gets the total number of timestamps modified.
-    /// </summary>
-    public long TotalModified => PcrSmoothed + PtsCorrected + DtsCorrected;
 }
 
 /// <summary>

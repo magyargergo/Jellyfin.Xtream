@@ -1,4 +1,4 @@
-using System.Linq;
+using System.Diagnostics;
 using Jellyfin.Xtream.E2ETests.Infrastructure;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Streaming.Native;
@@ -35,24 +35,12 @@ public class FailoverSwitchingTests
         var stableUrl2 = $"{_fixture.BaseUrl}/stream/5000";
         var stableUrl3 = $"{_fixture.BaseUrl}/stream/5000";
 
-        var events = new List<(StreamerEvent Event, int Detail, DateTime Time)>();
         using var streamer = CreateStreamerForAggressiveFailover();
         if (streamer == null)
         {
             _output.WriteLine("SKIP: Native library not available");
             return;
         }
-
-        streamer.StreamEvent += (_, args) =>
-        {
-            lock (events)
-            {
-                events.Add((args.EventType, args.Detail, DateTime.UtcNow));
-            }
-        };
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
 
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(stableUrl2);
@@ -80,15 +68,6 @@ public class FailoverSwitchingTests
         _output.WriteLine($"Switches: {statusAfter.SwitchesCompleted}");
         _output.WriteLine($"Reconnections: {statusAfter.Reconnections}");
 
-        lock (events)
-        {
-            _output.WriteLine($"Events ({events.Count}):");
-            foreach (var (evt, detail, time) in events.Take(20))
-            {
-                _output.WriteLine($"  {time:HH:mm:ss.fff} {evt} (detail={detail})");
-            }
-        }
-
         Assert.True(statusAfter.BytesReceived > 0, "Should have received data");
         Assert.True(statusAfter.SwitchesCompleted >= 1, "Should have completed at least one switch");
     }
@@ -106,7 +85,6 @@ public class FailoverSwitchingTests
         var unstableUrl2 = $"{_fixture.BaseUrl}/stream/unstable";
         var stableUrl3 = $"{_fixture.BaseUrl}/stream/5000";
 
-        var events = new List<(StreamerEvent Event, int Detail, DateTime Time)>();
         using var streamer = CreateStreamerForAggressiveFailover();
         if (streamer == null)
         {
@@ -114,24 +92,13 @@ public class FailoverSwitchingTests
             return;
         }
 
-        streamer.StreamEvent += (_, args) =>
-        {
-            lock (events)
-            {
-                events.Add((args.EventType, args.Detail, DateTime.UtcNow));
-            }
-        };
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
-
         streamer.AddUrl(stableUrl1);
         streamer.AddUrl(unstableUrl2);
         streamer.AddUrl(stableUrl3);
 
         // Act - start on stable URL 1
         Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(3));
+        await WaitForStreaming(streamer, TimeSpan.FromSeconds(3));
 
         var statusBeforeSwitch = streamer.GetStatus();
         Assert.Equal(0, statusBeforeSwitch.CurrentUrlIndex); // Should be on URL 1
@@ -149,17 +116,8 @@ public class FailoverSwitchingTests
         _output.WriteLine($"Switches: {statusAfter.SwitchesCompleted}");
         _output.WriteLine($"Reconnections: {statusAfter.Reconnections}");
 
-        lock (events)
-        {
-            _output.WriteLine($"Events ({events.Count}):");
-            foreach (var (evt, detail, time) in events.Take(25))
-            {
-                _output.WriteLine($"  {time:HH:mm:ss.fff} {evt} (detail={detail})");
-            }
-        }
-
         Assert.True(statusAfter.BytesReceived > 0, "Should have received data");
-        // Should have switched at least twice: manual (1→2) + auto (2→3)
+        // Should have switched at least twice: manual (1->2) + auto (2->3)
         Assert.True(
             statusAfter.SwitchesCompleted >= 2,
             $"Should have at least 2 switches (manual + auto), got {statusAfter.SwitchesCompleted}"
@@ -168,7 +126,7 @@ public class FailoverSwitchingTests
 
     /// <summary>
     /// Tests multi-hop automatic failover where multiple URLs fail in sequence.
-    /// URL 1 drops → URL 2 drops → URL 3 stable.
+    /// URL 1 drops -> URL 2 drops -> URL 3 stable.
     /// </summary>
     [Fact]
     public async Task MultiHopAutomaticFailover_EventuallyRecoversToStable()
@@ -179,24 +137,12 @@ public class FailoverSwitchingTests
         var unstableUrl2 = $"{_fixture.BaseUrl}/stream/unstable";
         var stableUrl3 = $"{_fixture.BaseUrl}/stream/5000";
 
-        var events = new List<(StreamerEvent Event, int Detail, DateTime Time)>();
         using var streamer = CreateStreamerForAggressiveFailover();
         if (streamer == null)
         {
             _output.WriteLine("SKIP: Native library not available");
             return;
         }
-
-        streamer.StreamEvent += (_, args) =>
-        {
-            lock (events)
-            {
-                events.Add((args.EventType, args.Detail, DateTime.UtcNow));
-            }
-        };
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
 
         streamer.AddUrl(unstableUrl1);
         streamer.AddUrl(unstableUrl2);
@@ -215,17 +161,8 @@ public class FailoverSwitchingTests
         _output.WriteLine($"Switches: {status.SwitchesCompleted}");
         _output.WriteLine($"Reconnections: {status.Reconnections}");
 
-        lock (events)
-        {
-            _output.WriteLine($"Events ({events.Count}):");
-            foreach (var (evt, detail, time) in events.Take(30))
-            {
-                _output.WriteLine($"  {time:HH:mm:ss.fff} {evt} (detail={detail})");
-            }
-        }
-
         Assert.True(status.BytesReceived > 0, "Should have received data");
-        // Should have exactly 2 switches: (0→1) + (1→2) when both unstable URLs drop
+        // Should have exactly 2 switches: (0->1) + (1->2) when both unstable URLs drop
         Assert.Equal(2, status.SwitchesCompleted);
         // Should be on the stable URL (index 2)
         Assert.Equal(2, status.CurrentUrlIndex);
@@ -242,7 +179,6 @@ public class FailoverSwitchingTests
         _fixture.UnstableDropAfterMs = 1500;
         var unstableUrl = $"{_fixture.BaseUrl}/stream/unstable";
 
-        var urlIndexHistory = new List<int>();
         using var streamer = CreateStreamerForAggressiveFailover();
         if (streamer == null)
         {
@@ -250,60 +186,59 @@ public class FailoverSwitchingTests
             return;
         }
 
-        streamer.StreamEvent += (_, args) =>
-        {
-            if (args.EventType == StreamerEvent.Connected)
-            {
-                lock (urlIndexHistory)
-                {
-                    urlIndexHistory.Add(args.Detail);
-                }
-            }
-        };
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
-
         // Add 3 identical unstable URLs
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(unstableUrl);
 
+        // Track URL index history via polling
+        var urlIndexHistory = new List<int>();
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
         // Act - stream long enough to cycle through all URLs and wrap
         Assert.True(streamer.Start());
-        await Task.Delay(TimeSpan.FromSeconds(15));
 
-        var status = streamer.GetStatus();
+        // Poll for URL changes
+        var lastIndex = -1;
+        while (!cts.IsCancellationRequested)
+        {
+            var status = streamer.GetStatus();
+            if (status.CurrentUrlIndex != lastIndex && status.State == StreamerState.Streaming)
+            {
+                urlIndexHistory.Add(status.CurrentUrlIndex);
+                lastIndex = status.CurrentUrlIndex;
+            }
+
+            await Task.Delay(100);
+        }
+
+        var finalStatus = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Final: State={status.State}, URL={status.CurrentUrlIndex}");
-        _output.WriteLine($"Switches: {status.SwitchesCompleted}");
+        _output.WriteLine($"Final: State={finalStatus.State}, URL={finalStatus.CurrentUrlIndex}");
+        _output.WriteLine($"Switches: {finalStatus.SwitchesCompleted}");
+        _output.WriteLine($"URL index history: [{string.Join(", ", urlIndexHistory)}]");
 
-        lock (urlIndexHistory)
-        {
-            _output.WriteLine($"URL index history: [{string.Join(", ", urlIndexHistory)}]");
+        // Should have seen all URL indices (0, 1, 2) multiple times due to rotation
+        Assert.Contains(0, urlIndexHistory);
+        Assert.Contains(1, urlIndexHistory);
+        Assert.Contains(2, urlIndexHistory);
 
-            // Should have seen all URL indices (0, 1, 2) multiple times due to rotation
-            Assert.Contains(0, urlIndexHistory);
-            Assert.Contains(1, urlIndexHistory);
-            Assert.Contains(2, urlIndexHistory);
+        // Verify rotation occurred (saw each URL more than once)
+        var countZero = urlIndexHistory.Count(x => x == 0);
+        var countOne = urlIndexHistory.Count(x => x == 1);
+        var countTwo = urlIndexHistory.Count(x => x == 2);
+        _output.WriteLine($"URL visit counts: 0={countZero}, 1={countOne}, 2={countTwo}");
 
-            // Verify rotation occurred (saw each URL more than once)
-            var countZero = urlIndexHistory.Count(x => x == 0);
-            var countOne = urlIndexHistory.Count(x => x == 1);
-            var countTwo = urlIndexHistory.Count(x => x == 2);
-            _output.WriteLine($"URL visit counts: 0={countZero}, 1={countOne}, 2={countTwo}");
-
-            // With continuous cycling, each URL should be visited multiple times
-            Assert.True(countZero >= 2, $"URL 0 should be visited at least twice, got {countZero}");
-            Assert.True(countOne >= 2, $"URL 1 should be visited at least twice, got {countOne}");
-            Assert.True(countTwo >= 2, $"URL 2 should be visited at least twice, got {countTwo}");
-        }
+        // With continuous cycling, each URL should be visited multiple times
+        Assert.True(countZero >= 2, $"URL 0 should be visited at least twice, got {countZero}");
+        Assert.True(countOne >= 2, $"URL 1 should be visited at least twice, got {countOne}");
+        Assert.True(countTwo >= 2, $"URL 2 should be visited at least twice, got {countTwo}");
 
         Assert.True(
-            status.SwitchesCompleted >= 3,
-            $"Expected at least 3 switches for wrap, got {status.SwitchesCompleted}"
+            finalStatus.SwitchesCompleted >= 3,
+            $"Expected at least 3 switches for wrap, got {finalStatus.SwitchesCompleted}"
         );
     }
 
@@ -325,9 +260,6 @@ public class FailoverSwitchingTests
             _output.WriteLine("SKIP: Native library not available");
             return;
         }
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
 
         streamer.AddUrl(unstableUrl1);
         streamer.AddUrl(unstableUrl2);
@@ -378,24 +310,12 @@ public class FailoverSwitchingTests
         var unstableUrl = $"{_fixture.BaseUrl}/stream/unstable";
         var stableUrl = $"{_fixture.BaseUrl}/stream/5000";
 
-        var events = new List<(StreamerEvent Event, int Detail, DateTime Time)>();
         using var streamer = CreateStreamerForAggressiveFailover();
         if (streamer == null)
         {
             _output.WriteLine("SKIP: Native library not available");
             return;
         }
-
-        streamer.StreamEvent += (_, args) =>
-        {
-            lock (events)
-            {
-                events.Add((args.EventType, args.Detail, DateTime.UtcNow));
-            }
-        };
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
 
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(unstableUrl);
@@ -422,15 +342,6 @@ public class FailoverSwitchingTests
         _output.WriteLine($"Bytes: {status.BytesReceived:N0}");
         _output.WriteLine($"Switches: {status.SwitchesCompleted}");
 
-        lock (events)
-        {
-            _output.WriteLine($"Events ({events.Count}):");
-            foreach (var (evt, detail, time) in events.Take(30))
-            {
-                _output.WriteLine($"  {time:HH:mm:ss.fff} {evt} (detail={detail})");
-            }
-        }
-
         Assert.True(status.BytesReceived > 0, "Should have received data");
         // Should be on the stable URL (index 2) after settling
         Assert.Equal(2, status.CurrentUrlIndex);
@@ -443,7 +354,7 @@ public class FailoverSwitchingTests
     [Fact]
     public async Task SwitchCounters_AccurateDuringMixedOperations()
     {
-        // Arrange - stable → unstable → stable chain
+        // Arrange - stable -> unstable -> stable chain
         _fixture.UnstableDropAfterMs = 1500;
         var stableUrl1 = $"{_fixture.BaseUrl}/stream/5000";
         var unstableUrl = $"{_fixture.BaseUrl}/stream/unstable";
@@ -456,21 +367,18 @@ public class FailoverSwitchingTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
-
         streamer.AddUrl(stableUrl1);
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(stableUrl2);
 
         // Act
         Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(3));
+        await WaitForStreaming(streamer, TimeSpan.FromSeconds(3));
 
         var initialStatus = streamer.GetStatus();
         Assert.Equal(0, initialStatus.SwitchesCompleted);
 
-        // Manual switch (1→2)
+        // Manual switch (1->2)
         streamer.RequestSwitch();
         await Task.Delay(TimeSpan.FromSeconds(1));
         var afterManualSwitch = streamer.GetStatus();
@@ -490,7 +398,7 @@ public class FailoverSwitchingTests
         );
         _output.WriteLine($"Final URL: {finalStatus.CurrentUrlIndex}");
 
-        // Should have exactly 2 switches: manual (0→1) + auto (1→2)
+        // Should have exactly 2 switches: manual (0->1) + auto (1->2)
         Assert.Equal(2, finalStatus.SwitchesCompleted);
         // Should be on URL 2 (the stable one)
         Assert.Equal(2, finalStatus.CurrentUrlIndex);
@@ -518,20 +426,18 @@ public class FailoverSwitchingTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
-
         streamer.AddUrl(stableUrl1);
         streamer.AddUrl(stableUrl2);
 
         // Act - start streaming
         Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        await WaitForStreaming(streamer, TimeSpan.FromSeconds(5));
         await Task.Delay(TimeSpan.FromSeconds(2)); // Establish baseline
 
+        var statusBefore = streamer.GetStatus();
         var metricsBeforeSwitch = streamer.GetMetrics();
         _output.WriteLine(
-            $"Before switch: Quality={metricsBeforeSwitch?.CalculateQualityScore()}, Bytes={Interlocked.Read(ref totalBytes):N0}"
+            $"Before switch: Quality={metricsBeforeSwitch?.CalculateQualityScore()}, Bytes={statusBefore.BytesReceived:N0}"
         );
 
         // Manual switch to URL 2
@@ -550,7 +456,7 @@ public class FailoverSwitchingTests
         _output.WriteLine($"Switches: {status.SwitchesCompleted}");
 
         Assert.True(status.SwitchesCompleted >= 1, "Should have completed at least one switch");
-        Assert.True(Interlocked.Read(ref totalBytes) > 0, "Should have received data");
+        Assert.True(status.BytesReceived > 0, "Should have received data");
 
         // Quality should remain high after switch (keyframe alignment ensures clean start)
         var quality = metricsAfterSwitch.CalculateQualityScore();
@@ -578,25 +484,13 @@ public class FailoverSwitchingTests
             return;
         }
 
-        var events = new List<(StreamerEvent Event, DateTime Time)>();
-        streamer.StreamEvent += (_, args) =>
-        {
-            lock (events)
-            {
-                events.Add((args.EventType, DateTime.UtcNow));
-            }
-        };
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
-
         streamer.AddUrl(stableUrl);
         streamer.AddUrl(stableUrl);
         streamer.AddUrl(stableUrl);
 
         // Act - start and perform rapid switches
         Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        await WaitForStreaming(streamer, TimeSpan.FromSeconds(5));
         await Task.Delay(TimeSpan.FromSeconds(2));
 
         // 5 rapid switches, 300ms apart
@@ -618,20 +512,11 @@ public class FailoverSwitchingTests
         _output.WriteLine($"Quality: {metrics.CalculateQualityScore()}");
         _output.WriteLine($"CC errors: {metrics.Priority1.ContinuityCountError}");
         _output.WriteLine($"Sync errors: {metrics.Priority1.SyncByteError}");
-        _output.WriteLine($"Total bytes: {Interlocked.Read(ref totalBytes):N0}");
-
-        lock (events)
-        {
-            _output.WriteLine($"Events ({events.Count}):");
-            foreach (var (evt, time) in events.Take(15))
-            {
-                _output.WriteLine($"  {time:HH:mm:ss.fff} {evt}");
-            }
-        }
+        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
 
         // Should have completed some switches (may coalesce rapid requests)
         Assert.True(status.SwitchesCompleted >= 1, "Should have completed at least one switch");
-        Assert.True(Interlocked.Read(ref totalBytes) > 0, "Should have received data");
+        Assert.True(status.BytesReceived > 0, "Should have received data");
 
         // No sync corruption (keyframe alignment ensures valid TS output)
         Assert.Equal(0, metrics.Priority1.SyncByteError);
@@ -657,30 +542,14 @@ public class FailoverSwitchingTests
             return;
         }
 
-        var switchedToStable = new TaskCompletionSource<bool>();
-        streamer.StreamEvent += (_, args) =>
-        {
-            // Detect when we've connected to the second URL (index 1)
-            if (args.EventType == StreamerEvent.Connected && args.Detail == 1)
-            {
-                switchedToStable.TrySetResult(true);
-            }
-        };
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
-
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(stableUrl);
 
         // Act - start and wait for automatic failover
         Assert.True(streamer.Start());
 
-        // Wait for switch to stable URL or timeout
-        var switched = await Task.WhenAny(
-            switchedToStable.Task,
-            Task.Delay(TimeSpan.FromSeconds(15))
-        ) == switchedToStable.Task;
+        // Wait for switch to stable URL (poll for URL index change) or timeout
+        var switched = await WaitForUrlSwitch(streamer, 1, TimeSpan.FromSeconds(15));
 
         await Task.Delay(TimeSpan.FromSeconds(3)); // Get metrics after stabilization
 
@@ -691,7 +560,7 @@ public class FailoverSwitchingTests
         // Assert
         _output.WriteLine($"Switched to stable: {switched}");
         _output.WriteLine($"Final state: {status.State}, URL: {status.CurrentUrlIndex}");
-        _output.WriteLine($"Bytes received: {Interlocked.Read(ref totalBytes):N0}");
+        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.NotNull(metrics);
         _output.WriteLine($"Quality: {metrics.CalculateQualityScore()}");
@@ -699,7 +568,7 @@ public class FailoverSwitchingTests
         _output.WriteLine($"CC errors: {metrics.Priority1.ContinuityCountError}");
         _output.WriteLine($"Sync errors: {metrics.Priority1.SyncByteError}");
 
-        Assert.True(Interlocked.Read(ref totalBytes) > 0, "Should have received data");
+        Assert.True(status.BytesReceived > 0, "Should have received data");
         Assert.True(metrics.ServiceCount >= 1, "Should detect services after failover");
 
         // Stream should be valid (keyframe alignment ensures no garbage output)
@@ -708,7 +577,7 @@ public class FailoverSwitchingTests
     }
 
     /// <summary>
-    /// Tests that the keyframe alignment event is emitted after a switch.
+    /// Tests that URL switches are properly detected via status polling.
     /// </summary>
     [Fact]
     public async Task KeyframeAlignment_EmitsKeyframeFoundEvent()
@@ -723,49 +592,32 @@ public class FailoverSwitchingTests
             return;
         }
 
-        var events = new List<(StreamerEvent Event, int Detail, DateTime Time)>();
-        streamer.StreamEvent += (_, args) =>
-        {
-            lock (events)
-            {
-                events.Add((args.EventType, args.Detail, DateTime.UtcNow));
-            }
-        };
-
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
-
         streamer.AddUrl(stableUrl);
         streamer.AddUrl(stableUrl);
 
         // Act
         Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        await WaitForStreaming(streamer, TimeSpan.FromSeconds(5));
         await Task.Delay(TimeSpan.FromSeconds(2));
+
+        var statusBefore = streamer.GetStatus();
+        var initialUrlIndex = statusBefore.CurrentUrlIndex;
 
         // Request switch
         streamer.RequestSwitch();
-        await Task.Delay(TimeSpan.FromSeconds(3));
+
+        // Poll for URL switch
+        var switched = await WaitForUrlSwitch(streamer, (initialUrlIndex + 1) % 2, TimeSpan.FromSeconds(3));
 
         var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
-        lock (events)
-        {
-            _output.WriteLine($"Events ({events.Count}):");
-            foreach (var (evt, detail, time) in events)
-            {
-                _output.WriteLine($"  {time:HH:mm:ss.fff} {evt} (detail={detail})");
-            }
+        _output.WriteLine($"Initial URL: {initialUrlIndex}, Final URL: {status.CurrentUrlIndex}");
+        _output.WriteLine($"Switch detected: {switched}");
+        _output.WriteLine($"Switches completed: {status.SwitchesCompleted}");
 
-            // Should see switched/connected events
-            var hasSwitch =
-                events.Any(e => e.Event == StreamerEvent.Switched)
-                || events.Any(e => e.Event == StreamerEvent.Connected && e.Detail > 0);
-            Assert.True(hasSwitch, "Should have switched/connected events");
-        }
-
+        Assert.True(switched || status.SwitchesCompleted >= 1, "Should have switched/connected events");
         Assert.True(status.SwitchesCompleted >= 1, "Should have completed switch");
     }
 
@@ -793,7 +645,6 @@ public class FailoverSwitchingTests
             LowSpeedTimeSec = 2,
             StallsBeforeSwitch = 1, // Switch on first stall
             EnableQualitySwitch = 0, // Disable quality-based switching for deterministic tests
-            Reserved = 0,
         };
 
         return NativeStreamer.TryCreate(config);
@@ -818,7 +669,6 @@ public class FailoverSwitchingTests
             LowSpeedLimitBytes = 100,
             LowSpeedTimeSec = 2,
             StallsBeforeSwitch = 1,
-            Reserved = 0,
         };
 
         var analyzerConfig = TsDuckConfigNative.FromManaged(
@@ -834,14 +684,35 @@ public class FailoverSwitchingTests
         return NativeStreamer.TryCreate(config, analyzerConfig);
     }
 
-    private static async Task WaitForConnection(NativeStreamer streamer, TimeSpan timeout)
+    private static async Task WaitForStreaming(NativeStreamer streamer, TimeSpan timeout)
     {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
         {
-            if (streamer.GetStatus().State == StreamerState.Streaming)
+            var status = streamer.GetStatus();
+            if (status.State == StreamerState.Streaming)
+            {
                 return;
+            }
+
             await Task.Delay(50);
         }
+    }
+
+    private static async Task<bool> WaitForUrlSwitch(NativeStreamer streamer, int expectedIndex, TimeSpan timeout)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
+        {
+            var status = streamer.GetStatus();
+            if (status.CurrentUrlIndex == expectedIndex)
+            {
+                return true;
+            }
+
+            await Task.Delay(50);
+        }
+
+        return false;
     }
 }

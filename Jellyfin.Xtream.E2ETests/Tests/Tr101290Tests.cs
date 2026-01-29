@@ -7,6 +7,10 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// <summary>
 /// End-to-end tests for TR 101 290 monitoring through the native TsDuck pipeline.
 /// Verifies Priority 1 and Priority 2 error detection on live streams.
+/// TR 101 290 defines three priority levels of indicators:
+/// - Priority 1: Critical errors (sync loss, PAT/PMT errors, continuity errors)
+/// - Priority 2: Errors affecting quality (transport errors, PCR errors, PTS errors)
+/// - Priority 3: Informational (service info, bandwidth)
 /// </summary>
 [Collection("E2E")]
 public class Tr101290Tests
@@ -20,6 +24,10 @@ public class Tr101290Tests
         _output = output;
     }
 
+    /// <summary>
+    /// Tests that a clean stream has zero sync byte errors.
+    /// Sync byte (0x47) must appear at the start of each 188-byte packet.
+    /// </summary>
     [Fact]
     public async Task Tr101290_CleanStream_NoSyncErrors()
     {
@@ -33,21 +41,21 @@ public class Tr101290Tests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
-        Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streaming, "Should reach streaming state");
 
         // Act - stream for 5 seconds to collect enough data for metrics
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Total bytes: {Interlocked.Read(ref totalBytes):N0}");
+        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
         _output.WriteLine($"Metrics available: {metrics != null}");
 
         Assert.NotNull(metrics);
@@ -62,6 +70,10 @@ public class Tr101290Tests
         Assert.Equal(0, metrics.Priority2.TransportError);
     }
 
+    /// <summary>
+    /// Tests that a clean stream has zero CRC errors.
+    /// PAT and PMT sections must pass CRC-32 validation per MPEG-2 spec.
+    /// </summary>
     [Fact]
     public async Task Tr101290_CleanStream_NoCrcErrors()
     {
@@ -75,12 +87,11 @@ public class Tr101290Tests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
-        Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streaming, "Should reach streaming state");
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
@@ -94,6 +105,11 @@ public class Tr101290Tests
         Assert.Equal(0, metrics.Priority2.CrcError);
     }
 
+    /// <summary>
+    /// Tests that corrupted streams trigger TR 101 290 errors.
+    /// The test server injects bad sync bytes and TEI flags.
+    /// Dropped packets cause continuity errors, TEI flag triggers transport errors.
+    /// </summary>
     [Fact]
     public async Task Tr101290_CorruptedStream_DetectsErrors()
     {
@@ -110,22 +126,22 @@ public class Tr101290Tests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
-        Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streaming, "Should reach streaming state");
 
         // Act - stream corrupted data for 5 seconds
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
         Assert.NotNull(metrics);
-        _output.WriteLine($"Total bytes: {Interlocked.Read(ref totalBytes):N0}");
+        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
         _output.WriteLine($"Priority 1 - SyncByteError: {metrics.Priority1.SyncByteError}");
         _output.WriteLine($"Priority 1 - ContinuityCountError: {metrics.Priority1.ContinuityCountError}");
         _output.WriteLine($"Priority 2 - TransportError: {metrics.Priority2.TransportError}");
@@ -133,9 +149,16 @@ public class Tr101290Tests
         // The corrupted stream produces continuity errors (from dropped packets)
         // and/or transport errors (from TEI flag)
         var totalErrors = metrics.Priority1.TotalErrors + metrics.Priority2.TotalErrors;
-        Assert.True(totalErrors > 0, "Should have detected errors (continuity or transport) from corrupted stream");
+        Assert.True(
+            totalErrors > 0,
+            $"Should have detected errors from corrupted stream. P1: {metrics.Priority1.TotalErrors}, P2: {metrics.Priority2.TotalErrors}"
+        );
     }
 
+    /// <summary>
+    /// Tests that Transport Error Indicator (TEI) flags are detected.
+    /// The TEI bit in the TS header indicates the stream contains errors.
+    /// </summary>
     [Fact]
     public async Task Tr101290_CorruptedStream_DetectsTransportErrors()
     {
@@ -149,12 +172,11 @@ public class Tr101290Tests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
-        Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streaming, "Should reach streaming state");
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
@@ -167,10 +189,14 @@ public class Tr101290Tests
         // TEI flag set on packets should trigger transport errors
         Assert.True(
             metrics.Priority2.TransportError > 0,
-            "Should have detected transport errors (TEI flag) from corrupted stream"
+            $"Should have detected transport errors (TEI flag) from corrupted stream, got {metrics.Priority2.TransportError}"
         );
     }
 
+    /// <summary>
+    /// Tests that PCR repetition is within TR 101 290 limits (40ms).
+    /// Uses packet-distance timing, not wall-clock, to avoid false positives from network jitter.
+    /// </summary>
     [Fact]
     public async Task Tr101290_CleanStream_NoPcrRepetitionErrors()
     {
@@ -187,12 +213,11 @@ public class Tr101290Tests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
-        Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streaming, "Should reach streaming state");
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
@@ -207,6 +232,9 @@ public class Tr101290Tests
         Assert.Equal(0, metrics.Priority2.PcrRepetitionError);
     }
 
+    /// <summary>
+    /// Tests that PTS values are present within the TR 101 290 limit of 700ms.
+    /// </summary>
     [Fact]
     public async Task Tr101290_CleanStream_NoPtsErrors()
     {
@@ -220,12 +248,11 @@ public class Tr101290Tests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
-        Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streaming, "Should reach streaming state");
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
@@ -239,6 +266,10 @@ public class Tr101290Tests
         Assert.Equal(0, metrics.Priority2.PtsError);
     }
 
+    /// <summary>
+    /// Tests that a well-formed stream achieves a high quality score.
+    /// Quality score is calculated from TR 101 290 error counts.
+    /// </summary>
     [Fact]
     public async Task Tr101290_CleanStream_HighQualityScore()
     {
@@ -253,12 +284,11 @@ public class Tr101290Tests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
-        Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streaming, "Should reach streaming state");
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
@@ -282,6 +312,9 @@ public class Tr101290Tests
         Assert.Equal(0, metrics.Priority2.PcrRepetitionError);
     }
 
+    /// <summary>
+    /// Tests that corrupted streams have a degraded quality score.
+    /// </summary>
     [Fact]
     public async Task Tr101290_CorruptedStream_QualityScoreDegrades()
     {
@@ -295,12 +328,11 @@ public class Tr101290Tests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
-        Assert.True(streamer.Start());
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Assert.True(streaming, "Should reach streaming state");
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
@@ -313,8 +345,15 @@ public class Tr101290Tests
 
         // Corrupted stream should have at least some errors
         var totalErrors = metrics.Priority1.TotalErrors + metrics.Priority2.TotalErrors;
-        Assert.True(totalErrors > 0, "Corrupted stream should produce TR 101 290 errors");
+        Assert.True(
+            totalErrors > 0,
+            $"Corrupted stream should produce TR 101 290 errors, got P1:{metrics.Priority1.TotalErrors}, P2:{metrics.Priority2.TotalErrors}"
+        );
     }
+
+    // ========================================================================
+    // Helper Methods
+    // ========================================================================
 
     private static NativeStreamer? CreateStreamerWithAnalyzer()
     {
@@ -335,7 +374,6 @@ public class Tr101290Tests
             LowSpeedLimitBytes = 100,
             LowSpeedTimeSec = 5,
             StallsBeforeSwitch = 2,
-            Reserved = 0,
         };
 
         var analyzerConfig = TsDuckConfigNative.FromManaged(
@@ -349,16 +387,5 @@ public class Tr101290Tests
         );
 
         return NativeStreamer.TryCreate(config, analyzerConfig);
-    }
-
-    private static async Task WaitForConnection(NativeStreamer streamer, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (streamer.GetStatus().State == StreamerState.Streaming)
-                return;
-            await Task.Delay(50);
-        }
     }
 }

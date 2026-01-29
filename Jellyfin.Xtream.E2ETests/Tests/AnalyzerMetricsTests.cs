@@ -34,8 +34,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -45,10 +43,11 @@ public class AnalyzerMetricsTests
         await Task.Delay(TimeSpan.FromSeconds(3));
 
         var metrics = streamer.GetMetrics();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Bytes received: {Interlocked.Read(ref totalBytes):N0}");
+        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
         Assert.NotNull(metrics);
         _output.WriteLine($"Metrics timestamp: {metrics.Timestamp:O}");
         Assert.False(metrics.IsStale, "Metrics should not be stale immediately after streaming");
@@ -67,8 +66,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -109,8 +106,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -149,8 +144,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -193,25 +186,25 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
         await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+
+        // Stream for a while to collect stats
         await Task.Delay(TimeSpan.FromSeconds(5));
 
-        var metrics = streamer.GetMetrics();
+        // Assert - check status shows packets were processed
         var status = streamer.GetStatus();
+        var metrics = streamer.GetMetrics();
+        _output.WriteLine($"Streamer status:");
+        _output.WriteLine($"  State: {status.State}");
+        _output.WriteLine($"  Bytes received: {status.BytesReceived:N0}");
+        _output.WriteLine($"  Packets output: {status.PacketsOutput:N0}");
+
         streamer.Stop();
 
-        // Assert
-        Assert.NotNull(metrics);
-        _output.WriteLine($"Packets output: {status.PacketsOutput}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Bitrate: {metrics.TsBitrate} bps");
-
-        Assert.True(status.PacketsOutput > 0, "Should have output packets through restamp pipeline");
+        Assert.True(status.PacketsOutput > 0, "Should have output packets");
     }
 
     [Fact]
@@ -227,8 +220,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -260,8 +251,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         // Pre-start: should be idle
@@ -304,8 +293,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -336,8 +323,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -371,8 +356,6 @@ public class AnalyzerMetricsTests
             return;
         }
 
-        var totalBytes = 0L;
-        streamer.SetOutputCallback((ptr, len) => Interlocked.Add(ref totalBytes, len));
         streamer.AddUrl(url);
 
         Assert.True(streamer.Start());
@@ -380,11 +363,12 @@ public class AnalyzerMetricsTests
         await Task.Delay(TimeSpan.FromSeconds(5));
 
         var metrics = streamer.GetMetrics();
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
         Assert.NotNull(metrics);
-        _output.WriteLine($"Bytes: {Interlocked.Read(ref totalBytes):N0}");
+        _output.WriteLine($"Bytes: {status.BytesReceived:N0}");
         _output.WriteLine($"Services: {metrics.ServiceCount}, PIDs: {metrics.PidCount}");
         _output.WriteLine($"Bitrate: {metrics.TsBitrate} bps");
 
@@ -414,7 +398,6 @@ public class AnalyzerMetricsTests
             LowSpeedLimitBytes = 100,
             LowSpeedTimeSec = 5,
             StallsBeforeSwitch = 2,
-            Reserved = 0,
         };
 
         var analyzerConfig = TsDuckConfigNative.FromManaged(
@@ -449,7 +432,6 @@ public class AnalyzerMetricsTests
             LowSpeedLimitBytes = 100,
             LowSpeedTimeSec = 5,
             StallsBeforeSwitch = 2,
-            Reserved = 0,
         };
 
         var analyzerConfig = TsDuckConfigNative.FromManaged(TsDuckConfiguration.Default);

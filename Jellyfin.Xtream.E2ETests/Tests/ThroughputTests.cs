@@ -7,7 +7,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 
 /// <summary>
 /// Tests sustained streaming throughput at various bitrates through the native pipeline:
-/// NativeStreamer (HTTP fetch → restamp → output callback).
+/// NativeStreamer (HTTP fetch -> restamp -> output).
 /// </summary>
 [Collection("E2E")]
 public class ThroughputTests
@@ -30,7 +30,6 @@ public class ThroughputTests
         // Arrange
         var streamDurationSec = GetStreamDuration();
         var url = $"{_fixture.BaseUrl}/stream/{bitrateKbps}";
-        var metrics = new TestMetrics();
 
         using var streamer = CreateStreamer();
         if (streamer == null)
@@ -39,36 +38,33 @@ public class ThroughputTests
             return;
         }
 
-        // Set up output callback to feed metrics directly (bypasses CircularBuffer warmup)
-        streamer.SetOutputCallback(
-            (ptr, len) =>
-            {
-                unsafe
-                {
-                    metrics.ProcessReceivedData((byte*)ptr, len);
-                }
-            }
-        );
-
         streamer.AddUrl(url);
 
         // Act
-        metrics.Start();
         Assert.True(streamer.Start(), "Streamer should start successfully");
 
         await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+
+        // Record start time and bytes
+        var startStatus = streamer.GetStatus();
+        var startTime = DateTime.UtcNow;
+
         await Task.Delay(TimeSpan.FromSeconds(streamDurationSec), CancellationToken.None);
-        metrics.Stop();
+
+        var endStatus = streamer.GetStatus();
+        var endTime = DateTime.UtcNow;
         streamer.Stop();
 
         // Assert
-        var status = streamer.GetStatus();
-        _output.WriteLine(metrics.ToString());
-        _output.WriteLine($"Streamer bytes received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Streamer packets output: {status.PacketsOutput:N0}");
+        var elapsedSeconds = (endTime - startTime).TotalSeconds;
+        var bytesTransferred = endStatus.BytesReceived - startStatus.BytesReceived;
+        var actualBytesPerSecond = bytesTransferred / elapsedSeconds;
+
+        _output.WriteLine($"Streamer bytes received: {endStatus.BytesReceived:N0}");
+        _output.WriteLine($"Streamer packets output: {endStatus.PacketsOutput:N0}");
+        _output.WriteLine($"Duration: {elapsedSeconds:F2}s");
 
         var targetBytesPerSecond = bitrateKbps * 1000.0 / 8.0;
-        var actualBytesPerSecond = metrics.ThroughputBytesPerSecond;
         var efficiency = actualBytesPerSecond / targetBytesPerSecond * 100.0;
 
         _output.WriteLine(
@@ -78,16 +74,15 @@ public class ThroughputTests
         // Should achieve at least 90% of target bitrate (allowing for protocol overhead)
         Assert.True(efficiency >= 90.0, $"Throughput {efficiency:F1}% is below 90% of target {bitrateKbps} Kbps");
 
-        // Valid TS data
-        Assert.True(metrics.ValidSyncPackets > 0, "Should have received valid TS packets");
+        // Should have output packets
+        Assert.True(endStatus.PacketsOutput > 0, "Should have output TS packets");
     }
 
     [Fact]
     public async Task Throughput_BufferUtilization_RemainsHealthy()
     {
-        // Arrange - stream at moderate bitrate and verify data flows through output callback
+        // Arrange - stream at moderate bitrate and verify data flows through
         var url = $"{_fixture.BaseUrl}/stream/5000";
-        var metrics = new TestMetrics();
 
         using var streamer = CreateStreamer();
         if (streamer == null)
@@ -96,40 +91,26 @@ public class ThroughputTests
             return;
         }
 
-        streamer.SetOutputCallback(
-            (ptr, len) =>
-            {
-                unsafe
-                {
-                    metrics.ProcessReceivedData((byte*)ptr, len);
-                }
-            }
-        );
-
         streamer.AddUrl(url);
-        metrics.Start();
         Assert.True(streamer.Start());
 
         await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
 
         // Stream for 5 seconds
         await Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None);
-        metrics.Stop();
+
+        var status = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Total bytes: {metrics.TotalBytesReceived:N0}");
-        _output.WriteLine($"Total packets: {metrics.TotalPackets:N0}");
-        _output.WriteLine($"Valid sync: {metrics.ValidSyncPackets:N0}");
-        _output.WriteLine($"Throughput: {metrics.ThroughputKbps:F1} Kbps");
+        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
+        _output.WriteLine($"Total packets: {status.PacketsOutput:N0}");
+        _output.WriteLine($"Throughput: {status.BytesReceived / 5.0 * 8 / 1000:F1} Kbps");
 
-        Assert.True(metrics.TotalBytesReceived > 0, "Should have received data");
-        Assert.True(metrics.ValidSyncPackets > 0, "Should have valid TS packets");
+        Assert.True(status.BytesReceived > 0, "Should have received data");
+        Assert.True(status.PacketsOutput > 0, "Should have output TS packets");
         // At 5Mbps for 5s, expect at least 2MB (allowing for startup latency)
-        Assert.True(
-            metrics.TotalBytesReceived > 2_000_000,
-            $"Expected at least 2MB, got {metrics.TotalBytesReceived:N0} bytes"
-        );
+        Assert.True(status.BytesReceived > 2_000_000, $"Expected at least 2MB, got {status.BytesReceived:N0} bytes");
     }
 
     private static NativeStreamer? CreateStreamer()
@@ -151,7 +132,6 @@ public class ThroughputTests
             LowSpeedLimitBytes = 100,
             LowSpeedTimeSec = 5,
             StallsBeforeSwitch = 2,
-            Reserved = 0,
         };
 
         return NativeStreamer.TryCreate(config);

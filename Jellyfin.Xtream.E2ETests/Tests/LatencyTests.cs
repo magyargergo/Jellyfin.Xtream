@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using Jellyfin.Xtream.E2ETests.Infrastructure;
-using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Streaming.Native;
 using Xunit.Abstractions;
 
@@ -8,7 +7,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 
 /// <summary>
 /// Tests pipeline startup latency: time from NativeStreamer.Start() to first
-/// data byte arriving at the output callback.
+/// data arriving (detected via GetStatus().BytesReceived).
 /// </summary>
 [Collection("E2E")]
 public class LatencyTests
@@ -36,7 +35,7 @@ public class LatencyTests
         probe.Dispose();
 
         const int iterations = 20;
-        var metrics = new TestMetrics();
+        var measurements = new List<double>();
         var url = $"{_fixture.BaseUrl}/stream/5000";
 
         for (int i = 0; i < iterations; i++)
@@ -44,20 +43,20 @@ public class LatencyTests
             var latency = await MeasureFirstByteLatency(url);
             if (latency >= 0)
             {
-                metrics.RecordLatency(latency);
+                measurements.Add(latency);
             }
         }
 
         // Assert
-        var measurements = metrics.LatencyMeasurementsMs;
         Assert.True(
             measurements.Count >= iterations / 2,
             $"Expected at least {iterations / 2} successful measurements, got {measurements.Count}"
         );
 
-        var p50 = metrics.GetLatencyPercentile(50);
-        var p95 = metrics.GetLatencyPercentile(95);
-        var p99 = metrics.GetLatencyPercentile(99);
+        measurements.Sort();
+        var p50 = GetPercentile(measurements, 50);
+        var p95 = GetPercentile(measurements, 95);
+        var p99 = GetPercentile(measurements, 99);
 
         _output.WriteLine($"Latency measurements: {measurements.Count}");
         _output.WriteLine($"  p50: {p50:F2}ms");
@@ -105,9 +104,7 @@ public class LatencyTests
         // Arrange - test that CircularBufferReadStream's warmup phase completes quickly
         // Use high bitrate (50 Mbps) so the 4MB warmup fills in < 1 second
         var url = $"{_fixture.BaseUrl}/stream/50000";
-        const int bufferSize = 8 * 1024 * 1024;
 
-        using var writeStream = new CircularBufferWriteStream(bufferSize);
         using var streamer = CreateStreamer();
         if (streamer == null)
         {
@@ -115,41 +112,30 @@ public class LatencyTests
             return;
         }
 
-        streamer.SetOutputCallback(
-            (ptr, len) =>
-            {
-                unsafe
-                {
-                    writeStream.Write(new ReadOnlySpan<byte>((void*)ptr, len));
-                }
-            }
-        );
-
         streamer.AddUrl(url);
         var sw = Stopwatch.StartNew();
         Assert.True(streamer.Start());
 
-        // Act - create reader and measure time to first successful read
-        using var readStream = new CircularBufferReadStream(writeStream);
-        var readBuffer = new byte[4096];
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        int bytesRead = 0;
-
-        try
+        // Act - poll for data arriving
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTime.UtcNow < deadline)
         {
-            while (bytesRead == 0 && !cts.IsCancellationRequested)
+            var status = streamer.GetStatus();
+            if (status.BytesReceived > 4 * 1024 * 1024) // 4MB warmup equivalent
             {
-                bytesRead = await readStream.ReadAsync(readBuffer, cts.Token);
+                break;
             }
+
+            await Task.Delay(50);
         }
-        catch (OperationCanceledException) { }
 
         sw.Stop();
+        var status2 = streamer.GetStatus();
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Time to first read: {sw.ElapsedMilliseconds}ms, bytes: {bytesRead}");
-        Assert.True(bytesRead > 0, "Should have read data");
+        _output.WriteLine($"Time to 4MB: {sw.ElapsedMilliseconds}ms, bytes: {status2.BytesReceived:N0}");
+        Assert.True(status2.BytesReceived > 0, "Should have received data");
         // Warmup should complete within 10 seconds (generous for CI)
         Assert.True(sw.ElapsedMilliseconds < 10000, $"Warmup took {sw.ElapsedMilliseconds}ms, expected < 10000ms");
     }
@@ -162,37 +148,40 @@ public class LatencyTests
             return -1;
         }
 
-        var firstByteReceived = new TaskCompletionSource<bool>();
-        var sw = new Stopwatch();
-
-        streamer.SetOutputCallback(
-            (ptr, len) =>
-            {
-                firstByteReceived.TrySetResult(true);
-            }
-        );
-
         streamer.AddUrl(url);
 
         // Start and measure
-        sw.Start();
+        var sw = Stopwatch.StartNew();
         streamer.Start();
 
-        using var cts = new CancellationTokenSource(timeoutMs);
-        cts.Token.Register(() => firstByteReceived.TrySetCanceled());
+        // Poll for first byte received
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            var status = streamer.GetStatus();
+            if (status.BytesReceived > 0)
+            {
+                sw.Stop();
+                streamer.Stop();
+                return sw.Elapsed.TotalMilliseconds;
+            }
 
-        try
-        {
-            await firstByteReceived.Task;
-            sw.Stop();
-            streamer.Stop();
-            return sw.Elapsed.TotalMilliseconds;
+            await Task.Delay(5);
         }
-        catch (OperationCanceledException)
+
+        streamer.Stop();
+        return -1;
+    }
+
+    private static double GetPercentile(List<double> sortedData, int percentile)
+    {
+        if (sortedData.Count == 0)
         {
-            streamer.Stop();
-            return -1;
+            return 0;
         }
+
+        var index = (int)Math.Ceiling(percentile / 100.0 * sortedData.Count) - 1;
+        return sortedData[Math.Max(0, Math.Min(index, sortedData.Count - 1))];
     }
 
     private static NativeStreamer? CreateStreamer()
