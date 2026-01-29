@@ -16,13 +16,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Xtream.Service.Resilience;
 using Jellyfin.Xtream.Service.Streaming.Native;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
@@ -37,8 +35,18 @@ namespace Jellyfin.Xtream.Service;
 /// <summary>
 /// A live stream implementation that broadcasts a single IPTV source to multiple consumers.
 /// Uses a circular buffer for multi-reader support with a single HTTP connection.
-/// Solves HTTP 406 errors by maintaining only one connection to the provider.
 /// </summary>
+/// <remarks>
+/// <para>
+/// This is a thin layer that:
+/// 1. Sets up providers with URLs and initial health scores
+/// 2. Reads buffer data from shared memory (C++ writes to it)
+/// 3. Serves bytes to Jellyfin consumers
+/// </para>
+/// <para>
+/// C++ handles all decision making: URL selection, failover, health tracking, outcome recording.
+/// </para>
+/// </remarks>
 public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 {
     /// <summary>
@@ -63,6 +71,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private const double BufferNearFullThresholdPercent = 90.0;
     private const int BufferUnderrunNotificationThreshold = 5;
 
+    // Shared memory read buffer size
+    private const int SharedMemoryReadSize = 65536;
+
     /// <summary>
     /// Global registry of all active Restream instances for monitoring and management.
     /// </summary>
@@ -71,9 +82,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private readonly ILogger<Restream> _logger;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IDiscordNotificationService? _discordService;
-    private readonly StreamingOutcomeRecorder? _outcomeRecorder;
     private readonly IReadOnlyList<string> _urls;
-    private readonly IReadOnlyList<string> _providerIds;
     private readonly string _sourceUrl;
     private readonly SemaphoreSlim _openLock = new(1, 1);
     private readonly CircularBufferWriteStream _buffer;
@@ -92,11 +101,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
     // Native HTTP streamer with failover and mid-stream switching
     private NativeStreamer? _nativeStreamer;
-
-    // Track current provider for outcome recording (captured at connection time)
-    private volatile string? _currentConnectedProviderId;
-    private volatile int _currentConnectedUrlIndex = -1;
-    private long _connectionStartTicks;
 
     /// <inheritdoc />
     public int ConsumerCount
@@ -133,27 +137,23 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <param name="logger">Instance of the <see cref="ILogger{Restream}"/> interface.</param>
     /// <param name="loggerFactory">Instance of the <see cref="ILoggerFactory"/> interface.</param>
     /// <param name="mediaSource">The media which must be restreamed.</param>
-    /// <param name="urls">The list of URLs to use for streaming (native handles failover/rotation).</param>
-    /// <param name="providerIds">The provider IDs corresponding to each URL (same order as urls).</param>
+    /// <param name="urls">The list of URLs to use for streaming (C++ handles failover/selection).</param>
+    /// <param name="initialScores">Initial health scores for each URL (same order as urls). C++ manages scores after setup.</param>
     /// <param name="discordService">Optional Discord notification service.</param>
-    /// <param name="outcomeRecorder">Optional streaming outcome recorder for health tracking.</param>
     public Restream(
         IServerApplicationHost appHost,
         ILogger<Restream> logger,
         ILoggerFactory loggerFactory,
         MediaSourceInfo mediaSource,
         IReadOnlyList<string> urls,
-        IReadOnlyList<string> providerIds,
-        IDiscordNotificationService? discordService = null,
-        StreamingOutcomeRecorder? outcomeRecorder = null
+        IReadOnlyList<double>? initialScores = null,
+        IDiscordNotificationService? discordService = null
     )
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
         _discordService = discordService;
-        _outcomeRecorder = outcomeRecorder;
         _urls = urls;
-        _providerIds = providerIds;
         MediaSource = mediaSource;
         _tokenSource = new CancellationTokenSource();
         _streamQuality = DetectStreamQuality(mediaSource);
@@ -181,7 +181,12 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             MediaSource.Id,
             _activeStreams.Count
         );
+
+        // Store initial scores for use when creating native streamer
+        _initialScores = initialScores;
     }
+
+    private readonly IReadOnlyList<double>? _initialScores;
 
     /// <summary>
     /// Finalizes an instance of the <see cref="Restream"/> class.
@@ -405,13 +410,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
     /// <summary>
     /// Broadcasts data from the native HTTP streamer to the circular buffer.
-    /// The native streamer handles HTTP connections, redirects, retry/backoff,
-    /// stall detection, packet alignment, restamping, and failover/rotation.
+    /// Reads from shared memory that C++ writes to.
+    /// C++ handles HTTP connections, redirects, retry/backoff, stall detection,
+    /// packet alignment, restamping, failover/rotation, and outcome recording.
     /// </summary>
     private async Task BroadcastFromSourceAsync(CancellationToken cancellationToken)
     {
         var streamerConfig = TsDuckStreamerConfigNative.Default;
-
         var analyzerConfig = TsDuckConfigNative.FromManaged(TsDuckConfiguration.Default);
 
         _nativeStreamer?.Dispose();
@@ -420,196 +425,169 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         if (_nativeStreamer == null)
         {
             _killReason = "Native streamer unavailable";
-
             return;
         }
 
         try
         {
-            // Add all URLs upfront - native handles failover/rotation
-            foreach (var url in _urls)
+            // Add all URLs with initial health scores
+            // C++ handles ongoing health tracking and URL selection
+            for (int i = 0; i < _urls.Count; i++)
             {
-                _nativeStreamer.AddUrl(url);
+                var url = _urls[i];
+                var healthScore = _initialScores != null && i < _initialScores.Count ? _initialScores[i] : 50.0; // Neutral score for unknown providers
+
+                _nativeStreamer.AddUrlWithScore(url, healthScore);
             }
-
-            _nativeStreamer.SetOutputCallback(
-                (dataPtr, length) =>
-                {
-                    unsafe
-                    {
-                        _buffer.Write(new ReadOnlySpan<byte>((void*)dataPtr, length));
-                    }
-                }
-            );
-
-            _nativeStreamer.StreamEvent += OnNativeStreamerEvent;
 
             if (!_nativeStreamer.Start())
             {
                 _killReason = "Native streamer start failed";
-
                 return;
             }
 
             _buffer.SignalSourceConnected();
 
-            await RunHealthMonitoringLoopAsync(cancellationToken).ConfigureAwait(false);
+            // Read from shared memory and write to our buffer
+            await ReadFromSharedMemoryAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            _nativeStreamer.StreamEvent -= OnNativeStreamerEvent;
-
             _nativeStreamer.Stop();
-
             _buffer.SignalSourceDisconnected();
         }
     }
 
     /// <summary>
-    /// Handles events from the native streamer (connected, disconnected, switched, etc.).
-    /// Records streaming outcomes for health-based provider selection.
+    /// Reads data from shared memory ring buffer and writes to the circular buffer.
     /// </summary>
-    /// <remarks>
-    /// This handler is invoked on the native worker thread. Must be thread-safe.
-    /// For events Connected, Switched, DataReceived, QualityDegraded: detail = URL index.
-    /// For Error: detail = curl error code or HTTP status.
-    /// For Stalled: detail = milliseconds since last data.
-    /// For Disconnected: detail = HTTP status.
-    /// For Reconnecting: detail = backoff delay in ms.
-    /// </remarks>
-    private void OnNativeStreamerEvent(object? sender, StreamerEventArgs e)
+    private async Task ReadFromSharedMemoryAsync(CancellationToken cancellationToken)
     {
-        switch (e.EventType)
+        using var sharedMemReader = _nativeStreamer!.CreateReader();
+        var readBuffer = new byte[SharedMemoryReadSize];
+        var lastHealthCheckTime = DateTime.UtcNow;
+
+        while (!cancellationToken.IsCancellationRequested)
         {
-            case StreamerEvent.Connected:
-                // detail = URL index for Connected event
-                var connectedUrlIndex = e.Detail;
-                var connectedProviderId = GetProviderIdByIndex(connectedUrlIndex);
+            // Read available data from shared memory
+            var bytesRead = sharedMemReader.Read(readBuffer);
 
-                // Capture connection state for subsequent events (Error, Stalled, etc.)
-                _currentConnectedUrlIndex = connectedUrlIndex;
-                _currentConnectedProviderId = connectedProviderId;
-                Interlocked.Exchange(ref _connectionStartTicks, Stopwatch.GetTimestamp());
+            if (bytesRead > 0)
+            {
+                // Write to our circular buffer
+                _buffer.Write(readBuffer.AsSpan(0, bytesRead));
 
-                _buffer.SignalSourceConnected();
-                break;
-
-            case StreamerEvent.DataReceived:
-                // detail = URL index for DataReceived event (first data after switch)
-                var dataProviderId = GetProviderIdByIndex(e.Detail);
-                if (dataProviderId != null)
+                // Check for discontinuity flag from C++ (stream switch happened)
+                if (sharedMemReader.ConsumeDiscontinuityFlag())
                 {
-                    var connectionTicks = Stopwatch.GetTimestamp() - Interlocked.Read(ref _connectionStartTicks);
-                    var connectionTimeMs = (connectionTicks * 1000.0) / Stopwatch.Frequency;
-                    // Use a good default quality score; real quality comes from TR 101 290 analysis
-                    _outcomeRecorder?.RecordSuccess(dataProviderId, qualityScore: 80, connectionTimeMs);
+                    _buffer.MarkDiscontinuityAligned();
                 }
-
+            }
+            else if (sharedMemReader.IsEndOfStream)
+            {
+                _logger.PluginLogInformation(
+                    "Shared memory signaled end of stream for channel {ChannelId}",
+                    MediaSource.Id
+                );
+                _killReason = "Stream ended";
                 break;
-
-            case StreamerEvent.QualityDegraded:
-                // detail = URL index for QualityDegraded event
-                var degradedProviderId = GetProviderIdByIndex(e.Detail);
-                if (degradedProviderId != null)
-                {
-                    _outcomeRecorder?.RecordFailure(degradedProviderId, FailureType.QualityDegradation);
-                }
-
+            }
+            else if (sharedMemReader.HasError)
+            {
+                _logger.PluginLogWarning("Shared memory signaled error for channel {ChannelId}", MediaSource.Id);
+                _killReason = "Stream error";
                 break;
+            }
+            else
+            {
+                // No data available, brief wait
+                await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+            }
 
-            case StreamerEvent.Stalled:
-                // detail = milliseconds since last data, use captured provider ID
-                var stalledProviderId = _currentConnectedProviderId;
-                if (stalledProviderId != null)
-                {
-                    _outcomeRecorder?.RecordFailure(stalledProviderId, FailureType.DataStall);
-                }
-
-                break;
-
-            case StreamerEvent.Error:
-                // detail = curl error code or HTTP status, use captured provider ID
-                var errorProviderId = _currentConnectedProviderId;
-                if (errorProviderId != null)
-                {
-                    var failureType = MapCurlErrorToFailureType(e.Detail);
-                    _outcomeRecorder?.RecordFailure(errorProviderId, failureType);
-                }
-
-                break;
-
-            case StreamerEvent.Disconnected:
-                // detail = HTTP status, use captured provider ID
-                var disconnectedProviderId = _currentConnectedProviderId;
-                if (disconnectedProviderId != null && e.Detail >= 400)
-                {
-                    // Record HTTP error disconnections (4xx, 5xx)
-                    var failureType = StreamingOutcomeRecorder.MapHttpStatusToFailureType(e.Detail);
-                    _outcomeRecorder?.RecordFailure(disconnectedProviderId, failureType);
-                }
-
-                _buffer.SignalSourceDisconnected();
-                _buffer.MarkDiscontinuityAligned();
-                break;
-
-            case StreamerEvent.Reconnecting:
-                // detail = backoff delay in ms
-                // Record soft failure - the provider needed reconnection
-                var reconnectProviderId = _currentConnectedProviderId;
-                if (reconnectProviderId != null)
-                {
-                    // Use DataStall as a soft failure indicator for reconnection needs
-                    _outcomeRecorder?.RecordFailure(reconnectProviderId, FailureType.DataStall);
-                }
-
-                // Reset connection timing for the retry
-                Interlocked.Exchange(ref _connectionStartTicks, Stopwatch.GetTimestamp());
-                _buffer.SignalReconnecting();
-                break;
-
-            case StreamerEvent.Switched:
-                // detail = new URL index after switch
-                var newUrlIndex = e.Detail;
-                var newProviderId = GetProviderIdByIndex(newUrlIndex);
-
-                // Update tracked provider for new connection
-                _currentConnectedUrlIndex = newUrlIndex;
-                _currentConnectedProviderId = newProviderId;
-                Interlocked.Exchange(ref _connectionStartTicks, Stopwatch.GetTimestamp());
-
-                _buffer.MarkDiscontinuityAligned();
-                break;
-
-            case StreamerEvent.Stopped:
-                // Clear tracked provider
-                _currentConnectedProviderId = null;
-                _currentConnectedUrlIndex = -1;
-                break;
+            // Periodic health check
+            var now = DateTime.UtcNow;
+            if ((now - lastHealthCheckTime).TotalSeconds >= HealthCheckIntervalSeconds)
+            {
+                lastHealthCheckTime = now;
+                PerformHealthCheck();
+            }
         }
     }
 
     /// <summary>
-    /// Gets the provider ID for a given URL index.
+    /// Performs periodic health checks on the stream.
     /// </summary>
-    /// <param name="urlIndex">The 0-based URL index from native events.</param>
-    /// <returns>The provider ID, or null if index is out of range.</returns>
-    private string? GetProviderIdByIndex(int urlIndex)
+    private void PerformHealthCheck()
     {
-        return urlIndex >= 0 && urlIndex < _providerIds.Count ? _providerIds[urlIndex] : null;
-    }
-
-    /// <summary>
-    /// Gets the current provider ID based on the native streamer's current URL index.
-    /// Thread-safe by reading status through a helper method.
-    /// </summary>
-    private string? GetCurrentProviderId()
-    {
-        if (_providerIds.Count == 0 || !TryGetStreamerStatus(out var status))
+        if (!TryGetStreamerStatus(out var status))
         {
-            return null;
+            return;
         }
 
-        return GetProviderIdByIndex(status.CurrentUrlIndex);
+        if (status.IsTerminal)
+        {
+            _logger.PluginLogWarning(
+                "Native streamer reached terminal state {State} for channel {ChannelId}",
+                status.State,
+                MediaSource.Id
+            );
+            _killReason = $"Streamer: {status.State}";
+            Dispose();
+            return;
+        }
+
+        // Buffer health checks
+        var bufferFillPct =
+            (double)(_buffer.TotalBytesWritten % _buffer.BufferSize) * 100.0 / (double)_buffer.BufferSize;
+
+        if (bufferFillPct < BufferUnderrunThresholdPercent)
+        {
+            _bufferUnderrunCount++;
+
+            if (_bufferUnderrunCount % 3 == 1)
+            {
+                _logger.PluginLogWarning(
+                    "Buffer underrun #{Count} for channel {ChannelId}. Only {FillPct:F1}% filled.",
+                    _bufferUnderrunCount,
+                    MediaSource.Id,
+                    bufferFillPct
+                );
+
+                if (_bufferUnderrunCount >= BufferUnderrunNotificationThreshold)
+                {
+                    var fillPct = bufferFillPct;
+                    var count = _bufferUnderrunCount;
+                    _discordService.SendFireAndForget(svc =>
+                        svc.NotifyBufferHealthIssueAsync(
+                            MediaSource.Id,
+                            MediaSource.Name ?? "Unknown",
+                            count,
+                            fillPct,
+                            0.0
+                        )
+                    );
+                }
+            }
+        }
+        else if (bufferFillPct > BufferNearFullThresholdPercent)
+        {
+            _bufferHealthWarnings++;
+            _logger.LogDebugIfEnabled(
+                "Buffer for channel {ChannelId} is {FillPct:F1}% full. Consumers: {Consumers}",
+                MediaSource.Id,
+                bufferFillPct,
+                ConsumerCount
+            );
+        }
+
+        // Progress logging
+        _logger.LogDebugIfEnabled(
+            "Broadcast progress for channel {ChannelId}: {TotalMB} MB written, {Consumers} consumers, buffer {FillPct:F1}%",
+            MediaSource.Id,
+            _buffer.TotalBytesWritten / 1048576,
+            ConsumerCount,
+            bufferFillPct
+        );
     }
 
     /// <summary>
@@ -619,8 +597,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <returns>True if status was retrieved, false if streamer is null or disposed.</returns>
     private bool TryGetStreamerStatus(out StreamerStatus status)
     {
-        // Access the field directly - the NativeStreamer.GetStatus() method is thread-safe
-        // and handles internal synchronization. We check for null to avoid NRE.
         var streamer = _nativeStreamer;
         if (streamer == null)
         {
@@ -630,139 +606,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         status = streamer.GetStatus();
         return true;
-    }
-
-    /// <summary>
-    /// Maps a libcurl error code to a <see cref="FailureType"/>.
-    /// </summary>
-    private static FailureType MapCurlErrorToFailureType(int curlError)
-    {
-        return curlError switch
-        {
-            28 => FailureType.ConnectionTimeout, // CURLE_OPERATION_TIMEDOUT
-            7 => FailureType.ConnectionTimeout, // CURLE_COULDNT_CONNECT
-            6 => FailureType.ConnectionTimeout, // CURLE_COULDNT_RESOLVE_HOST
-            22 => FailureType.HttpError, // CURLE_HTTP_RETURNED_ERROR
-            94 => FailureType.AuthenticationFailed, // CURLE_AUTH_ERROR
-            47 => FailureType.CapacityExceeded, // CURLE_TOO_MANY_REDIRECTS
-            56 => FailureType.DataStall, // CURLE_RECV_ERROR
-            55 => FailureType.DataStall, // CURLE_SEND_ERROR
-            18 => FailureType.DataStall, // CURLE_PARTIAL_FILE
-            _ => FailureType.Unknown,
-        };
-    }
-
-    /// <summary>
-    /// Monitors streamer health periodically, checking for terminal states
-    /// and buffer health.
-    /// </summary>
-    private async Task RunHealthMonitoringLoopAsync(CancellationToken cancellationToken)
-    {
-        var sessionStartTime = DateTime.UtcNow;
-
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            await Task.Delay(HealthCheckIntervalSeconds * 1000, cancellationToken).ConfigureAwait(false);
-
-            if (!TryGetStreamerStatus(out var status))
-            {
-                // Streamer was disposed, exit monitoring
-                return;
-            }
-
-            if (status.IsTerminal)
-            {
-                _logger.PluginLogWarning(
-                    "Native streamer reached terminal state {State} for channel {ChannelId}",
-                    status.State,
-                    MediaSource.Id
-                );
-
-                _killReason = $"Streamer: {status.State}";
-
-                Dispose();
-
-                return;
-            }
-
-            var now = DateTime.UtcNow;
-
-            var currentBytes = status.BytesReceived;
-
-            // Buffer health checks
-
-            var bufferFillPct =
-                (double)(_buffer.TotalBytesWritten % _buffer.BufferSize) * 100.0 / (double)_buffer.BufferSize;
-
-            if (bufferFillPct < BufferUnderrunThresholdPercent)
-            {
-                _bufferUnderrunCount++;
-
-                if (_bufferUnderrunCount % 3 == 1)
-                {
-                    var currentBitrate =
-                        currentBytes > 0
-                            ? (double)currentBytes * 8.0 / 1000000.0 / (now - sessionStartTime).TotalSeconds
-                            : 0.0;
-
-                    _logger.PluginLogWarning(
-                        "Buffer underrun #{Count} for channel {ChannelId}. Only {FillPct:F1}% filled. Bitrate: {Mbps:F2} Mbps.",
-                        _bufferUnderrunCount,
-                        MediaSource.Id,
-                        bufferFillPct,
-                        currentBitrate
-                    );
-
-                    if (_bufferUnderrunCount >= BufferUnderrunNotificationThreshold)
-                    {
-                        var fillPct = bufferFillPct;
-
-                        var bitrate = currentBitrate;
-
-                        var count = _bufferUnderrunCount;
-
-                        _discordService.SendFireAndForget(svc =>
-                            svc.NotifyBufferHealthIssueAsync(
-                                MediaSource.Id,
-                                MediaSource.Name ?? "Unknown",
-                                count,
-                                fillPct,
-                                bitrate
-                            )
-                        );
-                    }
-                }
-            }
-            else if (bufferFillPct > BufferNearFullThresholdPercent)
-            {
-                _bufferHealthWarnings++;
-
-                _logger.LogDebugIfEnabled(
-                    "Buffer for channel {ChannelId} is {FillPct:F1}% full. Consumers: {Consumers}",
-                    MediaSource.Id,
-                    bufferFillPct,
-                    ConsumerCount
-                );
-            }
-
-            // Progress logging
-
-            var sessionElapsed = (now - sessionStartTime).TotalSeconds;
-
-            if (sessionElapsed > 0 && currentBytes > 0)
-            {
-                var mbps = (double)currentBytes * 8.0 / 1000000.0 / sessionElapsed;
-
-                _logger.LogDebugIfEnabled(
-                    "Broadcast progress for channel {ChannelId}: {TotalMB} MB, {Mbps:F2} Mbps avg, {Consumers} consumers, buffer {FillPct:F1}%",
-                    MediaSource.Id,
-                    currentBytes / 1048576,
-                    mbps,
-                    ConsumerCount,
-                    bufferFillPct
-                );
-            }
-        }
     }
 
     /// <inheritdoc />

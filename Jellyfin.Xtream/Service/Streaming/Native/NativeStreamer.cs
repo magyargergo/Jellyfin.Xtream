@@ -14,57 +14,35 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
-using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.Streaming.Native;
-
-/// <summary>
-/// Event arguments for streamer events.
-/// </summary>
-public sealed class StreamerEventArgs : EventArgs
-{
-    /// <summary>
-    /// Initializes a new instance of the <see cref="StreamerEventArgs"/> class.
-    /// </summary>
-    /// <param name="eventType">The event type.</param>
-    /// <param name="detail">Additional detail (e.g. HTTP status, curl error code).</param>
-    public StreamerEventArgs(StreamerEvent eventType, int detail)
-    {
-        EventType = eventType;
-        Detail = detail;
-    }
-
-    /// <summary>
-    /// Gets the event type.
-    /// </summary>
-    public StreamerEvent EventType { get; }
-
-    /// <summary>
-    /// Gets the event detail (context-dependent: HTTP status, error code, etc.).
-    /// </summary>
-    public int Detail { get; }
-}
 
 /// <summary>
 /// Native HTTP streamer with failover and mid-stream switching.
 /// Wraps the native TsDuck interop streamer using SafeHandle and proper IDisposable pattern.
 /// </summary>
 /// <remarks>
+/// <para>
+/// This is a thin wrapper that sets up providers with URLs and initial health scores.
+/// C++ handles all decision making: URL selection, failover, health tracking.
+/// C# reads buffer data from shared memory.
+/// </para>
+/// <para>
 /// Thread safety: Start/Stop/RequestSwitch/GetStatus are safe to call from any thread.
-/// The output callback is invoked on the native worker thread.
+/// </para>
 /// </remarks>
-public sealed unsafe class NativeStreamer : IDisposable
+public sealed class NativeStreamer : IDisposable
 {
+    /// <summary>
+    /// Default shared buffer size (64MB).
+    /// </summary>
+    public const long DefaultSharedBufferSize = 67108864L;
+
     private readonly TsDuckStreamerSafeHandle _streamer;
     private readonly ILogger? _logger;
-
-    // Keep delegates alive to prevent GC collection
-    private readonly TsDuckNativeMethods.StreamerEventCallbackDelegate _eventDelegate;
-    private TsDuckNativeMethods.StreamerOutputCallbackDelegate? _outputDelegate;
-
-    // User-facing output callback (receives pointer + length for zero-copy writes)
-    private Action<nint, int>? _outputAction;
+    private readonly string _sharedBufferName;
+    private readonly long _sharedBufferSize;
 
     private bool _disposed;
 
@@ -74,14 +52,20 @@ public sealed unsafe class NativeStreamer : IDisposable
     /// <param name="config">Streamer configuration. Uses defaults if null.</param>
     /// <param name="analyzerConfig">Optional analyzer configuration. If provided, an internal analyzer is created.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
+    /// <param name="sharedBufferName">Name for the shared memory region. Auto-generated if null.</param>
+    /// <param name="sharedBufferSize">Size of the shared buffer in bytes.</param>
     /// <exception cref="TsDuckNativeException">Thrown if native streamer creation fails.</exception>
     internal NativeStreamer(
         TsDuckStreamerConfigNative? config = null,
         TsDuckConfigNative? analyzerConfig = null,
-        ILogger? logger = null
+        ILogger? logger = null,
+        string? sharedBufferName = null,
+        long sharedBufferSize = DefaultSharedBufferSize
     )
     {
         _logger = logger;
+        _sharedBufferName = sharedBufferName ?? $"xtream-stream-{Guid.NewGuid():N}";
+        _sharedBufferSize = sharedBufferSize;
 
         // Initialize native logging (idempotent - safe to call multiple times)
         NativeLogging.Initialize(logger);
@@ -94,12 +78,11 @@ public sealed unsafe class NativeStreamer : IDisposable
             throw new TsDuckNativeException("Failed to create native streamer");
         }
 
-        // Set up event callback (always active)
-        _eventDelegate = OnNativeEventCallback;
-        var eventFnPtr = Marshal.GetFunctionPointerForDelegate(_eventDelegate);
-        TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), eventFnPtr, 0);
-
-        _logger?.LogDebugIfEnabled("NativeStreamer created");
+        _logger?.LogDebugIfEnabled(
+            "NativeStreamer created with shared buffer: {BufferName} ({SizeMB}MB)",
+            _sharedBufferName,
+            _sharedBufferSize / 1048576.0
+        );
     }
 
     /// <summary>
@@ -109,16 +92,20 @@ public sealed unsafe class NativeStreamer : IDisposable
     /// <param name="config">Streamer configuration.</param>
     /// <param name="analyzerConfig">Optional analyzer configuration.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
+    /// <param name="sharedBufferName">Name for the shared memory region. Auto-generated if null.</param>
+    /// <param name="sharedBufferSize">Size of the shared buffer in bytes.</param>
     /// <returns>A new streamer instance, or null if creation failed.</returns>
     internal static NativeStreamer? TryCreate(
         TsDuckStreamerConfigNative? config = null,
         TsDuckConfigNative? analyzerConfig = null,
-        ILogger? logger = null
+        ILogger? logger = null,
+        string? sharedBufferName = null,
+        long sharedBufferSize = DefaultSharedBufferSize
     )
     {
         try
         {
-            return new NativeStreamer(config, analyzerConfig, logger);
+            return new NativeStreamer(config, analyzerConfig, logger, sharedBufferName, sharedBufferSize);
         }
         catch (TsDuckNativeException ex)
         {
@@ -138,24 +125,17 @@ public sealed unsafe class NativeStreamer : IDisposable
     }
 
     /// <summary>
-    /// Occurs when a streamer event is raised (connected, disconnected, error, etc.).
+    /// Gets the name of the shared memory buffer for reading stream data.
     /// </summary>
-    /// <remarks>
-    /// <para>This event is invoked on the native worker thread. Handlers must be thread-safe.</para>
-    /// <para>Event detail parameter meanings:</para>
-    /// <list type="bullet">
-    /// <item><description>Connected, Switched, DataReceived, QualityDegraded: detail = URL index (0-based)</description></item>
-    /// <item><description>Error: detail = curl error code or HTTP status</description></item>
-    /// <item><description>Stalled: detail = milliseconds since last data</description></item>
-    /// <item><description>Disconnected: detail = HTTP status code</description></item>
-    /// <item><description>Reconnecting: detail = backoff delay in milliseconds</description></item>
-    /// <item><description>Stopped: detail = retry count (if max retries exhausted) or 0</description></item>
-    /// </list>
-    /// </remarks>
-    public event EventHandler<StreamerEventArgs>? StreamEvent;
+    public string SharedBufferName => _sharedBufferName;
 
     /// <summary>
-    /// Adds a URL to the streamer's URL list for failover rotation.
+    /// Gets the size of the shared memory buffer in bytes.
+    /// </summary>
+    public long SharedBufferSize => _sharedBufferSize;
+
+    /// <summary>
+    /// Adds a URL to the streamer's URL list for failover rotation with default health score.
     /// </summary>
     /// <param name="url">The stream URL (HTTP/HTTPS).</param>
     /// <exception cref="ArgumentNullException">Thrown if <paramref name="url"/> is null.</exception>
@@ -173,23 +153,70 @@ public sealed unsafe class NativeStreamer : IDisposable
     }
 
     /// <summary>
-    /// Sets the output callback for receiving aligned TS data.
-    /// The callback is invoked on the native worker thread with a pointer to the data and its length.
+    /// Adds a URL with specified health score for intelligent provider selection.
+    /// The native streamer uses health scores to prioritize URLs during failover and rotation.
     /// </summary>
-    /// <param name="callback">
-    /// Callback receiving (dataPointer, length). The data is valid only for the duration of the callback.
-    /// Use <c>new ReadOnlySpan&lt;byte&gt;((void*)ptr, length)</c> to access the data.
-    /// </param>
-    /// <exception cref="ArgumentNullException">Thrown if <paramref name="callback"/> is null.</exception>
-    public void SetOutputCallback(Action<nint, int> callback)
+    /// <param name="url">The stream URL (HTTP/HTTPS).</param>
+    /// <param name="healthScore">Health score (0.0-100.0), higher = better. Values are clamped to valid range.</param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="url"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed or add fails.</exception>
+    public void AddUrlWithScore(string url, double healthScore)
     {
-        ArgumentNullException.ThrowIfNull(callback);
+        ArgumentNullException.ThrowIfNull(url);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        _outputAction = callback;
-        _outputDelegate = OnNativeOutputCallback;
-        var outputFnPtr = Marshal.GetFunctionPointerForDelegate(_outputDelegate);
-        TsDuckNativeMethods.StreamerSetOutputCallback(_streamer.DangerousGetHandle(), outputFnPtr, 0);
+        var result = TsDuckNativeMethods.StreamerAddUrlWithScore(_streamer.DangerousGetHandle(), url, healthScore);
+        if (result != 0)
+        {
+            throw new InvalidOperationException($"Failed to add URL with score: error {result}");
+        }
+    }
+
+    /// <summary>
+    /// Updates the health score for an existing URL by index.
+    /// Note: C++ handles health tracking internally via SQLite.
+    /// This method allows external score updates if needed.
+    /// </summary>
+    /// <param name="urlIndex">Index of URL to update (0-based).</param>
+    /// <param name="newScore">New health score (0.0-100.0). Values are clamped to valid range.</param>
+    /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed or index is invalid.</exception>
+    public void UpdateUrlScore(int urlIndex, double newScore)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var result = TsDuckNativeMethods.StreamerUpdateUrlScore(_streamer.DangerousGetHandle(), urlIndex, newScore);
+        if (result != 0)
+        {
+            throw new InvalidOperationException($"Failed to update URL score at index {urlIndex}: error {result}");
+        }
+    }
+
+    /// <summary>
+    /// Gets the current health score for a URL by index.
+    /// C++ maintains and updates these scores based on streaming outcomes.
+    /// </summary>
+    /// <param name="urlIndex">Index of URL to query (0-based).</param>
+    /// <returns>Health score (0.0-100.0), or -1.0 if the index is invalid.</returns>
+    /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed.</exception>
+    public double GetUrlScore(int urlIndex)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return TsDuckNativeMethods.StreamerGetUrlScore(_streamer.DangerousGetHandle(), urlIndex);
+    }
+
+    /// <summary>
+    /// Creates a shared memory reader for consuming stream data.
+    /// Call this after Start() to read from the buffer that C++ writes to.
+    /// </summary>
+    /// <returns>A new SharedMemoryReader instance. Caller is responsible for disposal.</returns>
+    /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed.</exception>
+    /// <exception cref="System.IO.FileNotFoundException">Thrown if shared memory hasn't been created yet (call Start first).</exception>
+    public SharedMemoryReader CreateReader()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        return new SharedMemoryReader(_sharedBufferName, _sharedBufferSize);
     }
 
     /// <summary>
@@ -342,43 +369,16 @@ public sealed unsafe class NativeStreamer : IDisposable
 
         _disposed = true;
 
-        // Clear callbacks before disposing handle to prevent callbacks during teardown
+        // Stop streaming before disposing handle
         if (!_streamer.IsInvalid)
         {
             TsDuckNativeMethods.StreamerStop(_streamer.DangerousGetHandle());
-            TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), 0, 0);
-            TsDuckNativeMethods.StreamerSetOutputCallback(_streamer.DangerousGetHandle(), 0, 0);
         }
 
-        _outputAction = null;
-        _outputDelegate = null;
-
-        // SafeHandle calls StreamerDestroy which cleans up the worker thread and all native resources
+        // SafeHandle calls StreamerDestroy which cleans up the worker thread,
+        // shared memory, and all native resources
         _streamer.Dispose();
 
         _logger?.LogDebugIfEnabled("NativeStreamer disposed");
-    }
-
-    private void OnNativeEventCallback(int eventType, int detail, nint userData)
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        var streamerEvent = (StreamerEvent)eventType;
-        _logger?.LogDebugIfEnabled("NativeStreamer event: {Event} (detail: {Detail})", streamerEvent, detail);
-
-        StreamEvent?.Invoke(this, new StreamerEventArgs(streamerEvent, detail));
-    }
-
-    private void OnNativeOutputCallback(byte* data, int length, nint userData)
-    {
-        if (_disposed || _outputAction == null)
-        {
-            return;
-        }
-
-        _outputAction((nint)data, length);
     }
 }

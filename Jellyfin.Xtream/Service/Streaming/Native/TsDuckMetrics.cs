@@ -122,9 +122,15 @@ public readonly record struct Tr101290Priority2(
 /// Provides detailed timing analysis for decoder buffer management.
 /// </summary>
 /// <remarks>
-/// PCR jitter exceeding 500ns violates TR 101 290 Priority 2.4.
-/// PCR interval exceeding 100ms violates TR 101 290 Priority 2.3.
-/// Uses ts::PCRAnalyzer from /// </remarks>
+/// <para>PCR jitter exceeding 500ns violates TR 101 290 Priority 2.4.</para>
+/// <para>PCR interval exceeding 100ms violates TR 101 290 Priority 2.3.</para>
+/// <para>ISO/IEC 13818-1 requirements tracked:</para>
+/// <list type="bullet">
+/// <item>Accuracy: ±500ns phase tolerance</item>
+/// <item>Frequency offset: ±30 ppm (±810 Hz at 27MHz)</item>
+/// <item>Drift rate: 75 mHz/sec (10 ppm/hr)</item>
+/// </list>
+/// </remarks>
 [StructLayout(LayoutKind.Auto)]
 public readonly record struct PcrAnalysis(
     double PcrJitterUs,
@@ -134,7 +140,13 @@ public readonly record struct PcrAnalysis(
     double PcrIntervalMs,
     double PcrDriftPpm,
     long PcrCount,
-    long PcrValidCount
+    long PcrValidCount,
+    double PcrFrequencyOffsetPpm,
+    double PcrDriftRatePpmHr,
+    bool IsFrequencyOffsetValid,
+    bool IsDriftRateValid,
+    double PcrAccuracyNs,
+    bool IsAccuracyValid
 )
 {
     /// <summary>
@@ -146,6 +158,21 @@ public readonly record struct PcrAnalysis(
     /// TR 101 290 PCR interval threshold in milliseconds.
     /// </summary>
     public const double IntervalThresholdMs = 100.0;
+
+    /// <summary>
+    /// ISO/IEC 13818-1 frequency offset limit in ppm (±30 ppm).
+    /// </summary>
+    public const double FrequencyOffsetLimitPpm = 30.0;
+
+    /// <summary>
+    /// ISO/IEC 13818-1 drift rate limit in ppm/hour (10 ppm/hr = 75 mHz/sec).
+    /// </summary>
+    public const double DriftRateLimitPpmHr = 10.0;
+
+    /// <summary>
+    /// ISO/IEC 13818-1 PCR accuracy limit in nanoseconds (±500ns).
+    /// </summary>
+    public const double AccuracyLimitNs = 500.0;
 
     /// <summary>
     /// Gets a value indicating whether PCR jitter exceeds TR 101 290 limit (500ns).
@@ -166,6 +193,26 @@ public readonly record struct PcrAnalysis(
     /// Gets a value indicating whether PCR drift is significant (>100 ppm).
     /// </summary>
     public bool HasSignificantDrift => Math.Abs(PcrDriftPpm) > 100;
+
+    /// <summary>
+    /// Gets a value indicating whether the PCR frequency offset exceeds ISO 13818-1 limit (±30 ppm).
+    /// </summary>
+    public bool HasFrequencyOffsetViolation => !IsFrequencyOffsetValid;
+
+    /// <summary>
+    /// Gets a value indicating whether the PCR drift rate exceeds ISO 13818-1 limit (10 ppm/hr).
+    /// </summary>
+    public bool HasDriftRateViolation => !IsDriftRateValid;
+
+    /// <summary>
+    /// Gets a value indicating whether the PCR accuracy exceeds ISO 13818-1 limit (±500ns).
+    /// </summary>
+    public bool HasAccuracyViolation => !IsAccuracyValid;
+
+    /// <summary>
+    /// Gets a value indicating whether the PCR complies with all ISO 13818-1 requirements.
+    /// </summary>
+    public bool IsIso13818Compliant => IsFrequencyOffsetValid && IsDriftRateValid && IsAccuracyValid;
 }
 
 /// <summary>

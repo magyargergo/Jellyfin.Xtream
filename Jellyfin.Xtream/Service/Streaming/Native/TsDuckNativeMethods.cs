@@ -730,10 +730,44 @@ internal static partial class TsDuckNativeMethods
     internal static partial void StreamerDestroy(nint streamer);
 
     /// <summary>
-    /// Adds a URL to the streamer's URL list.
+    /// Adds a URL to the streamer's URL list with default health score.
     /// </summary>
     [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_add_url", StringMarshalling = StringMarshalling.Utf8)]
     internal static partial int StreamerAddUrl(nint streamer, string url);
+
+    /// <summary>
+    /// Adds a URL with specified health score for intelligent selection.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="url">The stream URL.</param>
+    /// <param name="healthScore">Health score (0.0-100.0), higher = better. Clamped to range.</param>
+    /// <returns>TSDUCK_OK or error code.</returns>
+    [LibraryImport(
+        LibraryName,
+        EntryPoint = "tsduck_streamer_add_url_with_score",
+        StringMarshalling = StringMarshalling.Utf8
+    )]
+    internal static partial int StreamerAddUrlWithScore(nint streamer, string url, double healthScore);
+
+    /// <summary>
+    /// Updates the health score for an existing URL by index.
+    /// Use this to update scores based on external provider reliability data.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="urlIndex">Index of URL to update (0-based).</param>
+    /// <param name="newScore">New health score (0.0-100.0). Clamped to range.</param>
+    /// <returns>TSDUCK_OK or TSDUCK_ERROR_INVALID_DATA if index invalid.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_update_url_score")]
+    internal static partial int StreamerUpdateUrlScore(nint streamer, int urlIndex, double newScore);
+
+    /// <summary>
+    /// Gets the health score for a URL by index.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="urlIndex">Index of URL to query (0-based).</param>
+    /// <returns>Health score (0.0-100.0) or -1.0 if index invalid.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_url_score")]
+    internal static partial double StreamerGetUrlScore(nint streamer, int urlIndex);
 
     /// <summary>
     /// Clears all URLs from the streamer.

@@ -3,11 +3,157 @@
 
 #include "stream_source.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
 namespace tsduck_interop::streaming {
+
+// ============================================================================
+// Health-Based URL Selection
+// ============================================================================
+
+int32_t StreamSource::select_best_url() noexcept {
+    const std::lock_guard<std::mutex> lock(url_mutex_);
+
+    if (urls_.empty()) {
+        return -1;
+    }
+
+    int32_t best_idx = -1;
+    double best_score = -1.0;
+    auto now = SteadyClock::now();
+
+    // Find highest-scoring non-quarantined URL
+    for (int32_t i = 0; i < static_cast<int32_t>(urls_.size()); ++i) {
+        const auto& info = urls_[i];
+
+        // Skip quarantined URLs
+        if (now < info.quarantined_until) {
+            continue;
+        }
+
+        if (info.health_score > best_score) {
+            best_score = info.health_score;
+            best_idx = i;
+        }
+    }
+
+    if (best_idx >= 0) {
+        current_url_index_ = best_idx;
+        return best_idx;
+    }
+
+    // All URLs are quarantined - pick the one with least recent failure
+    best_idx = select_least_recently_failed();
+    if (best_idx >= 0) {
+        current_url_index_ = best_idx;
+    }
+    return best_idx;
+}
+
+int32_t StreamSource::select_least_recently_failed() const noexcept {
+    // Must be called with url_mutex_ held
+    if (urls_.empty()) {
+        return -1;
+    }
+
+    int32_t best_idx = 0;
+    auto earliest_failure = urls_[0].last_failure_time;
+
+    for (int32_t i = 1; i < static_cast<int32_t>(urls_.size()); ++i) {
+        const auto& info = urls_[i];
+        // Prefer URLs that failed earlier (more time to recover)
+        // or URLs that never failed (time_point{} is earliest)
+        if (info.last_failure_time < earliest_failure) {
+            earliest_failure = info.last_failure_time;
+            best_idx = i;
+        }
+    }
+
+    return best_idx;
+}
+
+void StreamSource::mark_url_failed() noexcept {
+    mark_url_failed(current_url_index_);
+}
+
+void StreamSource::mark_url_failed(int32_t url_index) noexcept {
+    const std::lock_guard<std::mutex> lock(url_mutex_);
+
+    if (url_index < 0 || url_index >= static_cast<int32_t>(urls_.size())) {
+        return;
+    }
+
+    auto& info = urls_[url_index];
+    auto now = SteadyClock::now();
+
+    // Increment failure count
+    info.consecutive_failures++;
+    info.total_failures++;
+    info.last_failure_time = now;
+
+    // Apply score penalty
+    info.health_score = std::max(0.0, info.health_score - config_.score_penalty_on_failure);
+
+    // Apply quarantine with exponential backoff
+    int32_t quarantine_ms = calculate_quarantine_ms(info.consecutive_failures);
+    info.quarantined_until = now + std::chrono::milliseconds(quarantine_ms);
+}
+
+void StreamSource::record_success(int64_t bytes) noexcept {
+    const std::lock_guard<std::mutex> lock(url_mutex_);
+
+    if (current_url_index_ < 0 || current_url_index_ >= static_cast<int32_t>(urls_.size())) {
+        return;
+    }
+
+    auto& info = urls_[current_url_index_];
+
+    // Clear quarantine and failure count on success
+    info.quarantined_until = TimePoint{};
+    info.consecutive_failures = 0;
+    info.total_successes++;
+    info.total_bytes_received += bytes;
+
+    // Boost score slightly (capped at 100)
+    info.health_score = std::min(100.0, info.health_score + config_.score_boost_on_success);
+}
+
+void StreamSource::reset_all_quarantines() noexcept {
+    const std::lock_guard<std::mutex> lock(url_mutex_);
+
+    for (auto& info : urls_) {
+        info.quarantined_until = TimePoint{};
+        info.consecutive_failures = 0;
+    }
+}
+
+void StreamSource::reset_url_status(int32_t url_index) noexcept {
+    const std::lock_guard<std::mutex> lock(url_mutex_);
+
+    if (url_index < 0 || url_index >= static_cast<int32_t>(urls_.size())) {
+        return;
+    }
+
+    auto& info = urls_[url_index];
+    info.quarantined_until = TimePoint{};
+    info.consecutive_failures = 0;
+    info.last_failure_time = TimePoint{};
+}
+
+int32_t StreamSource::calculate_quarantine_ms(int32_t consecutive_failures) const noexcept {
+    // Base quarantine with exponential backoff: base * multiplier^(failures-1)
+    double multiplier = std::pow(config_.quarantine_backoff_multiplier,
+                                  static_cast<double>(consecutive_failures - 1));
+    double quarantine = static_cast<double>(config_.quarantine_duration_ms) * multiplier;
+
+    // Cap at maximum
+    return static_cast<int32_t>(std::min(quarantine,
+                                          static_cast<double>(config_.max_quarantine_duration_ms)));
+}
 
 // ============================================================================
 // Connection Lifecycle
@@ -23,7 +169,7 @@ bool StreamSource::connect() noexcept {
         if (urls_.empty()) {
             return false;
         }
-        url = urls_[current_url_index_];
+        url = urls_[current_url_index_].url;
     }
 
     // Initialize curl multi handle (once per source lifetime, reused across connects)

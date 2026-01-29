@@ -879,7 +879,14 @@ typedef struct {
     int32_t max_continuity_errors_per_sec; // CC errors/sec (default: 20)
     int32_t max_transport_errors_per_sec;  // TEI errors/sec (default: 10)
     int32_t max_pcr_errors_per_sec;     // PCR errors/sec (default: 5)
-    int32_t reserved;                   // Padding
+
+    // Health-based URL selection settings
+    int32_t quarantine_duration_ms;     // Initial quarantine after failure (default: 30000)
+    int32_t max_quarantine_duration_ms; // Maximum quarantine cap (default: 300000)
+    double quarantine_backoff_multiplier; // Exponential backoff (default: 2.0)
+    double score_boost_on_success;      // Score increase on data received (default: 0.5)
+    double score_penalty_on_failure;    // Score decrease on failure (default: 5.0)
+    double default_health_score;        // Default score for new URLs (default: 50.0)
 } TsDuckStreamerConfigNative;
 
 // Streamer status snapshot (blittable)
@@ -926,13 +933,45 @@ TSDUCK_API TsDuckStreamerHandle tsduck_streamer_create(
 /// Stops streaming if active. Safe to call with NULL.
 TSDUCK_API void tsduck_streamer_destroy(TsDuckStreamerHandle streamer);
 
-/// Add a URL to the streamer's URL list.
+/// Add a URL to the streamer's URL list with default health score.
 /// @param streamer The streamer handle.
 /// @param url Null-terminated URL string.
 /// @return TSDUCK_OK or error code.
 TSDUCK_API int32_t tsduck_streamer_add_url(
     TsDuckStreamerHandle streamer,
     const char* url
+);
+
+/// Add a URL with specified health score for intelligent selection.
+/// @param streamer The streamer handle.
+/// @param url Null-terminated URL string.
+/// @param health_score Health score (0.0-100.0), higher = better. Clamped to range.
+/// @return TSDUCK_OK or error code.
+TSDUCK_API int32_t tsduck_streamer_add_url_with_score(
+    TsDuckStreamerHandle streamer,
+    const char* url,
+    double health_score
+);
+
+/// Update health score for existing URL by index.
+/// Use this to update scores based on external provider reliability data.
+/// @param streamer The streamer handle.
+/// @param url_index Index of URL to update (0-based).
+/// @param new_score New health score (0.0-100.0). Clamped to range.
+/// @return TSDUCK_OK or TSDUCK_ERROR_INVALID_DATA if index invalid.
+TSDUCK_API int32_t tsduck_streamer_update_url_score(
+    TsDuckStreamerHandle streamer,
+    int32_t url_index,
+    double new_score
+);
+
+/// Get health score for URL by index.
+/// @param streamer The streamer handle.
+/// @param url_index Index of URL to query (0-based).
+/// @return Health score (0.0-100.0) or -1.0 if index invalid.
+TSDUCK_API double tsduck_streamer_get_url_score(
+    TsDuckStreamerHandle streamer,
+    int32_t url_index
 );
 
 /// Clear all URLs from the streamer.
@@ -988,6 +1027,239 @@ TSDUCK_API bool tsduck_streamer_get_status(
 TSDUCK_API TsDuckAnalyzerHandle tsduck_streamer_get_analyzer(
     TsDuckStreamerHandle streamer
 );
+
+// =============================================================================
+// Streamer V2 API (SQLite metrics + shared memory output)
+// =============================================================================
+//
+// The V2 API decouples C++ streaming from C# by:
+//   1. Storing all metrics in SQLite - C# queries the DB directly if needed
+//   2. Delivering buffer data via shared memory instead of callbacks
+//   3. Eliminating tight coupling between streaming and health tracking
+//
+// New architecture:
+//   - C++ owns all metrics recording and health score computation
+//   - SQLite database persists metrics for analysis and debugging
+//   - Shared memory ring buffer enables zero-copy data transfer to C#
+//   - C# can optionally poll shared memory or use traditional callbacks
+
+// =============================================================================
+// Provider Health (V2 - database-backed)
+// =============================================================================
+
+// Failure type enumeration for metrics recording
+typedef enum {
+    FAILURE_TYPE_UNKNOWN = 0,
+    FAILURE_TYPE_CONNECTION_TIMEOUT = 1,
+    FAILURE_TYPE_HTTP_ERROR = 2,
+    FAILURE_TYPE_NETWORK_ERROR = 3,
+    FAILURE_TYPE_DATA_STALL = 4,
+    FAILURE_TYPE_QUALITY_DEGRADED = 5,
+    FAILURE_TYPE_DISCONNECTED = 6,
+    FAILURE_TYPE_INTERNAL_ERROR = 7
+} TsDuckFailureType;
+
+// Provider health structure (blittable, from database)
+typedef struct {
+    int32_t url_index;              // Provider URL index (0-based)
+    double health_score;            // Computed health score (0.0-100.0)
+    int64_t total_bytes;            // Total bytes received from this provider
+    int32_t success_count;          // Number of successful data receipts
+    int32_t failure_count;          // Number of failures
+    int64_t avg_latency_ms;         // Average connection latency in milliseconds
+    int64_t last_success_time;      // Unix timestamp of last successful data
+    int64_t last_failure_time;      // Unix timestamp of last failure
+    int32_t consecutive_failures;   // Current consecutive failure count
+    int32_t reserved;               // Padding for alignment
+} TsDuckProviderHealthNative;
+
+// =============================================================================
+// Shared Buffer (V2 - zero-copy data transfer)
+// =============================================================================
+
+// Shared buffer flags (for polling state)
+typedef enum {
+    SHARED_BUFFER_FLAG_NONE = 0,
+    SHARED_BUFFER_FLAG_DATA_AVAILABLE = 1 << 0,
+    SHARED_BUFFER_FLAG_END_OF_STREAM = 1 << 1,
+    SHARED_BUFFER_FLAG_ERROR = 1 << 2,
+    SHARED_BUFFER_FLAG_OVERFLOW = 1 << 3,
+    SHARED_BUFFER_FLAG_UNDERFLOW = 1 << 4
+} TsDuckSharedBufferFlags;
+
+// Shared buffer header (mapped by both C++ and C#)
+// This structure is at the start of the shared memory region.
+// All atomic fields use relaxed memory ordering for cross-process access.
+typedef struct {
+    uint32_t magic;                 // Magic number: 0x54534255 ("TSBU")
+    uint32_t version;               // Version: 1
+    uint32_t buffer_size;           // Ring buffer capacity in bytes
+    uint32_t reserved1;             // Padding
+
+    uint64_t write_pos;             // Next write position (atomic)
+    uint64_t read_pos;              // Next read position (atomic)
+    uint32_t flags;                 // TsDuckSharedBufferFlags (atomic)
+    uint32_t sequence;              // Incremented on each write batch (atomic)
+
+    uint64_t total_bytes_written;   // Statistics (atomic)
+    uint64_t total_bytes_read;      // Statistics (atomic)
+    uint64_t overflow_count;        // Times buffer overflowed (atomic)
+    uint64_t last_write_time;       // Monotonic timestamp ns (atomic)
+
+    uint8_t padding[24];            // Pad to 128 bytes total
+} TsDuckSharedBufferHeader;
+
+// Shared buffer info (for C# to open the mapping)
+typedef struct {
+    int32_t name_length;            // Length of name string (excluding null)
+    int64_t total_size;             // Total mapped region size
+    int64_t buffer_size;            // Ring buffer capacity
+    int64_t header_offset;          // Offset to header (always 0)
+    int64_t data_offset;            // Offset to ring buffer data (128)
+} TsDuckSharedBufferInfo;
+
+// =============================================================================
+// Streamer V2 Creation
+// =============================================================================
+
+/// Create a V2 streamer with SQLite metrics and shared memory output.
+/// This is the preferred API for new integrations.
+///
+/// @param config Streamer configuration. If NULL, defaults are used.
+/// @param analyzer_config Analyzer configuration. If NULL, defaults are used.
+/// @param metrics_db_path Path to SQLite database file for metrics storage.
+///                        Created if not exists. Pass NULL to disable DB.
+/// @param shared_buffer_name Name for shared memory region. Pass NULL to
+///                           use callback mode instead.
+/// @param shared_buffer_size Size of shared memory ring buffer in bytes.
+///                           Ignored if shared_buffer_name is NULL.
+/// @return Streamer handle, or NULL on failure.
+TSDUCK_API TsDuckStreamerHandle tsduck_streamer_create_v2(
+    const TsDuckStreamerConfigNative* config,
+    const TsDuckConfigNative* analyzer_config,
+    const char* metrics_db_path,
+    const char* shared_buffer_name,
+    int64_t shared_buffer_size
+);
+
+// =============================================================================
+// Metrics Database Queries (V2)
+// =============================================================================
+
+/// Get provider health from the metrics database.
+/// This queries the aggregated health data computed by C++.
+///
+/// @param streamer The streamer handle.
+/// @param url_index Index of provider to query (0-based).
+/// @param out_health Pointer to receive health data.
+/// @return TSDUCK_OK if found, TSDUCK_ERROR_INVALID_DATA if not found.
+TSDUCK_API int32_t tsduck_streamer_get_provider_health(
+    TsDuckStreamerHandle streamer,
+    int32_t url_index,
+    TsDuckProviderHealthNative* out_health
+);
+
+/// Get all provider health records from the database.
+/// Returns health data for all known providers.
+///
+/// @param streamer The streamer handle.
+/// @param out_health_array Array to receive health data.
+/// @param max_count Maximum number of records to return (array size).
+/// @return Number of records returned, or negative error code.
+TSDUCK_API int32_t tsduck_streamer_get_all_provider_health(
+    TsDuckStreamerHandle streamer,
+    TsDuckProviderHealthNative* out_health_array,
+    int32_t max_count
+);
+
+/// Get the number of providers in the metrics database.
+/// @param streamer The streamer handle.
+/// @return Number of providers, or 0 if database not enabled.
+TSDUCK_API int32_t tsduck_streamer_get_provider_count(
+    TsDuckStreamerHandle streamer
+);
+
+/// Reset health scores for all providers in the database.
+/// Useful when starting a new streaming session.
+/// @param streamer The streamer handle.
+TSDUCK_API void tsduck_streamer_reset_all_health(
+    TsDuckStreamerHandle streamer
+);
+
+/// Clean up old metric records from the database.
+/// @param streamer The streamer handle.
+/// @param max_age_seconds Maximum age of records to keep.
+TSDUCK_API void tsduck_streamer_cleanup_metrics(
+    TsDuckStreamerHandle streamer,
+    int64_t max_age_seconds
+);
+
+/// Get the path to the metrics database file.
+/// @param streamer The streamer handle.
+/// @param out_path Buffer to receive the path string.
+/// @param max_length Maximum buffer length.
+/// @return Length of path string, or 0 if database not enabled.
+TSDUCK_API int32_t tsduck_streamer_get_metrics_db_path(
+    TsDuckStreamerHandle streamer,
+    char* out_path,
+    int32_t max_length
+);
+
+// =============================================================================
+// Shared Buffer Access (V2)
+// =============================================================================
+
+/// Get information about the shared buffer for C# to memory-map.
+/// @param streamer The streamer handle.
+/// @param out_info Pointer to receive buffer info.
+/// @return true if shared buffer is enabled, false otherwise.
+TSDUCK_API bool tsduck_streamer_get_shared_buffer_info(
+    TsDuckStreamerHandle streamer,
+    TsDuckSharedBufferInfo* out_info
+);
+
+/// Get the shared buffer name for memory mapping.
+/// On Windows: Use with OpenFileMapping("Local\\<name>")
+/// On Linux: Use with shm_open("/<name>")
+///
+/// @param streamer The streamer handle.
+/// @param out_name Buffer to receive the name string.
+/// @param max_length Maximum buffer length.
+/// @return Length of name string, or 0 if shared buffer not enabled.
+TSDUCK_API int32_t tsduck_streamer_get_shared_buffer_name(
+    TsDuckStreamerHandle streamer,
+    char* out_name,
+    int32_t max_length
+);
+
+/// Get the total size of the shared memory region.
+/// @param streamer The streamer handle.
+/// @return Total size in bytes, or 0 if shared buffer not enabled.
+TSDUCK_API int64_t tsduck_streamer_get_shared_buffer_size(
+    TsDuckStreamerHandle streamer
+);
+
+/// Reset the shared buffer to initial state.
+/// Call between streaming sessions or after errors.
+/// @param streamer The streamer handle.
+TSDUCK_API void tsduck_streamer_reset_shared_buffer(
+    TsDuckStreamerHandle streamer
+);
+
+// =============================================================================
+// Deprecation Notices
+// =============================================================================
+
+// The following callback-based APIs are still functional but deprecated
+// in favor of the V2 shared memory approach:
+//
+// DEPRECATED: tsduck_streamer_set_output_callback
+//   Use shared memory buffer instead for better performance.
+//
+// DEPRECATED: tsduck_streamer_set_event_callback
+//   Use polling on shared buffer flags or database queries instead.
+//
+// Both APIs remain available for backward compatibility.
 
 #ifdef __cplusplus
 }

@@ -23,7 +23,6 @@ using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.ChannelMatching;
-using Jellyfin.Xtream.Service.Resilience;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -321,65 +320,6 @@ public sealed partial class ChannelProviderMap
         }
 
         return null;
-    }
-
-    /// <summary>
-    /// Gets the next best provider for failover, considering both quality scores and health scores.
-    /// Prioritizes providers with better historical health performance.
-    /// </summary>
-    /// <param name="channelGuid">The channel GUID.</param>
-    /// <param name="failedProviderIds">Provider IDs that have already failed in this session.</param>
-    /// <param name="healthScorer">The health scorer to use for provider ranking.</param>
-    /// <returns>The next available provider sorted by health score, or null if none available.</returns>
-    public ProviderStreamInfo? GetNextHealthyProvider(
-        Guid channelGuid,
-        ISet<string> failedProviderIds,
-        ProviderHealthScorer healthScorer
-    )
-    {
-        var channel = GetByGuid(channelGuid);
-        if (channel == null)
-        {
-            return null;
-        }
-
-        // Filter to non-failed providers
-        var candidates = new List<ProviderStreamInfo>();
-        var providers = channel.Providers;
-        for (var i = 0; i < providers.Count; i++)
-        {
-            if (!failedProviderIds.Contains(providers[i].Provider.Id))
-            {
-                candidates.Add(providers[i]);
-            }
-        }
-
-        if (candidates.Count == 0)
-        {
-            return null;
-        }
-
-        if (candidates.Count == 1)
-        {
-            return candidates[0];
-        }
-
-        // Sort by health score (best first)
-        // When health scores are similar, the original quality-based order is preserved
-        ProviderStreamInfo? best = null;
-        var bestScore = double.MinValue;
-
-        foreach (var candidate in candidates)
-        {
-            var healthScore = healthScorer.GetScore(candidate.Provider.Id);
-            if (healthScore > bestScore)
-            {
-                bestScore = healthScore;
-                best = candidate;
-            }
-        }
-
-        return best;
     }
 
     /// <summary>

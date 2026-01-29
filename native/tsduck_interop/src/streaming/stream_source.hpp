@@ -6,7 +6,9 @@
 
 #include <curl/curl.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -19,11 +21,17 @@
 namespace tsduck_interop::streaming {
 
 // ============================================================================
-// StreamSource: libcurl-based HTTP streaming source
+// StreamSource: libcurl-based HTTP streaming source with health-based selection
 // ============================================================================
 //
 // Manages a single HTTP connection to an IPTV provider using libcurl's
 // multi interface for non-blocking I/O. Delivers data via callback.
+//
+// Health-based URL selection:
+//   - Each URL has a health score (0.0 - 100.0, higher = better)
+//   - Failed URLs are quarantined temporarily with exponential backoff
+//   - select_best_url() picks the highest-scoring non-quarantined URL
+//   - Scores can be set from C# (from provider reliability data)
 //
 // Thread safety:
 //   - URL management methods are mutex-protected (rarely called)
@@ -32,6 +40,42 @@ namespace tsduck_interop::streaming {
 //   - Data callback is invoked from the perform_multi() caller's thread
 
 using DataCallback = std::function<void(const uint8_t* data, size_t size)>;
+using SteadyClock = std::chrono::steady_clock;
+using TimePoint = SteadyClock::time_point;
+
+// ============================================================================
+// UrlInfo: Health metadata for a streaming URL
+// ============================================================================
+
+struct UrlInfo {
+    std::string url;
+    double health_score = 50.0;         // 0.0 - 100.0, higher = better
+
+    // Quarantine state
+    TimePoint quarantined_until{};      // Time when quarantine expires
+    int32_t consecutive_failures = 0;   // Failures since last success
+    TimePoint last_failure_time{};      // When last failure occurred
+
+    // Success tracking
+    int64_t total_bytes_received = 0;
+    int64_t total_successes = 0;
+    int64_t total_failures = 0;
+
+    /// Check if URL is currently quarantined.
+    [[nodiscard]] bool is_quarantined() const noexcept {
+        return SteadyClock::now() < quarantined_until;
+    }
+
+    /// Get remaining quarantine time in milliseconds (0 if not quarantined).
+    [[nodiscard]] int32_t quarantine_remaining_ms() const noexcept {
+        auto now = SteadyClock::now();
+        if (now >= quarantined_until) {
+            return 0;
+        }
+        return static_cast<int32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(quarantined_until - now).count());
+    }
+};
 
 class StreamSource {
 public:
@@ -52,9 +96,43 @@ public:
     // URL Management (thread-safe via mutex)
     // ========================================================================
 
+    /// Add a URL with default health score.
     void add_url(const std::string& url) {
         const std::lock_guard<std::mutex> lock(url_mutex_);
-        urls_.push_back(url);
+        UrlInfo info;
+        info.url = url;
+        info.health_score = config_.default_health_score;
+        urls_.push_back(std::move(info));
+    }
+
+    /// Add a URL with specified health score.
+    void add_url_with_score(const std::string& url, double health_score) {
+        const std::lock_guard<std::mutex> lock(url_mutex_);
+        UrlInfo info;
+        info.url = url;
+        info.health_score = std::clamp(health_score, 0.0, 100.0);
+        urls_.push_back(std::move(info));
+    }
+
+    /// Update health score for existing URL by index.
+    /// @return true if index was valid.
+    bool update_url_score(int32_t url_index, double new_score) {
+        const std::lock_guard<std::mutex> lock(url_mutex_);
+        if (url_index < 0 || url_index >= static_cast<int32_t>(urls_.size())) {
+            return false;
+        }
+        urls_[url_index].health_score = std::clamp(new_score, 0.0, 100.0);
+        return true;
+    }
+
+    /// Get health score for URL by index.
+    /// @return Score or -1.0 if index invalid.
+    double get_url_score(int32_t url_index) const {
+        const std::lock_guard<std::mutex> lock(url_mutex_);
+        if (url_index < 0 || url_index >= static_cast<int32_t>(urls_.size())) {
+            return -1.0;
+        }
+        return urls_[url_index].health_score;
     }
 
     void clear_urls() {
@@ -73,12 +151,13 @@ public:
         if (urls_.empty()) {
             return "";
         }
-        return urls_[current_url_index_];
+        return urls_[current_url_index_].url;
     }
 
     int32_t current_url_index() const noexcept { return current_url_index_; }
 
-    /// Advance to next URL in rotation. Returns false if no URLs.
+    /// Legacy method: Advance to next URL in rotation (simple round-robin).
+    /// @deprecated Use select_best_url() for health-aware selection.
     bool rotate_url() noexcept {
         const std::lock_guard<std::mutex> lock(url_mutex_);
         if (urls_.empty()) {
@@ -87,6 +166,31 @@ public:
         current_url_index_ = (current_url_index_ + 1) % static_cast<int32_t>(urls_.size());
         return true;
     }
+
+    // ========================================================================
+    // Health-Based URL Selection (thread-safe via mutex)
+    // ========================================================================
+
+    /// Select the best URL based on health score and quarantine status.
+    /// Returns the index of the selected URL, or -1 if no URLs available.
+    /// This method updates current_url_index_.
+    int32_t select_best_url() noexcept;
+
+    /// Mark the current URL as failed, applying quarantine and score penalty.
+    void mark_url_failed() noexcept;
+
+    /// Mark a specific URL as failed by index.
+    void mark_url_failed(int32_t url_index) noexcept;
+
+    /// Record successful data reception on current URL.
+    /// @param bytes Number of bytes received.
+    void record_success(int64_t bytes) noexcept;
+
+    /// Reset quarantine status for all URLs.
+    void reset_all_quarantines() noexcept;
+
+    /// Reset failure counters and quarantine for a specific URL.
+    void reset_url_status(int32_t url_index) noexcept;
 
     // ========================================================================
     // Callback
@@ -149,7 +253,7 @@ private:
     CURLM* curl_multi_{nullptr};
 
     mutable std::mutex url_mutex_;
-    std::vector<std::string> urls_;
+    std::vector<UrlInfo> urls_;
     int32_t current_url_index_{0};
 
     int64_t bytes_received_{0};
@@ -169,6 +273,14 @@ private:
     /// Static curl progress callback (for stop detection).
     static int curl_progress_callback(void* userdata, curl_off_t dltotal, curl_off_t dlnow,
                                     curl_off_t ultotal, curl_off_t ulnow) noexcept;
+
+    /// Select URL with least recent failure (fallback when all quarantined).
+    /// Must be called with url_mutex_ held.
+    int32_t select_least_recently_failed() const noexcept;
+
+    /// Calculate quarantine duration with exponential backoff.
+    /// @param consecutive_failures Number of consecutive failures.
+    int32_t calculate_quarantine_ms(int32_t consecutive_failures) const noexcept;
 };
 
 }  // namespace tsduck_interop::streaming

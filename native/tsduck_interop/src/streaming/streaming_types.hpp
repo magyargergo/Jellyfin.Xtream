@@ -88,6 +88,14 @@ struct StreamerConfig {
     // Priority 2 (recommended monitoring):
     int32_t max_transport_errors_per_sec = 10;  // TEI bit errors/sec
     int32_t max_pcr_errors_per_sec = 5;         // PCR discontinuity+repetition/sec
+
+    // Health-based URL selection and quarantine settings
+    int32_t quarantine_duration_ms = 30000;     // Initial quarantine after failure (30s)
+    int32_t max_quarantine_duration_ms = 300000; // Maximum quarantine cap (5 minutes)
+    double quarantine_backoff_multiplier = 2.0; // Exponential backoff for consecutive failures
+    double score_boost_on_success = 0.5;        // Score increase on successful data
+    double score_penalty_on_failure = 5.0;      // Score decrease on failure
+    double default_health_score = 50.0;         // Default score for new URLs
 };
 
 // ============================================================================

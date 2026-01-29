@@ -46,8 +46,64 @@ StreamPipeline::StreamPipeline(const StreamerConfig& config, const TsDuckConfigN
     , quality_trigger_(config)
     , alignment_(config.alignment_buffer_packets)
 {
-    LOG_DEBUG(kPipeline, "ctor this=%p", static_cast<const void*>(this));
+    LOG_DEBUG(kPipeline, "ctor (v1) this=%p", static_cast<const void*>(this));
+    init_common(analyzer_config);
+    LOG_DEBUG(kPipeline, "ctor done this=%p", static_cast<const void*>(this));
+}
 
+StreamPipeline::StreamPipeline(const StreamerConfig& config,
+                               const TsDuckConfigNative* analyzer_config,
+                               const std::string& metrics_db_path,
+                               const std::string& shared_buffer_name,
+                               size_t shared_buffer_size)
+    : config_(config)
+    , source_(config)
+    , failover_(config)
+    , quality_trigger_(config)
+    , alignment_(config.alignment_buffer_packets)
+    , metrics_db_path_(metrics_db_path)
+    , shared_buffer_name_(shared_buffer_name)
+{
+    LOG_DEBUG(kPipeline, "ctor (v2) this=%p db=%s shm=%s shm_size=%zu",
+              static_cast<const void*>(this),
+              metrics_db_path.empty() ? "(none)" : metrics_db_path.c_str(),
+              shared_buffer_name.empty() ? "(none)" : shared_buffer_name.c_str(),
+              shared_buffer_size);
+
+    // Initialize metrics database if path provided
+#if TSDUCK_HAS_SQLITE
+    if (!metrics_db_path.empty()) {
+        try {
+            metrics_db_ = std::make_unique<metrics::MetricsDatabase>(metrics_db_path);
+            LOG_INFO(kPipeline, "Metrics database opened: %s", metrics_db_path.c_str());
+        } catch (const std::exception& e) {
+            LOG_ERROR(kPipeline, "Failed to open metrics database: %s", e.what());
+            // Continue without database - not fatal
+        }
+    }
+#else
+    if (!metrics_db_path.empty()) {
+        LOG_WARNING(kPipeline, "SQLite not available, metrics database disabled");
+    }
+#endif
+
+    // Initialize shared buffer if name provided
+    if (!shared_buffer_name.empty() && shared_buffer_size > 0) {
+        try {
+            shared_buffer_ = std::make_unique<SharedBuffer>(shared_buffer_name, shared_buffer_size);
+            LOG_INFO(kPipeline, "Shared buffer created: %s (%zu bytes)",
+                     shared_buffer_name.c_str(), shared_buffer_size);
+        } catch (const std::exception& e) {
+            LOG_ERROR(kPipeline, "Failed to create shared buffer: %s", e.what());
+            // Continue without shared buffer - not fatal
+        }
+    }
+
+    init_common(analyzer_config);
+    LOG_DEBUG(kPipeline, "ctor done this=%p", static_cast<const void*>(this));
+}
+
+void StreamPipeline::init_common(const TsDuckConfigNative* analyzer_config) {
     // Create owned TsDuck context and analyzer
     context_ = std::make_unique<context::TsDuckContext>();
 
@@ -58,8 +114,8 @@ StreamPipeline::StreamPipeline(const StreamerConfig& config, const TsDuckConfigN
         default_cfg.metrics_interval_ms = 1000;
         default_cfg.enable_tr101290 = 1;
         default_cfg.sample_size_bytes = static_cast<int32_t>(ts::PKT_SIZE) * 1000;
-        default_cfg.enable_auto_restamp = config.enable_restamp;
-        default_cfg.restamp_mode = config.restamp_mode;
+        default_cfg.enable_auto_restamp = config_.enable_restamp;
+        default_cfg.restamp_mode = config_.restamp_mode;
         default_cfg.smooth_pcr = 1;
         default_cfg.fix_discontinuities = 1;
         default_cfg.reserved = 0;
@@ -70,12 +126,10 @@ StreamPipeline::StreamPipeline(const StreamerConfig& config, const TsDuckConfigN
         analyzer_ = std::make_unique<context::TsDuckAnalyzer>(context_.get(), &default_cfg);
     }
 
-    // Wire up the data path: curl → this → alignment → restamp → output
+    // Wire up the data path: curl -> this -> alignment -> restamp -> output
     source_.set_data_callback([this](const uint8_t* data, size_t size) {
         on_data_received(data, size);
     });
-
-    LOG_DEBUG(kPipeline, "ctor done this=%p", static_cast<const void*>(this));
 }
 
 StreamPipeline::~StreamPipeline() {
@@ -184,6 +238,11 @@ void StreamPipeline::stop() noexcept {
     failover_.on_stopped();
     update_status();
 
+    // V2: Signal end of stream in shared buffer
+    if (shared_buffer_) {
+        shared_buffer_->signal_end_of_stream();
+    }
+
     LOG_INFO(kPipeline, "stream stopped, received %lld bytes, output %lld packets",
              static_cast<long long>(bytes_received_total_), static_cast<long long>(packets_output_));
 }
@@ -288,6 +347,9 @@ void StreamPipeline::stream_session() noexcept {
     if (!source_.connect()) {
         LOG_WARNING(kPipeline, "connection failed to URL index %d", source_.current_url_index());
         emit_event(StreamEvent::Error, -1);
+#if TSDUCK_HAS_SQLITE
+        record_metrics_failure(metrics::FailureType::ConnectionTimeout, "Connection failed");
+#endif
         return;
     }
 
@@ -332,6 +394,10 @@ void StreamPipeline::stream_session() noexcept {
         if (failover_.state() == StreamerState::Streaming && failover_.is_stalled()) {
             LOG_WARNING(kPipeline, "stream stalled, no data for %d ms", failover_.ms_since_last_data());
             emit_event(StreamEvent::Stalled, static_cast<int32_t>(failover_.ms_since_last_data()));
+#if TSDUCK_HAS_SQLITE
+            record_metrics_failure(metrics::FailureType::DataStall,
+                                   "No data received for " + std::to_string(failover_.ms_since_last_data()) + "ms");
+#endif
             source_.disconnect();
             return;
         }
@@ -350,6 +416,10 @@ void StreamPipeline::stream_session() noexcept {
                             static_cast<long long>(p1.continuity_count_error),
                             static_cast<long long>(p1.sync_loss));
                 emit_event(StreamEvent::QualityDegraded, source_.current_url_index());
+#if TSDUCK_HAS_SQLITE
+                record_metrics_failure(metrics::FailureType::QualityDegraded,
+                                       "TR 101 290 error threshold exceeded");
+#endif
                 source_.disconnect();
                 perform_switch();
                 return;
@@ -371,16 +441,30 @@ void StreamPipeline::on_data_received(const uint8_t* data, size_t size) noexcept
     failover_.on_data_received();
     bytes_received_total_ += static_cast<int64_t>(size);
 
+    // Record success on current URL (boosts health score, clears quarantine)
+    source_.record_success(static_cast<int64_t>(size));
+
     // If this is first data after connect, transition to Streaming
     if (failover_.state() == StreamerState::Connecting) {
         failover_.on_connected();
         quality_trigger_.reset();  // Fresh quality baseline on new connection
-        LOG_INFO(kPipeline, "connected to URL index %d, streaming started", source_.current_url_index());
+        LOG_INFO(kPipeline, "connected to URL index %d (score: %.1f), streaming started",
+                 source_.current_url_index(), source_.get_url_score(source_.current_url_index()));
         emit_event(StreamEvent::Connected, source_.current_url_index());
 
         if (first_data_after_switch_) {
             emit_event(StreamEvent::DataReceived, source_.current_url_index());
         }
+
+#if TSDUCK_HAS_SQLITE
+        // V2: Record connection latency in metrics database
+        // Estimate latency from session start to first data
+        int64_t latency_ms = (get_dotnet_ticks() - session_start_ticks_) / 10000;
+        record_metrics_success(static_cast<int64_t>(size), latency_ms);
+    } else {
+        // V2: Record ongoing success (use 0 latency for data chunks after connect)
+        record_metrics_success(static_cast<int64_t>(size), 0);
+#endif
     }
 
     // Align to TS packet boundaries
@@ -468,6 +552,16 @@ void StreamPipeline::process_aligned(uint8_t* data, int32_t length) noexcept {
 }
 
 void StreamPipeline::write_output(const uint8_t* data, int32_t length) noexcept {
+    // V2: Prefer shared buffer if available
+    if (shared_buffer_ && shared_buffer_->is_valid()) {
+        size_t written = shared_buffer_->write(data, static_cast<size_t>(length));
+        if (written > 0) {
+            shared_buffer_->signal_data_available();
+        }
+        return;
+    }
+
+    // V1: Pipe mode or callback mode
     if (config_.output_fd >= 0) {
         // Pipe mode: write to file descriptor
         int32_t written = 0;
@@ -498,14 +592,18 @@ void StreamPipeline::perform_switch() noexcept {
 
     int32_t old_index = source_.current_url_index();
 
-    // Rotate to next URL
-    if (!source_.rotate_url()) {
+    // Mark the old URL as failed (applies quarantine and score penalty)
+    source_.mark_url_failed(old_index);
+
+    // Select the best available URL based on health scores
+    int32_t new_index = source_.select_best_url();
+    if (new_index < 0) {
         LOG_WARNING(kPipeline, "no URLs available to switch to");
         return;  // No URLs to rotate to
     }
 
-    LOG_INFO(kPipeline, "switching URL: %d -> %d (total URLs: %d)",
-             old_index, source_.current_url_index(), source_.url_count());
+    LOG_INFO(kPipeline, "switching URL: %d -> %d (score: %.1f, total URLs: %d)",
+             old_index, new_index, source_.get_url_score(new_index), source_.url_count());
 
     failover_.on_switching();
 
@@ -606,6 +704,63 @@ bool StreamPipeline::interruptible_sleep(int32_t ms) noexcept {
 
     return running_.load(std::memory_order_acquire);
 }
+
+// ============================================================================
+// V2: Metrics Recording
+// ============================================================================
+
+#if TSDUCK_HAS_SQLITE
+
+void StreamPipeline::record_metrics_success(int64_t bytes, int64_t latency_ms) noexcept {
+    if (!metrics_db_) {
+        return;
+    }
+
+    try {
+        // Get quality score from TR 101 290 analysis
+        double quality_score = 100.0;  // Start at perfect
+
+        // Deduct points based on error counts
+        Tr101290Priority1Native p1{};
+        Tr101290Priority2Native p2{};
+        analyzer_->tr101290.get_counters(&p1, &p2);
+
+        // Simple quality score calculation
+        // Each sync loss is severe (-20 points)
+        // Each continuity error is moderate (-0.1 points)
+        // Each transport error is minor (-0.5 points)
+        quality_score -= static_cast<double>(p1.sync_loss) * 20.0;
+        quality_score -= static_cast<double>(p1.continuity_count_error) * 0.1;
+        quality_score -= static_cast<double>(p2.transport_error) * 0.5;
+
+        // Clamp to valid range
+        quality_score = std::max(0.0, std::min(100.0, quality_score));
+
+        int32_t url_index = source_.current_url_index();
+        std::string url = source_.current_url();
+
+        metrics_db_->record_success(url_index, url, quality_score, bytes, latency_ms);
+    } catch (const std::exception& e) {
+        LOG_WARNING(kPipeline, "Failed to record success metric: %s", e.what());
+    }
+}
+
+void StreamPipeline::record_metrics_failure(metrics::FailureType type, const std::string& error_msg) noexcept {
+    if (!metrics_db_) {
+        return;
+    }
+
+    try {
+        int32_t url_index = source_.current_url_index();
+        std::string url = source_.current_url();
+
+        metrics_db_->record_failure(url_index, url, type, error_msg);
+    } catch (const std::exception& e) {
+        LOG_WARNING(kPipeline, "Failed to record failure metric: %s", e.what());
+    }
+}
+
+#endif  // TSDUCK_HAS_SQLITE
 
 }  // namespace streaming
 }  // namespace tsduck_interop

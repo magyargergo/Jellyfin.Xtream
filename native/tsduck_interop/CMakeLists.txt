@@ -231,12 +231,59 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(TSDUCK REQUIRED tsduck)
 message(STATUS "TsDuck found: ${TSDUCK_VERSION}")
 
+# SQLite amalgamation (embedded, no external dependency)
+# Using SQLite amalgamation for easy cross-platform builds
+set(SQLITE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite)
+if(EXISTS ${SQLITE_DIR}/sqlite3.c)
+    message(STATUS "SQLite amalgamation found")
+    set(SQLITE_FOUND TRUE)
+else()
+    message(STATUS "SQLite amalgamation not found - downloading...")
+    # Download SQLite amalgamation if not present
+    file(DOWNLOAD
+        "https://www.sqlite.org/2024/sqlite-amalgamation-3450000.zip"
+        "${CMAKE_BINARY_DIR}/sqlite.zip"
+        SHOW_PROGRESS
+        STATUS DOWNLOAD_STATUS
+    )
+    list(GET DOWNLOAD_STATUS 0 STATUS_CODE)
+    if(STATUS_CODE EQUAL 0)
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E tar xf "${CMAKE_BINARY_DIR}/sqlite.zip"
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        )
+        file(MAKE_DIRECTORY ${SQLITE_DIR})
+        file(COPY
+            "${CMAKE_BINARY_DIR}/sqlite-amalgamation-3450000/sqlite3.c"
+            "${CMAKE_BINARY_DIR}/sqlite-amalgamation-3450000/sqlite3.h"
+            DESTINATION ${SQLITE_DIR}
+        )
+        set(SQLITE_FOUND TRUE)
+        message(STATUS "SQLite amalgamation downloaded and extracted")
+    else()
+        message(WARNING "Failed to download SQLite - metrics database will be disabled")
+        set(SQLITE_FOUND FALSE)
+    endif()
+endif()
+
 # Build shared library
-add_library(tsduck_interop SHARED
+set(TSDUCK_INTEROP_SOURCES
     src/tsduck_interop.cpp
     src/streaming/stream_source.cpp
     src/streaming/stream_pipeline.cpp
+    src/streaming/shared_buffer.cpp
 )
+
+# Add SQLite and metrics if available
+if(SQLITE_FOUND)
+    list(APPEND TSDUCK_INTEROP_SOURCES
+        ${SQLITE_DIR}/sqlite3.c
+        src/metrics/metrics_database.cpp
+    )
+    add_compile_definitions(TSDUCK_HAS_SQLITE=1)
+endif()
+
+add_library(tsduck_interop SHARED ${TSDUCK_INTEROP_SOURCES})
 
 # Include directories
 target_include_directories(tsduck_interop
@@ -253,8 +300,38 @@ target_include_directories(tsduck_interop
         ${CMAKE_CURRENT_SOURCE_DIR}/src/restamping
         ${CMAKE_CURRENT_SOURCE_DIR}/src/context
         ${CMAKE_CURRENT_SOURCE_DIR}/src/streaming
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/metrics
         ${CURL_INCLUDE_DIRS}
 )
+
+# SQLite include directory
+if(SQLITE_FOUND)
+    target_include_directories(tsduck_interop PRIVATE ${SQLITE_DIR})
+
+    # SQLite compile options
+    target_compile_definitions(tsduck_interop PRIVATE
+        SQLITE_THREADSAFE=1
+        SQLITE_ENABLE_FTS5=0
+        SQLITE_ENABLE_RTREE=0
+        SQLITE_ENABLE_JSON1=0
+        SQLITE_OMIT_DEPRECATED=1
+        SQLITE_OMIT_PROGRESS_CALLBACK=1
+        SQLITE_OMIT_SHARED_CACHE=1
+        SQLITE_DEFAULT_MEMSTATUS=0
+        SQLITE_DQS=0
+    )
+
+    # Disable warnings for SQLite amalgamation (third-party code)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set_source_files_properties(${SQLITE_DIR}/sqlite3.c PROPERTIES
+            COMPILE_FLAGS "-w"
+        )
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        set_source_files_properties(${SQLITE_DIR}/sqlite3.c PROPERTIES
+            COMPILE_FLAGS "/w"
+        )
+    endif()
+endif()
 
 # Link libcurl for HTTP streaming
 target_link_libraries(tsduck_interop
@@ -340,6 +417,14 @@ message(STATUS "TsDuck:")
 message(STATUS "  Version:          ${TSDUCK_VERSION}")
 message(STATUS "  Include dirs:     ${TSDUCK_INCLUDE_DIRS}")
 message(STATUS "  Libraries:        ${TSDUCK_LIBRARIES}")
+message(STATUS "")
+message(STATUS "SQLite:")
+if(SQLITE_FOUND)
+    message(STATUS "  Status:           ENABLED (metrics database)")
+    message(STATUS "  Directory:        ${SQLITE_DIR}")
+else()
+    message(STATUS "  Status:           DISABLED")
+endif()
 message(STATUS "  Library dirs:     ${TSDUCK_LIBRARY_DIRS}")
 message(STATUS "")
 message(STATUS "CPU Architecture:")

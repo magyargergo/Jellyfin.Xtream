@@ -172,6 +172,10 @@ internal readonly struct TsDuckConfigNative
 /// <summary>
 /// Native PCR analysis structure.
 /// Layout must match PcrAnalysisNative in tsduck_interop.h exactly.
+/// Tracks PCR timing per ISO/IEC 13818-1 requirements:
+/// - Accuracy: ±500ns phase tolerance
+/// - Frequency offset: ±30 ppm (±810 Hz at 27MHz)
+/// - Drift rate: 75 mHz/sec (10 ppm/hr)
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct PcrAnalysisNative
@@ -185,6 +189,15 @@ internal struct PcrAnalysisNative
     public long PcrCount;
     public long PcrValidCount;
 
+    // ISO/IEC 13818-1 compliance tracking (new fields)
+    public double PcrFrequencyOffsetPpm;
+    public double PcrDriftRatePpmHr;
+    public int FrequencyOffsetValid;
+    public int DriftRateValid;
+    public double PcrAccuracyNs;
+    public int AccuracyValid;
+    public int Reserved;
+
     /// <summary>
     /// Converts to managed PcrAnalysis.
     /// </summary>
@@ -197,7 +210,13 @@ internal struct PcrAnalysisNative
             PcrIntervalMs,
             PcrDriftPpm,
             PcrCount,
-            PcrValidCount
+            PcrValidCount,
+            PcrFrequencyOffsetPpm,
+            PcrDriftRatePpmHr,
+            FrequencyOffsetValid != 0,
+            DriftRateValid != 0,
+            PcrAccuracyNs,
+            AccuracyValid != 0
         );
 }
 
@@ -585,7 +604,14 @@ internal struct TsDuckStreamerConfigNative
     public int MaxContinuityErrorsPerSec;
     public int MaxTransportErrorsPerSec;
     public int MaxPcrErrorsPerSec;
-    public int Reserved;
+
+    // Health-based URL selection settings
+    public int QuarantineDurationMs;
+    public int MaxQuarantineDurationMs;
+    public double QuarantineBackoffMultiplier;
+    public double ScoreBoostOnSuccess;
+    public double ScorePenaltyOnFailure;
+    public double DefaultHealthScore;
 
     /// <summary>
     /// Creates a default configuration.
@@ -615,7 +641,12 @@ internal struct TsDuckStreamerConfigNative
             MaxContinuityErrorsPerSec = 20,
             MaxTransportErrorsPerSec = 10,
             MaxPcrErrorsPerSec = 5,
-            Reserved = 0,
+            QuarantineDurationMs = 30000,
+            MaxQuarantineDurationMs = 300000,
+            QuarantineBackoffMultiplier = 2.0,
+            ScoreBoostOnSuccess = 0.5,
+            ScorePenaltyOnFailure = 5.0,
+            DefaultHealthScore = 50.0,
         };
 }
 
