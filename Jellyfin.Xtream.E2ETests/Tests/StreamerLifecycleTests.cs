@@ -8,7 +8,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests for NativeStreamer lifecycle management, resource cleanup, and error handling.
 /// Verifies proper behavior during start/stop cycles, disposal, and edge cases.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Streaming")]
 public class StreamerLifecycleTests
 {
     private readonly DockerTestFixture _fixture;

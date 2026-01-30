@@ -9,7 +9,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Verifies thread safety of status polling and that data flows correctly under load.
 /// Uses high bitrate (50 Mbps) to ensure rapid data flow for stress testing.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Restream")]
 public class MultiReaderTests
 {
     private const int TsPacketSize = 188;

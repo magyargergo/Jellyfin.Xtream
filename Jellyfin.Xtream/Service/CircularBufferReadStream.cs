@@ -60,8 +60,6 @@ public sealed class CircularBufferReadStream : Stream
         public int Value;
     }
 
-    private const long MinimumStartupFillBytes = 4194304L; // 4MB minimum before allowing reads
-    private const int StartupWarmupTimeoutMs = 15000; // 15 seconds
     private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB read
 
     // Stall detection constants
@@ -267,72 +265,10 @@ public sealed class CircularBufferReadStream : Stream
     /// <inheritdoc />
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
+        // No warmup - pass data through immediately to FFmpeg
+        // FFmpeg has its own internal buffering and handles playback smoothly
         var currentReadHead = ReadHead;
         var gap = _sourceBuffer.TotalBytesWritten - currentReadHead;
-
-        // Simple warmup: wait until we have enough data available after our read position
-        var needsWarmup = TotalBytesRead == 0L && gap < MinimumStartupFillBytes;
-
-        if (needsWarmup)
-        {
-            _logger?.LogDebugIfEnabled(
-                "Stream {StreamId}: Warming up buffer - {CurrentKB}KB filled. Waiting for {RequiredMB}MB...",
-                _streamId,
-                gap / 1024,
-                MinimumStartupFillBytes / 1048576
-            );
-            var warmupStart = DateTime.UtcNow;
-            var pollCount = 0;
-
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                var elapsedMs = (DateTime.UtcNow - warmupStart).TotalMilliseconds;
-
-                if (gap >= MinimumStartupFillBytes)
-                {
-                    break;
-                }
-
-                // Timeout: proceed anyway to avoid infinite wait
-                if (elapsedMs > StartupWarmupTimeoutMs)
-                {
-                    _logger?.PluginLogWarning(
-                        "Stream {StreamId}: Warmup timeout after {TimeMs}ms. Buffer={FilledKB}KB. Starting playback anyway.",
-                        _streamId,
-                        elapsedMs,
-                        gap / 1024
-                    );
-                    break;
-                }
-
-                await Task.Delay(50, cancellationToken).ConfigureAwait(false);
-                pollCount++;
-                currentReadHead = ReadHead;
-                gap = _sourceBuffer.TotalBytesWritten - currentReadHead;
-
-                if (pollCount % 20 == 0)
-                {
-                    var fillPct = (double)gap * 100.0 / MinimumStartupFillBytes;
-                    _logger?.LogDebugIfEnabled(
-                        "Stream {StreamId}: Buffering... {FillPct:F1}% ({CurrentKB}KB)",
-                        _streamId,
-                        fillPct,
-                        gap / 1024
-                    );
-                }
-            }
-
-            if (gap >= MinimumStartupFillBytes)
-            {
-                var warmupDuration = (DateTime.UtcNow - warmupStart).TotalMilliseconds;
-                _logger?.PluginLogInformation(
-                    "Stream {StreamId}: Buffer warmup complete in {DurationMs}ms. {FilledMB:F1}MB buffered. Starting playback.",
-                    _streamId,
-                    warmupDuration,
-                    (double)gap / 1048576.0
-                );
-            }
-        }
 
         SpinWait spinWait = default;
         var startWaitTime = gap == 0L ? DateTime.UtcNow : DateTime.MinValue;

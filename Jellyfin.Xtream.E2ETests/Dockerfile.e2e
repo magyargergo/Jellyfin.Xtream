@@ -92,6 +92,11 @@ RUN mkdir -p /bundle && \
 # =============================================================================
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS dotnet-builder
 
+# .NET SDK optimizations for faster builds
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+ENV DOTNET_NOLOGO=1
+
 # Copy native libraries so they're available during build
 COPY --from=native-builder /bundle/ /native-libs/
 
@@ -103,16 +108,18 @@ COPY Directory.Build.Docker.props Directory.Build.props
 COPY Jellyfin.Xtream/Jellyfin.Xtream.csproj Jellyfin.Xtream/
 COPY Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj Jellyfin.Xtream.E2ETests/
 
-# Restore dependencies
-RUN dotnet restore Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj \
+# Restore dependencies with NuGet cache mount for faster rebuilds
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet restore Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj \
     -p:BuildNativeLibrary=false
 
 # Copy all source code
 COPY Jellyfin.Xtream/ Jellyfin.Xtream/
 COPY Jellyfin.Xtream.E2ETests/ Jellyfin.Xtream.E2ETests/
 
-# Build the E2E test project
-RUN dotnet build Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj \
+# Build the E2E test project with cache mount
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet build Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj \
     -c Release \
     -p:BuildNativeLibrary=false \
     --no-restore
@@ -157,16 +164,45 @@ RUN RUNTIMES_DIR=/src/Jellyfin.Xtream.E2ETests/bin/Release/net9.0/runtimes/linux
     echo "=== Native libraries ===" && \
     ls -la "$RUNTIMES_DIR/"*.so*
 
+# Runtime environment
 ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV E2E_STREAM_DURATION_SEC=10
 ENV E2E_TARGET_BITRATE_MBPS=5
+ENV E2E_TEST_FILTER=""
+
+# .NET runtime optimizations for faster test execution
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+ENV DOTNET_NOLOGO=1
+ENV DOTNET_EnableDiagnostics=0
 
 # Create results directory
 RUN mkdir -p /results
 
-ENTRYPOINT ["dotnet", "test", "Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj", \
-            "-c", "Release", \
-            "--logger", "trx;LogFileName=results.trx", \
-            "--logger", "console;verbosity=detailed", \
-            "--results-directory", "/results", \
-            "-p:BuildNativeLibrary=false"]
+# Create entrypoint script that supports optional test filtering
+# Use dotnet vstest directly on the built DLL to avoid rebuild issues
+RUN cat > /run-tests.sh << 'SCRIPT'
+#!/bin/bash
+set -e
+
+TEST_DLL="/src/Jellyfin.Xtream.E2ETests/bin/Release/net9.0/Jellyfin.Xtream.E2ETests.dll"
+
+# Add filter if specified
+if [ -n "$E2E_TEST_FILTER" ]; then
+    echo "Running tests with filter: $E2E_TEST_FILTER"
+    exec dotnet vstest "$TEST_DLL" \
+        --Logger:"trx;LogFileName=results.trx" \
+        --Logger:"console;verbosity=normal" \
+        --ResultsDirectory:/results \
+        --TestCaseFilter:"$E2E_TEST_FILTER"
+else
+    echo "Running all tests (no filter)"
+    exec dotnet vstest "$TEST_DLL" \
+        --Logger:"trx;LogFileName=results.trx" \
+        --Logger:"console;verbosity=normal" \
+        --ResultsDirectory:/results
+fi
+SCRIPT
+RUN chmod +x /run-tests.sh
+
+ENTRYPOINT ["/run-tests.sh"]

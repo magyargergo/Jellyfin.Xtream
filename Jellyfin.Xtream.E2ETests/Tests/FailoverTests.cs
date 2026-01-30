@@ -9,7 +9,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests URL failover behavior when connections drop.
 /// Verifies the native streamer rotates URLs and recovers without permanent stall.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Failover")]
 public class FailoverTests
 {
     private readonly DockerTestFixture _fixture;

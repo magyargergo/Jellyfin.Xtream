@@ -12,7 +12,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// - Priority 2: Errors affecting quality (transport errors, PCR errors, PTS errors)
 /// - Priority 3: Informational (service info, bandwidth)
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Analysis")]
 public class Tr101290Tests
 {
     private readonly DockerTestFixture _fixture;

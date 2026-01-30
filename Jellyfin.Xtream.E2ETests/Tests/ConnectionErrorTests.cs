@@ -8,7 +8,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests for connection error handling scenarios.
 /// Verifies proper behavior when connections fail, timeout, or encounter network issues.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Failover")]
 public class ConnectionErrorTests
 {
     private readonly DockerTestFixture _fixture;

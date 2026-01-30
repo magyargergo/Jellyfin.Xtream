@@ -10,7 +10,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests the interaction between automatic failover and manual mid-stream switching.
 /// These tests verify complex scenarios where both mechanisms operate together.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Failover")]
 public class FailoverSwitchingTests
 {
     private readonly DockerTestFixture _fixture;

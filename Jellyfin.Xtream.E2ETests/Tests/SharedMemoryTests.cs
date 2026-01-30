@@ -32,7 +32,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// These tests use a managed producer simulation to test the C# consumer without
 /// requiring the native library. This validates the IPC protocol implementation.
 /// </remarks>
-[Collection("E2E")]
+[Collection("E2E-SharedMemory")]
 public sealed class SharedMemoryTests : IDisposable
 {
     private const int TsPacketSize = 188;

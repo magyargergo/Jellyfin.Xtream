@@ -35,7 +35,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// data flows correctly through the shared memory IPC layer.
 /// </para>
 /// </remarks>
-[Collection("E2E")]
+[Collection("E2E-SharedMemory")]
 public sealed class StreamerSharedMemoryOutputTests : IDisposable
 {
     private const int TsPacketSize = 188;

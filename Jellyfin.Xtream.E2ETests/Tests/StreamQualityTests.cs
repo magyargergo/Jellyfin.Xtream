@@ -9,7 +9,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests bitrate estimation, continuity counter tracking, PCR accuracy,
 /// delayed startup, and rapid failover scenarios.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Analysis")]
 public class StreamQualityTests
 {
     private readonly DockerTestFixture _fixture;

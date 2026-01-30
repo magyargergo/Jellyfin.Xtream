@@ -8,7 +8,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests PCR/PTS restamping through the native pipeline.
 /// Verifies that output timestamps are monotonically increasing and properly spaced.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Streaming")]
 public class RestampingTests
 {
     private readonly DockerTestFixture _fixture;

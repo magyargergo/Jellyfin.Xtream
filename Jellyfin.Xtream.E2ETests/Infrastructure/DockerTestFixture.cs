@@ -60,7 +60,23 @@ public sealed class DockerTestFixture : IAsyncLifetime
 }
 
 /// <summary>
-/// xUnit collection definition for tests sharing the HTTP test server.
+/// xUnit collection definitions for parallel test execution.
+/// Each collection gets its own DockerTestFixture (HTTP server on unique port).
 /// </summary>
 [CollectionDefinition("E2E")]
 public class E2ETestCollection : ICollectionFixture<DockerTestFixture> { }
+
+[CollectionDefinition("E2E-Restream")]
+public class E2ERestreamCollection : ICollectionFixture<DockerTestFixture> { }
+
+[CollectionDefinition("E2E-Failover")]
+public class E2EFailoverCollection : ICollectionFixture<DockerTestFixture> { }
+
+[CollectionDefinition("E2E-Analysis")]
+public class E2EAnalysisCollection : ICollectionFixture<DockerTestFixture> { }
+
+[CollectionDefinition("E2E-SharedMemory")]
+public class E2ESharedMemoryCollection : ICollectionFixture<DockerTestFixture> { }
+
+[CollectionDefinition("E2E-Streaming")]
+public class E2EStreamingCollection : ICollectionFixture<DockerTestFixture> { }

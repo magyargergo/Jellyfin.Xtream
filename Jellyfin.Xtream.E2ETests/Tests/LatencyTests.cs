@@ -9,7 +9,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests pipeline startup latency: time from NativeStreamer.Start() to first
 /// data arriving (detected via GetStatus().BytesReceived).
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Streaming")]
 public class LatencyTests
 {
     private readonly DockerTestFixture _fixture;

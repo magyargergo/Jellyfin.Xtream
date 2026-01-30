@@ -8,7 +8,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// End-to-end tests for PSI/PAT/PMT program detection through the native TsDuck pipeline.
 /// Verifies that the native SectionDemux correctly parses transport stream structure.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Analysis")]
 public class ProgramDetectionTests
 {
     private readonly DockerTestFixture _fixture;

@@ -6,6 +6,7 @@ services:
     volumes:
       - ./e2e-results:/results
     environment:
-      - E2E_STREAM_DURATION_SEC=10
-      - E2E_TARGET_BITRATE_MBPS=5
+      - E2E_STREAM_DURATION_SEC=${E2E_STREAM_DURATION_SEC:-10}
+      - E2E_TARGET_BITRATE_MBPS=${E2E_TARGET_BITRATE_MBPS:-5}
+      - E2E_TEST_FILTER=${E2E_TEST_FILTER:-}
       - DOTNET_ENVIRONMENT=Production

@@ -9,7 +9,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Verifies PCR analysis, bitrate detection, A/V sync tracking,
 /// and the full metrics callback lifecycle.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Analysis")]
 public class AnalyzerMetricsTests
 {
     private readonly DockerTestFixture _fixture;

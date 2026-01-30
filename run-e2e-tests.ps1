@@ -1,23 +1,34 @@
 #!/usr/bin/env pwsh
 # Run E2E tests in Docker environment
-# Usage: ./run-e2e-tests.ps1 [-Duration <seconds>] [-Bitrate <mbps>] [-Verbose]
+# Usage: ./run-e2e-tests.ps1 [-Duration <seconds>] [-Bitrate <mbps>] [-Verbose] [-Filter <filter>]
+#
+# Examples:
+#   ./run-e2e-tests.ps1 -Filter "FullyQualifiedName~Restream"  # Run only Restream tests
+#   ./run-e2e-tests.ps1 -Filter "DisplayName~Warmup"           # Run tests with "Warmup" in name
+#   ./run-e2e-tests.ps1 -Filter "ClassName=RestreamIntegrationTests"  # Run specific test class
+#   ./run-e2e-tests.ps1                                        # Run all tests (default)
 
 param(
     [int]$Duration = 10,
     [int]$Bitrate = 5,
     [switch]$Verbose,
-    [switch]$NoBuild
+    [switch]$NoBuild,
+    [string]$Filter = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 Write-Host "=== Jellyfin.Xtream E2E Pipeline Tests ===" -ForegroundColor Cyan
 Write-Host "Duration: ${Duration}s | Target Bitrate: ${Bitrate} Mbps"
+if ($Filter) {
+    Write-Host "Filter: $Filter" -ForegroundColor Yellow
+}
 Write-Host ""
 
 # Set environment variables
 $env:E2E_STREAM_DURATION_SEC = $Duration
 $env:E2E_TARGET_BITRATE_MBPS = $Bitrate
+$env:E2E_TEST_FILTER = $Filter
 
 # Create results directory
 $resultsDir = Join-Path $PSScriptRoot "e2e-results"

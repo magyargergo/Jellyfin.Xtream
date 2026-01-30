@@ -33,7 +33,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests exercise the full pipeline: HTTP → NativeStreamer → SharedMemory → CircularBuffer → Consumer.
 /// </para>
 /// </remarks>
-[Collection("E2E")]
+[Collection("E2E-Restream")]
 public sealed class RestreamIntegrationTests : IDisposable
 {
     private const int TsPacketSize = 188;
@@ -363,8 +363,8 @@ public sealed class RestreamIntegrationTests : IDisposable
 
         Assert.True(stats.TotalBytesRead > expectedBytes * 0.8, $"Should achieve >80% of target throughput");
         Assert.True(stats.TimeToFirstByte.HasValue, "Should have received first byte");
-        // Buffer warmup takes ~6 seconds (4MB at 5Mbps), allow up to 10 seconds
-        Assert.True(stats.TimeToFirstByte.Value.TotalMilliseconds < 10000, "First byte should arrive within 10s (includes buffer warmup)");
+        // No warmup - data passes through immediately to FFmpeg
+        Assert.True(stats.TimeToFirstByte.Value.TotalMilliseconds < 3000, "First byte should arrive within 3s (no warmup)");
         Assert.True(stats.MaxReadGap.TotalSeconds < 5, $"Max gap {stats.MaxReadGap.TotalSeconds:F1}s should be < 5s");
         Assert.True(stats.SyncByteValidityRate > 95, $"Sync validity {stats.SyncByteValidityRate:F1}% should be > 95%");
     }
@@ -398,8 +398,8 @@ public sealed class RestreamIntegrationTests : IDisposable
         await restream.Open(CancellationToken.None);
 
         using var consumer = new StreamConsumerSimulator();
-        // Watch for 20 seconds: ~6s buffer warmup + 2s unstable stream + failover + recovery
-        var duration = TimeSpan.FromSeconds(20);
+        // Watch for 10 seconds: immediate data + 2s unstable stream + failover + recovery
+        var duration = TimeSpan.FromSeconds(10);
 
         // Act
         await consumer.SimulateWatchingAsync(restream, duration, readIntervalMs: 10);
@@ -544,7 +544,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// </summary>
     /// <remarks>
     /// User expectation: If one viewer has a slow connection, it shouldn't affect others.
-    /// With buffer warmup, both readers start from the same position after warmup.
+    /// Data passes through immediately - no warmup delay.
     /// The test verifies that both readers can read independently without blocking.
     /// </remarks>
     [Fact]
@@ -559,8 +559,8 @@ public sealed class RestreamIntegrationTests : IDisposable
         var slowReaderBytes = 0L;
         var fastReadCount = 0;
         var slowReadCount = 0;
-        // Run longer to see differentiation after buffer warmup completes
-        var duration = TimeSpan.FromSeconds(15);
+        // Run for 10 seconds - data available immediately (no warmup)
+        var duration = TimeSpan.FromSeconds(10);
 
         using var fastStream = restream.GetStream();
         using var slowStream = restream.GetStream();

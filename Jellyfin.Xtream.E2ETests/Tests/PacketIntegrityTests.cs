@@ -8,7 +8,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests MPEG-TS packet integrity through the full pipeline.
 /// Verifies sync bytes, continuity counters, and packet alignment.
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Streaming")]
 public class PacketIntegrityTests
 {
     private const int TsPacketSize = 188;

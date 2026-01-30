@@ -37,7 +37,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests are skipped gracefully if the native library is unavailable.
 /// </para>
 /// </remarks>
-[Collection("E2E")]
+[Collection("E2E-SharedMemory")]
 public sealed class SharedMemoryNativeInteropTests : IDisposable
 {
     private const int TsPacketSize = 188;

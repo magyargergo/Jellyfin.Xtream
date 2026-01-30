@@ -9,7 +9,7 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests sustained streaming throughput at various bitrates through the native pipeline:
 /// NativeStreamer (HTTP fetch -> restamp -> output).
 /// </summary>
-[Collection("E2E")]
+[Collection("E2E-Streaming")]
 public class ThroughputTests
 {
     private readonly DockerTestFixture _fixture;
