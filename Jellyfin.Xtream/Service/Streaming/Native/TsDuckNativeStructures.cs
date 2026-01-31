@@ -430,6 +430,7 @@ internal struct TsDuckStreamerConfigNative
     public int LowSpeedTimeSec;
 
     public int StallsBeforeSwitch;
+    public int TimeoutImmediateSwitch;
 
     // Quality-based switching (TR 101 290 error rate thresholds)
     public int EnableQualitySwitch;
@@ -469,6 +470,7 @@ internal struct TsDuckStreamerConfigNative
             LowSpeedLimitBytes = 1000,
             LowSpeedTimeSec = 10,
             StallsBeforeSwitch = 2,
+            TimeoutImmediateSwitch = 1,
             EnableQualitySwitch = 1,
             QualityCheckIntervalMs = 1000,
             QualityWindowSeconds = 10,

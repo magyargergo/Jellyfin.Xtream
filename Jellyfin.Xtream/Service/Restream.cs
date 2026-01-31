@@ -60,9 +60,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private const int HdBufferSize = 67108864;
     private const int UhdBufferSize = 134217728;
 
-    // Timeout constants
-    private const int StreamOpenTimeoutMs = 10000;
-    private const int FirstByteTimeoutMs = 5000;
+    // Timeout defaults (can be overridden via constructor)
+    private const int DefaultStreamOpenTimeoutMs = 15000;
+    private const int DefaultFirstByteTimeoutMs = 15000;
 
     // Cleanup and timing constants
     private const int ConsumerDisconnectGraceSeconds = 5;
@@ -90,6 +90,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private readonly RefCountedResourcePool<CircularBufferReadStream> _readerPool;
     private readonly string _streamQuality;
     private readonly DateTime _startTime = DateTime.UtcNow;
+    private readonly int _streamOpenTimeoutMs;
+    private readonly int _firstByteTimeoutMs;
 
     private CancellationTokenSource _tokenSource;
     private Task? _broadcastTask;
@@ -145,6 +147,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <param name="urls">The list of URLs to use for streaming (C++ handles failover/selection).</param>
     /// <param name="initialScores">Initial health scores for each URL (same order as urls). C++ manages scores after setup.</param>
     /// <param name="discordService">Optional Discord notification service.</param>
+    /// <param name="streamOpenTimeoutMs">Maximum time for stream connection (default 15000ms).</param>
+    /// <param name="firstByteTimeoutMs">Maximum time to wait for first data (default 15000ms).</param>
     public Restream(
         IServerApplicationHost appHost,
         ILogger<Restream> logger,
@@ -152,7 +156,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         MediaSourceInfo mediaSource,
         IReadOnlyList<string> urls,
         IReadOnlyList<double>? initialScores = null,
-        IDiscordNotificationService? discordService = null
+        IDiscordNotificationService? discordService = null,
+        int streamOpenTimeoutMs = DefaultStreamOpenTimeoutMs,
+        int firstByteTimeoutMs = DefaultFirstByteTimeoutMs
     )
     {
         _logger = logger;
@@ -160,6 +166,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _discordService = discordService;
         _urls = urls;
         MediaSource = mediaSource;
+        _streamOpenTimeoutMs = streamOpenTimeoutMs;
+        _firstByteTimeoutMs = firstByteTimeoutMs;
         _tokenSource = new CancellationTokenSource();
         _streamQuality = DetectStreamQuality(mediaSource);
         var bufferSize = GetBufferSize(_streamQuality);
@@ -288,7 +296,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     {
         // Create timeout-aware cancellation for fast-fail on connection + first byte
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(openCancellationToken);
-        timeoutCts.CancelAfter(StreamOpenTimeoutMs);
+        timeoutCts.CancelAfter(_streamOpenTimeoutMs);
 
         await _openLock.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
         try
@@ -313,7 +321,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 "Starting broadcast for channel {ChannelId} from URL: {Url} (timeout: {TimeoutMs}ms)",
                 MediaSource.Id,
                 _sourceUrl,
-                StreamOpenTimeoutMs
+                _streamOpenTimeoutMs
             );
             _buffer.Reset();
 
@@ -330,14 +338,14 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             _broadcastTask = BroadcastFromSourceAsync(_tokenSource.Token);
 
             // Wait for first data with timeout (fast-fail if no data)
-            if (!await WaitForFirstDataAsync(FirstByteTimeoutMs, timeoutCts.Token).ConfigureAwait(false))
+            if (!await WaitForFirstDataAsync(_firstByteTimeoutMs, timeoutCts.Token).ConfigureAwait(false))
             {
                 _logger.PluginLogWarning(
                     "Stream {ChannelId} did not produce data within {TimeoutMs}ms first-byte timeout",
                     MediaSource.Id,
-                    FirstByteTimeoutMs
+                    _firstByteTimeoutMs
                 );
-                throw new TimeoutException($"Stream did not produce data within {FirstByteTimeoutMs}ms");
+                throw new TimeoutException($"Stream did not produce data within {_firstByteTimeoutMs}ms");
             }
 
             _logger.LogDebugIfEnabled(
@@ -355,9 +363,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             _logger.PluginLogWarning(
                 "Stream {ChannelId} connection timed out after {TimeoutMs}ms",
                 MediaSource.Id,
-                StreamOpenTimeoutMs
+                _streamOpenTimeoutMs
             );
-            throw new TimeoutException($"Stream connection timed out after {StreamOpenTimeoutMs}ms");
+            throw new TimeoutException($"Stream connection timed out after {_streamOpenTimeoutMs}ms");
         }
         finally
         {
@@ -500,8 +508,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         _logger.LogDebugIfEnabled("Connected to shared memory: {Name}", _sharedMemoryName);
 
-        // Read buffer - sized for multiple slots (16 slots × 1316 bytes ≈ 21KB)
-        var readBuffer = new byte[1316 * 16];
         var lastHealthCheckTime = DateTime.UtcNow;
 
         while (!cancellationToken.IsCancellationRequested && _receivingData)
@@ -544,13 +550,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 _logger.PluginLogWarning("Shared memory overflow for {ChannelId}", MediaSource.Id);
             }
 
-            // Read available data
-            int bytesRead = _shmConsumer.Read(readBuffer);
-            if (bytesRead > 0)
-            {
-                // Write to circular buffer
-                _buffer.Write(readBuffer.AsSpan(0, bytesRead));
-            }
+            // Read directly from shared memory to circular buffer (zero-copy)
+            _shmConsumer.ReadTo(_buffer);
 
             // Periodic health check
             var now = DateTime.UtcNow;

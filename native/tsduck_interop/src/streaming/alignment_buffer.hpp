@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <vector>
 #include "../core/constants.hpp"
+#include "../platform/simd_memcpy.hpp"
 
 namespace tsduck_interop::streaming {
 
@@ -52,9 +53,9 @@ public:
             buffer_.resize(required + ts::PKT_SIZE);
         }
 
-        // Append new data after pending bytes
+        // Append new data after pending bytes (SIMD-optimized for curl chunks 16KB-64KB)
         // flawfinder: ignore - bounds checked by resize() above ensuring buffer_ can hold required bytes
-        std::memcpy(buffer_.data() + pending_bytes_, data, size);
+        platform::simd_memcpy(buffer_.data() + pending_bytes_, data, size);
         pending_bytes_ += static_cast<int32_t>(size);
 
         // Find aligned start
@@ -78,7 +79,7 @@ public:
             output_buffer_.resize(static_cast<size_t>(aligned_bytes));
         }
         // flawfinder: ignore - bounds checked by resize() above ensuring output_buffer_ can hold aligned_bytes
-        std::memcpy(output_buffer_.data(), buffer_.data() + start, aligned_bytes);
+        platform::simd_memcpy(output_buffer_.data(), buffer_.data() + start, static_cast<std::size_t>(aligned_bytes));
 
         result.data = output_buffer_.data();
         result.length = aligned_bytes;

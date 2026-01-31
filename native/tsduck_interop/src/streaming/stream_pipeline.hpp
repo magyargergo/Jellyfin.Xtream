@@ -21,6 +21,7 @@
 #include "../context/context.hpp"
 #include "../concurrency/seqlock.hpp"
 #include "../ipc/shared_memory_channel.hpp"
+#include "../registry/channel_registry.hpp"
 
 namespace tsduck_interop::streaming {
 
@@ -81,6 +82,24 @@ public:
 
     /// Clear all URLs.
     void clear_urls() { source_.clear_urls(); }
+
+    // ========================================================================
+    // Registry-based Configuration (alternative to add_url)
+    // ========================================================================
+
+    /// Set the channel registry for GUID-based URL lookups.
+    /// The registry must outlive this pipeline. Not thread-safe - call before start().
+    /// @param registry Pointer to the global channel registry.
+    void set_registry(registry::ChannelRegistry* reg) noexcept { registry_ = reg; }
+
+    /// Set the channel GUID for registry-based streaming.
+    /// When registry is set and GUID is valid, start() will populate URLs from registry.
+    /// @param guid_high High 64 bits of the channel GUID.
+    /// @param guid_low Low 64 bits of the channel GUID.
+    void set_channel_guid(int64_t guid_high, int64_t guid_low) noexcept {
+        channel_guid_high_ = guid_high;
+        channel_guid_low_ = guid_low;
+    }
 
     /// Set output file descriptor (pipe for FFmpeg). -1 = callback mode.
     void set_output_fd(int32_t fd) noexcept { config_.output_fd = fd; }
@@ -186,6 +205,7 @@ private:
     // Shared memory output (alternative to callback)
     std::unique_ptr<ipc::SharedMemoryProducer> shm_producer_;
     std::string shm_name_;
+    std::size_t shm_bytes_since_signal_{0};  // Bytes written since last signal
 
     // Timing state for mid-stream switch
     int64_t last_output_pts_{-1};
@@ -193,8 +213,17 @@ private:
     int64_t bytes_received_total_{0};
     bool first_data_after_switch_{false};
 
+    // Disconnect reason tracking (for failover decision-making)
+    DisconnectReason last_disconnect_reason_{DisconnectReason::Unknown};
+
     // Session timing
     int64_t session_start_ticks_{0};
+
+    // Registry integration (optional - alternative to manual URL addition)
+    registry::ChannelRegistry* registry_{nullptr};
+    int64_t channel_guid_high_{0};
+    int64_t channel_guid_low_{0};
+    int32_t current_provider_index_{-1};  // For health tracking
 
     // ========================================================================
     // Worker Thread
@@ -238,6 +267,15 @@ private:
 
     /// Common initialization shared by constructors.
     void init_common(const TsDuckConfigNative* analyzer_config);
+
+    /// Populate URLs from registry using current channel GUID.
+    /// Called from start() if registry is set.
+    /// @return true if URLs were populated, false if no registry or channel not found.
+    bool populate_urls_from_registry() noexcept;
+
+    /// Record success/failure to registry for health tracking.
+    void record_provider_success(int64_t bytes) noexcept;
+    void record_provider_failure(DisconnectReason reason) noexcept;
 };
 
 }  // namespace tsduck_interop::streaming

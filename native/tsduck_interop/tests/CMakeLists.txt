@@ -78,6 +78,8 @@ endforeach()
 add_executable(test_shared_memory_channel
     unit/test_shared_memory_channel.cpp
     ${SRC_DIR}/ipc/shared_memory_channel.cpp
+            ${SRC_DIR}/registry/channel_registry.cpp
+            ${SRC_DIR}/registry/channel_normalizer.cpp
 )
 target_include_directories(test_shared_memory_channel PRIVATE
     ${SRC_DIR} ${INCLUDE_DIR} ${TSDUCK_INCLUDE_DIRS})
@@ -147,6 +149,8 @@ if(CURL_FOUND)
         ${SRC_DIR}/streaming/stream_source.cpp
         ${SRC_DIR}/streaming/stream_pipeline.cpp
         ${SRC_DIR}/ipc/shared_memory_channel.cpp
+            ${SRC_DIR}/registry/channel_registry.cpp
+            ${SRC_DIR}/registry/channel_normalizer.cpp
     )
     target_include_directories(test_streamer_integration PRIVATE
         ${SRC_DIR}
@@ -213,6 +217,8 @@ if(CURL_FOUND)
             ${SRC_DIR}/streaming/stream_source.cpp
             ${SRC_DIR}/streaming/stream_pipeline.cpp
             ${SRC_DIR}/ipc/shared_memory_channel.cpp
+            ${SRC_DIR}/registry/channel_registry.cpp
+            ${SRC_DIR}/registry/channel_normalizer.cpp
         )
         target_include_directories(${test} PRIVATE
             ${SRC_DIR} ${INCLUDE_DIR} ${CURL_INCLUDE_DIRS} ${TSDUCK_INCLUDE_DIRS}

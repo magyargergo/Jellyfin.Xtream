@@ -56,6 +56,9 @@ public sealed class NativeStreamer : IDisposable
     // Shared memory mode
     private string? _sharedMemoryName;
 
+    // Registry integration (keep reference to prevent GC)
+    private NativeChannelRegistry? _registry;
+
     private bool _disposed;
 
     /// <summary>
@@ -245,6 +248,64 @@ public sealed class NativeStreamer : IDisposable
 
             return TsDuckNativeMethods.StreamerIsSharedMemoryMode(_streamer.DangerousGetHandle()) != 0;
         }
+    }
+
+    /// <summary>
+    /// Sets the channel registry for GUID-based URL lookups.
+    /// When a registry is set, call <see cref="SetChannelGuid"/> to specify which channel to stream.
+    /// The streamer will use the registry to populate URLs on start and track health internally.
+    /// </summary>
+    /// <param name="registry">The registry to use for URL lookups, or null to clear.</param>
+    /// <remarks>
+    /// The registry must be built before start(). The registry is kept alive by the streamer
+    /// until cleared or the streamer is disposed.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed.</exception>
+    public void SetRegistry(NativeChannelRegistry? registry)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var registryHandle = registry?.DangerousGetHandle() ?? 0;
+        var result = TsDuckNativeMethods.StreamerSetRegistry(_streamer.DangerousGetHandle(), registryHandle);
+
+        if (result != 0)
+        {
+            throw new InvalidOperationException($"Failed to set registry: error {result}");
+        }
+
+        // Keep reference to prevent GC while streamer uses it
+        _registry = registry;
+        _logger?.LogDebugIfEnabled("NativeStreamer registry set: {HasRegistry}", registry != null);
+    }
+
+    /// <summary>
+    /// Sets the channel GUID for registry-based streaming.
+    /// When the registry is set and GUID is valid, Start() will populate URLs from the registry.
+    /// The streamer handles all URL selection, health tracking, and failover internally.
+    /// </summary>
+    /// <param name="channelGuid">The channel GUID to stream.</param>
+    /// <remarks>
+    /// The GUID is split into high and low 64-bit parts for C interop.
+    /// Call <see cref="SetRegistry"/> first with a built registry.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed.</exception>
+    public void SetChannelGuid(Guid channelGuid)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // Convert GUID to two int64 values (big-endian byte order)
+        var bytes = channelGuid.ToByteArray();
+        var guidHigh = BitConverter.ToInt64(bytes, 0);
+        var guidLow = BitConverter.ToInt64(bytes, 8);
+
+        var result = TsDuckNativeMethods.StreamerSetChannelGuid(_streamer.DangerousGetHandle(), guidHigh, guidLow);
+
+        if (result != 0)
+        {
+            throw new InvalidOperationException($"Failed to set channel GUID: error {result}");
+        }
+
+        _logger?.LogDebugIfEnabled("NativeStreamer channel GUID set: {Guid}", channelGuid);
     }
 
     /// <summary>
@@ -465,6 +526,9 @@ public sealed class NativeStreamer : IDisposable
         // SafeHandle calls StreamerDestroy which cleans up the worker thread
         // and all native resources
         _streamer.Dispose();
+
+        // Clear registry reference (the registry is NOT owned by streamer, just referenced)
+        _registry = null;
 
         _logger?.LogDebugIfEnabled("NativeStreamer disposed");
     }

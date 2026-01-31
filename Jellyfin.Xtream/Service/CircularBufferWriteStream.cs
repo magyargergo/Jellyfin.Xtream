@@ -19,6 +19,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
@@ -67,6 +68,8 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     private static readonly bool _avx512Supported = Avx512F.IsSupported;
     private static readonly bool _avx2Supported = Avx2.IsSupported;
     private static readonly bool _sse2Supported = Sse2.IsSupported;
+    private static readonly bool _advSimdSupported = AdvSimd.IsSupported;
+    private static readonly bool _advSimdArm64Supported = AdvSimd.Arm64.IsSupported;
     private static readonly int _prefetchDistance = DeterminePrefetchDistance();
 
     private readonly ILogger<CircularBufferWriteStream>? _logger =
@@ -371,17 +374,20 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     /// <summary>
     /// Determines optimal SIMD threshold based on CPU capabilities.
     /// Lower-end CPUs get higher threshold to avoid SIMD overhead.
+    /// ARM NEON has similar characteristics to SSE2 for threshold selection.
     /// </summary>
     private static int DetermineSimdThreshold()
     {
         return Avx2.IsSupported ? 512
             : Sse2.IsSupported ? 1024
+            : AdvSimd.IsSupported ? 1024
             : 4096;
     }
 
     /// <summary>
     /// Determines optimal prefetch distance based on CPU capabilities.
     /// Smaller caches on low-end CPUs need shorter prefetch distance to avoid cache pollution.
+    /// AVX2 systems typically have larger caches supporting longer prefetch distances.
     /// </summary>
     private static int DeterminePrefetchDistance() => Avx2.IsSupported ? 256 : 128;
 
@@ -398,28 +404,147 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
 
         if (_avx512Supported && length >= 64)
         {
-            for (var avx512Length = length & -64; offset < avx512Length; offset += 64)
+            // AVX-512 path - 512-bit (64-byte) vectors
+            // Process 128 bytes at a time using two vector registers for better pipelining.
+            // Interleaving loads before stores hides memory latency and utilizes out-of-order execution.
+
+            // Check alignment for non-temporal stores (64-byte alignment for AVX-512)
+            var isAligned = ((nuint)(dst + offset) & 63) == 0;
+            var useNonTemporalAvx512 = useNonTemporal && isAligned;
+
+            if (useNonTemporalAvx512 && length >= 128)
             {
-                if (offset + _prefetchDistance < length)
+                // 128-byte non-temporal with 2x pipelining
+                var avx512x2Length = length & -128;
+                for (; offset < avx512x2Length; offset += 128)
                 {
-                    Sse.Prefetch0(src + offset + _prefetchDistance);
+                    // Prefetch 2-3 iterations ahead for 128-byte stride
+                    if (offset + 384 < length)
+                    {
+                        Sse.Prefetch0(src + offset + 256);
+                        Sse.Prefetch0(src + offset + 320);
+                    }
+
+                    var vec0 = Avx512F.LoadVector512(src + offset);
+                    var vec1 = Avx512F.LoadVector512(src + offset + 64);
+                    Avx512F.StoreAlignedNonTemporal(dst + offset, vec0);
+                    Avx512F.StoreAlignedNonTemporal(dst + offset + 64, vec1);
                 }
 
-                var vec = Avx512F.LoadVector512(src + offset);
-                Avx512F.Store(dst + offset, vec);
+                // Handle remaining 64-byte chunk with non-temporal
+                var avx512Length = length & -64;
+                for (; offset < avx512Length; offset += 64)
+                {
+                    var vec = Avx512F.LoadVector512(src + offset);
+                    Avx512F.StoreAlignedNonTemporal(dst + offset, vec);
+                }
+            }
+            else if (useNonTemporalAvx512)
+            {
+                // 64-byte non-temporal (smaller buffers)
+                var avx512Length = length & -64;
+                for (; offset < avx512Length; offset += 64)
+                {
+                    if (offset + _prefetchDistance < length)
+                    {
+                        Sse.Prefetch0(src + offset + _prefetchDistance);
+                    }
+
+                    var vec = Avx512F.LoadVector512(src + offset);
+                    Avx512F.StoreAlignedNonTemporal(dst + offset, vec);
+                }
+            }
+            else if (length >= 128)
+            {
+                // Regular stores with 128-byte pipelining
+                var avx512x2Length = length & -128;
+                for (; offset < avx512x2Length; offset += 128)
+                {
+                    // Prefetch 2-3 iterations ahead for 128-byte stride
+                    if (offset + 384 < length)
+                    {
+                        Sse.Prefetch0(src + offset + 256);
+                        Sse.Prefetch0(src + offset + 320);
+                    }
+
+                    var vec0 = Avx512F.LoadVector512(src + offset);
+                    var vec1 = Avx512F.LoadVector512(src + offset + 64);
+                    Avx512F.Store(dst + offset, vec0);
+                    Avx512F.Store(dst + offset + 64, vec1);
+                }
+
+                // Handle remaining 64-byte chunk
+                var avx512Length = length & -64;
+                for (; offset < avx512Length; offset += 64)
+                {
+                    var vec = Avx512F.LoadVector512(src + offset);
+                    Avx512F.Store(dst + offset, vec);
+                }
+            }
+            else
+            {
+                // 64-byte only (smaller buffers)
+                var avx512Length = length & -64;
+                for (; offset < avx512Length; offset += 64)
+                {
+                    if (offset + _prefetchDistance < length)
+                    {
+                        Sse.Prefetch0(src + offset + _prefetchDistance);
+                    }
+
+                    var vec = Avx512F.LoadVector512(src + offset);
+                    Avx512F.Store(dst + offset, vec);
+                }
             }
         }
         else if (_avx2Supported && length >= 32)
         {
-            var avx2Length = length & -32;
+            // AVX2 path - 256-bit (32-byte) vectors
+            // Process 64 bytes at a time using two vector registers for better pipelining.
+            // This matches cache line size (64 bytes) for optimal memory throughput.
             if (useNonTemporal && Sse2.IsSupported)
             {
-                // Check if destination is 16-byte aligned for non-temporal stores
-                // StoreAlignedNonTemporal requires 16-byte alignment; use regular Store if unaligned
+                // Non-temporal stores for large copies to avoid cache pollution
                 var isAligned = ((nuint)(dst + offset) & 15) == 0;
 
-                if (isAligned)
+                if (isAligned && length >= 64)
                 {
+                    // 64-byte non-temporal with pipelining
+                    var avx2x2Length = length & -64;
+                    for (; offset < avx2x2Length; offset += 64)
+                    {
+                        if (offset + _prefetchDistance < length)
+                        {
+                            Sse.Prefetch0(src + offset + _prefetchDistance);
+                        }
+
+                        var vec0 = Avx.LoadVector256(src + offset);
+                        var vec1 = Avx.LoadVector256(src + offset + 32);
+                        var lo0 = vec0.GetLower();
+                        var hi0 = vec0.GetUpper();
+                        var lo1 = vec1.GetLower();
+                        var hi1 = vec1.GetUpper();
+                        Sse2.StoreAlignedNonTemporal(dst + offset, lo0);
+                        Sse2.StoreAlignedNonTemporal(dst + offset + 16, hi0);
+                        Sse2.StoreAlignedNonTemporal(dst + offset + 32, lo1);
+                        Sse2.StoreAlignedNonTemporal(dst + offset + 48, hi1);
+                    }
+
+                    // Handle remaining 32-byte chunk
+                    var avx2Length = length & -32;
+                    for (; offset < avx2Length; offset += 32)
+                    {
+                        var vec = Avx.LoadVector256(src + offset);
+                        var lo = vec.GetLower();
+                        var hi = vec.GetUpper();
+                        Sse2.StoreAlignedNonTemporal(dst + offset, lo);
+                        Sse2.StoreAlignedNonTemporal(dst + offset + 16, hi);
+                    }
+                }
+                else if (isAligned)
+                {
+                    // 32-byte non-temporal (smaller buffers)
+                    var avx2Length = length & -32;
                     for (; offset < avx2Length; offset += 32)
                     {
                         if (offset + _prefetchDistance < length)
@@ -436,14 +561,28 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
                 }
                 else
                 {
-                    // Fallback to regular stores for unaligned destinations
+                    // Unaligned destination - use regular stores with 64-byte pipelining
+                    if (length >= 64)
+                    {
+                        var avx2x2Length = length & -64;
+                        for (; offset < avx2x2Length; offset += 64)
+                        {
+                            if (offset + _prefetchDistance < length)
+                            {
+                                Sse.Prefetch0(src + offset + _prefetchDistance);
+                            }
+
+                            var vec0 = Avx.LoadVector256(src + offset);
+                            var vec1 = Avx.LoadVector256(src + offset + 32);
+                            Avx.Store(dst + offset, vec0);
+                            Avx.Store(dst + offset + 32, vec1);
+                        }
+                    }
+
+                    // Handle remaining 32-byte chunk
+                    var avx2Length = length & -32;
                     for (; offset < avx2Length; offset += 32)
                     {
-                        if (offset + _prefetchDistance < length)
-                        {
-                            Sse.Prefetch0(src + offset + _prefetchDistance);
-                        }
-
                         var vec = Avx.LoadVector256(src + offset);
                         Avx.Store(dst + offset, vec);
                     }
@@ -451,9 +590,30 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
             }
             else
             {
+                // Regular stores with 64-byte pipelining
+                // Note: AVX2 implies SSE support, so no need to check Sse.IsSupported
+                if (length >= 64)
+                {
+                    var avx2x2Length = length & -64;
+                    for (; offset < avx2x2Length; offset += 64)
+                    {
+                        if (offset + _prefetchDistance < length)
+                        {
+                            Sse.Prefetch0(src + offset + _prefetchDistance);
+                        }
+
+                        var vec0 = Avx.LoadVector256(src + offset);
+                        var vec1 = Avx.LoadVector256(src + offset + 32);
+                        Avx.Store(dst + offset, vec0);
+                        Avx.Store(dst + offset + 32, vec1);
+                    }
+                }
+
+                // Handle remaining 32-byte chunk
+                var avx2Length = length & -32;
                 for (; offset < avx2Length; offset += 32)
                 {
-                    if (Sse.IsSupported && offset + _prefetchDistance < length)
+                    if (offset + _prefetchDistance < length)
                     {
                         Sse.Prefetch0(src + offset + _prefetchDistance);
                     }
@@ -465,14 +625,46 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
         }
         else if (_sse2Supported && length >= 16)
         {
-            var sse2Length = length & -16;
+            // SSE2 path - 128-bit (16-byte) vectors
+            // Process 64 bytes at a time using four vector registers to match cache line size.
+            // This improves memory throughput by better utilizing the memory subsystem.
             if (useNonTemporal)
             {
-                // Check if destination is 16-byte aligned for non-temporal stores
                 var isAligned = ((nuint)(dst + offset) & 15) == 0;
 
-                if (isAligned)
+                if (isAligned && length >= 64)
                 {
+                    // 64-byte non-temporal with 4x pipelining
+                    var sse2x4Length = length & -64;
+                    for (; offset < sse2x4Length; offset += 64)
+                    {
+                        if (offset + _prefetchDistance < length)
+                        {
+                            Sse.Prefetch0(src + offset + _prefetchDistance);
+                        }
+
+                        var vec0 = Sse2.LoadVector128(src + offset);
+                        var vec1 = Sse2.LoadVector128(src + offset + 16);
+                        var vec2 = Sse2.LoadVector128(src + offset + 32);
+                        var vec3 = Sse2.LoadVector128(src + offset + 48);
+                        Sse2.StoreAlignedNonTemporal(dst + offset, vec0);
+                        Sse2.StoreAlignedNonTemporal(dst + offset + 16, vec1);
+                        Sse2.StoreAlignedNonTemporal(dst + offset + 32, vec2);
+                        Sse2.StoreAlignedNonTemporal(dst + offset + 48, vec3);
+                    }
+
+                    // Handle remaining 16-byte chunks
+                    var sse2Length = length & -16;
+                    for (; offset < sse2Length; offset += 16)
+                    {
+                        var vec = Sse2.LoadVector128(src + offset);
+                        Sse2.StoreAlignedNonTemporal(dst + offset, vec);
+                    }
+                }
+                else if (isAligned)
+                {
+                    // 16-byte non-temporal (smaller buffers)
+                    var sse2Length = length & -16;
                     for (; offset < sse2Length; offset += 16)
                     {
                         if (offset + _prefetchDistance < length)
@@ -486,14 +678,32 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
                 }
                 else
                 {
-                    // Fallback to regular stores for unaligned destinations
+                    // Unaligned - use regular stores with 64-byte pipelining
+                    if (length >= 64)
+                    {
+                        var sse2x4Length = length & -64;
+                        for (; offset < sse2x4Length; offset += 64)
+                        {
+                            if (offset + _prefetchDistance < length)
+                            {
+                                Sse.Prefetch0(src + offset + _prefetchDistance);
+                            }
+
+                            var vec0 = Sse2.LoadVector128(src + offset);
+                            var vec1 = Sse2.LoadVector128(src + offset + 16);
+                            var vec2 = Sse2.LoadVector128(src + offset + 32);
+                            var vec3 = Sse2.LoadVector128(src + offset + 48);
+                            Sse2.Store(dst + offset, vec0);
+                            Sse2.Store(dst + offset + 16, vec1);
+                            Sse2.Store(dst + offset + 32, vec2);
+                            Sse2.Store(dst + offset + 48, vec3);
+                        }
+                    }
+
+                    // Handle remaining 16-byte chunks
+                    var sse2Length = length & -16;
                     for (; offset < sse2Length; offset += 16)
                     {
-                        if (offset + _prefetchDistance < length)
-                        {
-                            Sse.Prefetch0(src + offset + _prefetchDistance);
-                        }
-
                         var vec = Sse2.LoadVector128(src + offset);
                         Sse2.Store(dst + offset, vec);
                     }
@@ -501,6 +711,30 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
             }
             else
             {
+                // Regular stores with 64-byte pipelining
+                if (length >= 64)
+                {
+                    var sse2x4Length = length & -64;
+                    for (; offset < sse2x4Length; offset += 64)
+                    {
+                        if (offset + _prefetchDistance < length)
+                        {
+                            Sse.Prefetch0(src + offset + _prefetchDistance);
+                        }
+
+                        var vec0 = Sse2.LoadVector128(src + offset);
+                        var vec1 = Sse2.LoadVector128(src + offset + 16);
+                        var vec2 = Sse2.LoadVector128(src + offset + 32);
+                        var vec3 = Sse2.LoadVector128(src + offset + 48);
+                        Sse2.Store(dst + offset, vec0);
+                        Sse2.Store(dst + offset + 16, vec1);
+                        Sse2.Store(dst + offset + 32, vec2);
+                        Sse2.Store(dst + offset + 48, vec3);
+                    }
+                }
+
+                // Handle remaining 16-byte chunks
+                var sse2Length = length & -16;
                 for (; offset < sse2Length; offset += 16)
                 {
                     if (offset + _prefetchDistance < length)
@@ -511,6 +745,55 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
                     var vec = Sse2.LoadVector128(src + offset);
                     Sse2.Store(dst + offset, vec);
                 }
+            }
+        }
+        else if (_advSimdSupported && length >= 16)
+        {
+            // ARM NEON path - 128-bit vectors
+            // Note: ARM relies on hardware prefetching; PRFM is not exposed via AdvSimd intrinsics.
+            // Modern ARM cores (Apple Silicon, Cortex-A78+) have aggressive hardware prefetchers.
+            // No software prefetch needed unlike x86 SSE/AVX paths.
+            //
+            // Memory barrier note: ARM NEON uses regular stores (not non-temporal),
+            // so no explicit memory barrier is required for cache coherency.
+            if (_advSimdArm64Supported && length >= 64)
+            {
+                // Process 64 bytes at a time using four vector registers
+                // This maximizes memory bandwidth utilization on ARM64 cores with wide
+                // execution units (Apple M-series, Cortex-X series).
+                // JIT should emit LDP/STP pairs for optimal throughput.
+                var advSimd64Length = length & -64;
+                for (; offset < advSimd64Length; offset += 64)
+                {
+                    var vec0 = AdvSimd.LoadVector128(src + offset);
+                    var vec1 = AdvSimd.LoadVector128(src + offset + 16);
+                    var vec2 = AdvSimd.LoadVector128(src + offset + 32);
+                    var vec3 = AdvSimd.LoadVector128(src + offset + 48);
+                    AdvSimd.Store(dst + offset, vec0);
+                    AdvSimd.Store(dst + offset + 16, vec1);
+                    AdvSimd.Store(dst + offset + 32, vec2);
+                    AdvSimd.Store(dst + offset + 48, vec3);
+                }
+            }
+            else if (_advSimdArm64Supported && length >= 32)
+            {
+                // Process 32 bytes at a time using two vector registers for pipelining
+                var advSimd32Length = length & -32;
+                for (; offset < advSimd32Length; offset += 32)
+                {
+                    var vec0 = AdvSimd.LoadVector128(src + offset);
+                    var vec1 = AdvSimd.LoadVector128(src + offset + 16);
+                    AdvSimd.Store(dst + offset, vec0);
+                    AdvSimd.Store(dst + offset + 16, vec1);
+                }
+            }
+
+            // Process remaining 16-byte chunks (handles both ARM32 NEON and ARM64 remainder)
+            var advSimdLength = length & -16;
+            for (; offset < advSimdLength; offset += 16)
+            {
+                var vec = AdvSimd.LoadVector128(src + offset);
+                AdvSimd.Store(dst + offset, vec);
             }
         }
         else if (Vector.IsHardwareAccelerated && length >= Vector<byte>.Count)
@@ -526,6 +809,8 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
             }
         }
 
+        // Handle remaining bytes using progressively smaller copy sizes
+        // This avoids the byte-by-byte loop overhead for small remainders
         var remaining = length - offset;
         if (remaining > 0)
         {
@@ -543,11 +828,16 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
                 remaining -= 4;
             }
 
-            while (remaining > 0)
+            if (remaining >= 2)
+            {
+                Unsafe.WriteUnaligned(dst + offset, Unsafe.ReadUnaligned<short>(src + offset));
+                offset += 2;
+                remaining -= 2;
+            }
+
+            if (remaining > 0)
             {
                 dst[offset] = src[offset];
-                offset++;
-                remaining--;
             }
         }
 

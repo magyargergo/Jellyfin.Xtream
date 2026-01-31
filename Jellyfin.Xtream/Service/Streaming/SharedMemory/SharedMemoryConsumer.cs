@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
@@ -74,6 +75,10 @@ public sealed class SharedMemoryConsumer : IDisposable
     private readonly long _dataOffset;
     private readonly long _totalSize;
 
+    // Cached base pointer - acquired once and held for the lifetime of the consumer.
+    // This is safe because the MemoryMappedViewAccessor keeps the mapping alive.
+    private readonly unsafe byte* _basePtr;
+
     private bool _disposed;
 
     /// <summary>
@@ -121,6 +126,15 @@ public sealed class SharedMemoryConsumer : IDisposable
 
         // Create full view accessor
         _accessor = _mmf.CreateViewAccessor(0, _totalSize, MemoryMappedFileAccess.ReadWrite);
+
+        // Acquire and cache the base pointer for the lifetime of this consumer.
+        // This eliminates repeated AcquirePointer/ReleasePointer overhead in hot paths.
+        unsafe
+        {
+            byte* ptr = null;
+            _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+            _basePtr = ptr;
+        }
 
         // Open signaling semaphore (optional - may not exist on all platforms)
         _semaphore = TryOpenSemaphore(name);
@@ -244,7 +258,7 @@ public sealed class SharedMemoryConsumer : IDisposable
     /// </summary>
     /// <param name="buffer">Destination buffer.</param>
     /// <returns>Number of bytes read (always multiple of 188).</returns>
-    public int Read(Span<byte> buffer)
+    public unsafe int Read(Span<byte> buffer)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -253,11 +267,15 @@ public sealed class SharedMemoryConsumer : IDisposable
             return 0;
         }
 
-        WriteConsumerState(ConsumerState.Reading);
+        // Use cached pointer - no acquire/release overhead
+        byte* ptr = _basePtr;
 
-        // Read positions with proper memory ordering
-        ulong writePos = ReadWritePosition();
-        ulong readPos = ReadReadPosition();
+        // Update consumer state using cached pointer
+        Volatile.Write(ref Unsafe.AsRef<ulong>(ptr + ConsumerStateOffset), (ulong)ConsumerState.Reading);
+
+        // Read positions with proper memory ordering using cached pointer
+        ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
+        ulong readPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
 
         // Calculate available slots
         ulong availableSlots = writePos - readPos;
@@ -267,7 +285,8 @@ public sealed class SharedMemoryConsumer : IDisposable
         }
 
         // Calculate how many bytes we can read (aligned to TS packets)
-        int bytesToRead = (int)Math.Min((long)availableSlots * _slotSize, buffer.Length);
+        uint slotSize = _slotSize;
+        int bytesToRead = (int)Math.Min((long)availableSlots * slotSize, buffer.Length);
         bytesToRead = (bytesToRead / TsPacketSize) * TsPacketSize;
 
         if (bytesToRead == 0)
@@ -277,23 +296,122 @@ public sealed class SharedMemoryConsumer : IDisposable
 
         int totalRead = 0;
         ulong currentSlot = readPos & _slotMask;
+        long dataOffset = _dataOffset;
 
         while (totalRead < bytesToRead)
         {
-            int chunkSize = Math.Min(bytesToRead - totalRead, (int)_slotSize);
-            long slotOffset = _dataOffset + (long)(currentSlot * _slotSize);
+            int chunkSize = Math.Min(bytesToRead - totalRead, (int)slotSize);
+            long slotOffset = dataOffset + (long)(currentSlot * slotSize);
 
-            ReadBytes(slotOffset, buffer.Slice(totalRead, chunkSize));
+            // Copy directly from cached pointer
+            new ReadOnlySpan<byte>(ptr + slotOffset, chunkSize).CopyTo(buffer.Slice(totalRead, chunkSize));
             totalRead += chunkSize;
             currentSlot = (currentSlot + 1) & _slotMask;
             readPos++;
         }
 
-        // Update read position with release semantics
-        WriteReadPosition(readPos);
-        UpdateReadStatistics((ulong)totalRead, (ulong)(totalRead / TsPacketSize));
+        // Update read position with release semantics using cached pointer
+        Volatile.Write(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset), readPos);
+
+        // Update statistics inline
+        ref ulong totalBytesRef = ref Unsafe.AsRef<ulong>(ptr + TotalBytesReadOffset);
+        Volatile.Write(ref totalBytesRef, Volatile.Read(ref totalBytesRef) + (ulong)totalRead);
+
+        ref ulong totalPacketsRef = ref Unsafe.AsRef<ulong>(ptr + TotalPacketsReadOffset);
+        Volatile.Write(ref totalPacketsRef, Volatile.Read(ref totalPacketsRef) + (ulong)(totalRead / TsPacketSize));
+
+        // Update timestamp less frequently
+        if ((readPos & 0xF) == 0)
+        {
+            ref ulong timestampRef = ref Unsafe.AsRef<ulong>(ptr + LastReadTimestampOffset);
+            Volatile.Write(ref timestampRef, (ulong)DateTime.UtcNow.Ticks * 100);
+        }
 
         return totalRead;
+    }
+
+    /// <summary>
+    /// Reads available data directly to a destination stream (zero-copy from shared memory).
+    /// This is more efficient than Read() + Write() as it avoids an intermediate buffer.
+    /// </summary>
+    /// <param name="destination">Destination stream to write to.</param>
+    /// <param name="maxBytes">Maximum bytes to read (0 = unlimited).</param>
+    /// <returns>Number of bytes written to destination (always multiple of 188).</returns>
+    public unsafe int ReadTo(Stream destination, int maxBytes = 0)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(destination);
+
+        // Use cached pointer - no acquire/release overhead
+        byte* ptr = _basePtr;
+
+        // Update consumer state using cached pointer
+        Volatile.Write(ref Unsafe.AsRef<ulong>(ptr + ConsumerStateOffset), (ulong)ConsumerState.Reading);
+
+        // Read positions with proper memory ordering using cached pointer
+        ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
+        ulong readPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
+
+        // Calculate available slots
+        ulong availableSlots = writePos - readPos;
+        if (availableSlots == 0)
+        {
+            return 0;
+        }
+
+        // Calculate how many bytes we can read (aligned to TS packets)
+        // Cache slot size as local for faster access
+        uint slotSize = _slotSize;
+        long availableBytes = (long)availableSlots * slotSize;
+        int bytesToRead =
+            maxBytes > 0 ? (int)Math.Min(availableBytes, maxBytes) : (int)Math.Min(availableBytes, int.MaxValue);
+        bytesToRead = (bytesToRead / TsPacketSize) * TsPacketSize;
+
+        if (bytesToRead == 0)
+        {
+            return 0;
+        }
+
+        int totalWritten = 0;
+        ulong currentSlot = readPos & _slotMask;
+        long dataOffset = _dataOffset;
+
+        // Batch write: accumulate contiguous slots when possible
+        while (totalWritten < bytesToRead)
+        {
+            // Calculate contiguous region from current slot
+            int remainingBytes = bytesToRead - totalWritten;
+            int chunkSize = Math.Min(remainingBytes, (int)slotSize);
+            long slotOffset = dataOffset + (long)(currentSlot * slotSize);
+
+            // Write directly from shared memory to destination stream
+            var span = new ReadOnlySpan<byte>(ptr + slotOffset, chunkSize);
+            destination.Write(span);
+
+            totalWritten += chunkSize;
+            currentSlot = (currentSlot + 1) & _slotMask;
+            readPos++;
+        }
+
+        // Update read position with release semantics using cached pointer
+        Volatile.Write(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset), readPos);
+
+        // Update statistics inline to avoid method call overhead
+        ref ulong totalBytesRef = ref Unsafe.AsRef<ulong>(ptr + TotalBytesReadOffset);
+        Volatile.Write(ref totalBytesRef, Volatile.Read(ref totalBytesRef) + (ulong)totalWritten);
+
+        ref ulong totalPacketsRef = ref Unsafe.AsRef<ulong>(ptr + TotalPacketsReadOffset);
+        Volatile.Write(ref totalPacketsRef, Volatile.Read(ref totalPacketsRef) + (ulong)(totalWritten / TsPacketSize));
+
+        // Update timestamp less frequently (every ~10 reads) to reduce overhead
+        // Timestamp is informational, not critical for correctness
+        if ((readPos & 0xF) == 0)
+        {
+            ref ulong timestampRef = ref Unsafe.AsRef<ulong>(ptr + LastReadTimestampOffset);
+            Volatile.Write(ref timestampRef, (ulong)DateTime.UtcNow.Ticks * 100);
+        }
+
+        return totalWritten;
     }
 
     /// <summary>
@@ -302,12 +420,23 @@ public sealed class SharedMemoryConsumer : IDisposable
     /// <param name="timeout">Maximum time to wait.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>True if data is available, false on timeout.</returns>
-    public bool WaitForData(TimeSpan timeout, CancellationToken cancellationToken = default)
+    public unsafe bool WaitForData(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // Quick check first
-        if (AvailableBytes > 0 || IsEndOfStream || HasError)
+        byte* ptr = _basePtr;
+
+        // Quick check first using cached pointer - avoid property overhead
+        ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
+        ulong readPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
+        if (writePos != readPos)
+        {
+            return true;
+        }
+
+        // Check flags inline
+        uint flags = Volatile.Read(ref Unsafe.AsRef<uint>(ptr + FlagsOffset));
+        if ((flags & ((uint)SharedMemoryStatusFlags.EndOfStream | (uint)SharedMemoryStatusFlags.Error)) != 0)
         {
             return true;
         }
@@ -384,7 +513,7 @@ public sealed class SharedMemoryConsumer : IDisposable
     }
 
     /// <inheritdoc/>
-    public void Dispose()
+    public unsafe void Dispose()
     {
         if (_disposed)
         {
@@ -393,9 +522,18 @@ public sealed class SharedMemoryConsumer : IDisposable
 
         _disposed = true;
 
-        // Update consumer state before detaching
-        WriteConsumerState(ConsumerState.Detached);
-        ClearFlag(SharedMemoryStatusFlags.ConsumerReady);
+        // Update consumer state before detaching (using cached pointer)
+        if (_basePtr != null)
+        {
+            Volatile.Write(ref Unsafe.AsRef<ulong>(_basePtr + ConsumerStateOffset), (ulong)ConsumerState.Detached);
+
+            // Clear ConsumerReady flag
+            ref int flagsRef = ref Unsafe.AsRef<int>(_basePtr + FlagsOffset);
+            Interlocked.And(ref flagsRef, ~(int)SharedMemoryStatusFlags.ConsumerReady);
+
+            // Release the cached pointer
+            _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+        }
 
         _semaphore?.Dispose();
         _accessor.Dispose();
@@ -596,10 +734,13 @@ public sealed class SharedMemoryConsumer : IDisposable
     // Private Implementation - Wait Operations
     // ========================================================================
 
-    private bool WaitOnSemaphore(TimeSpan timeout, CancellationToken cancellationToken)
+    private unsafe bool WaitOnSemaphore(TimeSpan timeout, CancellationToken cancellationToken)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
+
+        byte* ptr = _basePtr;
+        const uint terminalFlags = (uint)SharedMemoryStatusFlags.EndOfStream | (uint)SharedMemoryStatusFlags.Error;
 
         try
         {
@@ -611,8 +752,16 @@ public sealed class SharedMemoryConsumer : IDisposable
                     return true;
                 }
 
-                // Check for data/completion between waits
-                if (AvailableBytes > 0 || IsEndOfStream || HasError)
+                // Check for data/completion between waits using cached pointer
+                ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
+                ulong readPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
+                if (writePos != readPos)
+                {
+                    return true;
+                }
+
+                uint flags = Volatile.Read(ref Unsafe.AsRef<uint>(ptr + FlagsOffset));
+                if ((flags & terminalFlags) != 0)
                 {
                     return true;
                 }
@@ -626,16 +775,40 @@ public sealed class SharedMemoryConsumer : IDisposable
         return false;
     }
 
-    private bool SpinWaitForData(TimeSpan timeout, CancellationToken cancellationToken)
+    private unsafe bool SpinWaitForData(TimeSpan timeout, CancellationToken cancellationToken)
     {
-        var deadline = DateTime.UtcNow + timeout;
+        // Use Stopwatch for high-precision timing instead of DateTime.UtcNow
+        long timeoutTicks = (long)(timeout.TotalMilliseconds * Stopwatch.Frequency / 1000);
+        long startTicks = Stopwatch.GetTimestamp();
         var spinner = new SpinWait();
 
-        while (!cancellationToken.IsCancellationRequested && DateTime.UtcNow < deadline)
+        byte* ptr = _basePtr;
+
+        // Cache flag masks for fast checking
+        const uint terminalFlags = (uint)SharedMemoryStatusFlags.EndOfStream | (uint)SharedMemoryStatusFlags.Error;
+
+        while (!cancellationToken.IsCancellationRequested)
         {
-            if (AvailableBytes > 0 || IsEndOfStream || HasError)
+            // Check for data available - inline volatile reads
+            ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
+            ulong readPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
+
+            if (writePos != readPos)
             {
                 return true;
+            }
+
+            // Check terminal flags
+            uint flags = Volatile.Read(ref Unsafe.AsRef<uint>(ptr + FlagsOffset));
+            if ((flags & terminalFlags) != 0)
+            {
+                return true;
+            }
+
+            // Check timeout using Stopwatch (faster than DateTime.UtcNow)
+            if (Stopwatch.GetTimestamp() - startTicks >= timeoutTicks)
+            {
+                return false;
             }
 
             spinner.SpinOnce();

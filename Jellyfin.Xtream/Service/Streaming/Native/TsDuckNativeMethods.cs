@@ -559,4 +559,30 @@ internal static partial class TsDuckNativeMethods
     /// <returns>1 if consumer is attached, 0 otherwise.</returns>
     [LibraryImport(LibraryName, EntryPoint = "tsduck_shm_producer_is_consumer_attached")]
     internal static partial int ShmProducerIsConsumerAttached(nint producer);
+
+    // =========================================================================
+    // Streamer Registry Integration
+    // =========================================================================
+
+    /// <summary>
+    /// Sets the channel registry for GUID-based URL lookups.
+    /// The registry must outlive the streamer and must be built before start().
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="registry">The registry handle (can be zero to clear).</param>
+    /// <returns>TSDUCK_OK on success.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_set_registry")]
+    internal static partial int StreamerSetRegistry(nint streamer, nint registry);
+
+    /// <summary>
+    /// Sets the channel GUID for registry-based streaming.
+    /// When registry is set and GUID is valid, start() will populate URLs from registry.
+    /// The GUID is 128-bit, passed as two 64-bit values for C interop.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="guidHigh">High 64 bits of the channel GUID.</param>
+    /// <param name="guidLow">Low 64 bits of the channel GUID.</param>
+    /// <returns>TSDUCK_OK on success.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_set_channel_guid")]
+    internal static partial int StreamerSetChannelGuid(nint streamer, long guidHigh, long guidLow);
 }

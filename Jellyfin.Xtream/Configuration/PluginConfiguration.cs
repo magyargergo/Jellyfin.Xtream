@@ -406,9 +406,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <remarks>
     /// Time to receive first byte of data after connection.
     /// Detects "connected but no data" scenarios common with overloaded providers.
-    /// Default: 5 seconds.
+    /// Should be long enough for C++ native failover to try alternate URLs on timeout.
+    /// Default: 15 seconds.
     /// </remarks>
-    public int StreamFirstByteTimeoutSeconds { get; set; } = 5;
+    public int StreamFirstByteTimeoutSeconds { get; set; } = 15;
 
     /// <summary>
     /// Gets or sets the HTTP response headers timeout in seconds (5-30).

@@ -13,6 +13,18 @@
 namespace tsduck_interop::platform {
 
 // ============================================================================
+// Compile-time Validation
+// ============================================================================
+
+#if defined(TSDUCK_HAS_NEON)
+// NEON CTZ-based match extraction assumes little-endian byte order.
+// When comparison result (0xFF for match) is reinterpreted as uint64_t,
+// the first matching byte maps to the lowest set bits on little-endian.
+static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+              "NEON SIMD search requires little-endian byte order");
+#endif
+
+// ============================================================================
 // SIMD-Accelerated Sync Byte Search
 // ============================================================================
 
@@ -85,19 +97,36 @@ inline int findSyncByte(const uint8_t* data, int length) noexcept {
             uint8x16_t chunk = vld1q_u8(data + i);
             uint8x16_t cmp = vceqq_u8(chunk, syncVec);
 
-            // Check if any matches
+            // Extract match positions using CLZ-based algorithm
+            // Convert comparison result to bitmask via horizontal reduction
             uint64x2_t cmp64 = vreinterpretq_u64_u8(cmp);
-            if (vgetq_lane_u64(cmp64, 0) != 0 || vgetq_lane_u64(cmp64, 1) != 0) {
-                // Find first match using scalar for simplicity
-                for (int j = 0; j < 16 && i + j < length; j++) {
-                    if (data[i + j] == ts::SYNC_BYTE) {
-                        int candidate = i + j;
-                        if (candidate + static_cast<int>(ts::PKT_SIZE) >= length ||
-                            data[candidate + ts::PKT_SIZE] == ts::SYNC_BYTE) {
-                            return candidate;
-                        }
-                    }
+            uint64_t lo = vgetq_lane_u64(cmp64, 0);
+            uint64_t hi = vgetq_lane_u64(cmp64, 1);
+
+            if (lo != 0 || hi != 0) {
+                // Find first match byte position using CLZ
+                // Each match byte is 0xFF, so we find the first set bit
+                int bitPos;
+                if (lo != 0) {
+                    // Match in low 8 bytes: find first set byte
+                    // ctz64 finds first set bit, divide by 8 for byte position
+                    bitPos = ctz64(lo) / 8;
+                } else {
+                    // Match in high 8 bytes
+                    bitPos = 8 + ctz64(hi) / 8;
                 }
+
+                int candidate = i + bitPos;
+
+                // Verify sync byte at next packet boundary
+                if (candidate + static_cast<int>(ts::PKT_SIZE) >= length ||
+                    data[candidate + ts::PKT_SIZE] == ts::SYNC_BYTE) {
+                    return candidate;
+                }
+
+                // False positive - continue searching after this position
+                i = candidate + 1;
+                continue;
             }
 
             i += 16;

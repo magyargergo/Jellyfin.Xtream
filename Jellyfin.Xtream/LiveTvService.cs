@@ -930,6 +930,8 @@ public class LiveTvService(
             );
         }
 
+        var config = Plugin.Instance.Configuration;
+
         var newStream = new Restream(
             appHost: _appHost,
             logger: _loggerFactory.CreateLogger<Restream>(),
@@ -937,7 +939,9 @@ public class LiveTvService(
             mediaSource: mediaSourceInfo,
             urls: urls,
             initialScores: initialScores,
-            discordService: _discordService
+            discordService: _discordService,
+            streamOpenTimeoutMs: config.FailoverBudgetSeconds * 1000,
+            firstByteTimeoutMs: config.StreamFirstByteTimeoutSeconds * 1000
         );
 
         try

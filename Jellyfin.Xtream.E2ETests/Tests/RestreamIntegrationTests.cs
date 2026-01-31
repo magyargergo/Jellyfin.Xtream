@@ -165,7 +165,9 @@ public sealed class RestreamIntegrationTests : IDisposable
 
         int totalValid = validSyncBytes + paddingPackets;
         double syncRate = totalValid * 100.0 / packetCount;
-        _output.WriteLine($"Packets: {packetCount}, Valid sync: {validSyncBytes}, Padding: {paddingPackets} ({syncRate:F1}%)");
+        _output.WriteLine(
+            $"Packets: {packetCount}, Valid sync: {validSyncBytes}, Padding: {paddingPackets} ({syncRate:F1}%)"
+        );
         Assert.True(validSyncBytes > 0, "Should have at least some actual TS packets");
         Assert.True(syncRate > 95, $"Valid packet rate {syncRate:F1}% should be > 95%");
     }
@@ -364,7 +366,10 @@ public sealed class RestreamIntegrationTests : IDisposable
         Assert.True(stats.TotalBytesRead > expectedBytes * 0.8, $"Should achieve >80% of target throughput");
         Assert.True(stats.TimeToFirstByte.HasValue, "Should have received first byte");
         // No warmup - data passes through immediately to FFmpeg
-        Assert.True(stats.TimeToFirstByte.Value.TotalMilliseconds < 3000, "First byte should arrive within 3s (no warmup)");
+        Assert.True(
+            stats.TimeToFirstByte.Value.TotalMilliseconds < 3000,
+            "First byte should arrive within 3s (no warmup)"
+        );
         Assert.True(stats.MaxReadGap.TotalSeconds < 5, $"Max gap {stats.MaxReadGap.TotalSeconds:F1}s should be < 5s");
         Assert.True(stats.SyncByteValidityRate > 95, $"Sync validity {stats.SyncByteValidityRate:F1}% should be > 95%");
     }
@@ -447,8 +452,8 @@ public sealed class RestreamIntegrationTests : IDisposable
 
         _output.WriteLine($"Open() failed in {sw.ElapsedMilliseconds}ms with: {exception.Message}");
 
-        // Should fail within timeout, not hang forever
-        Assert.True(sw.ElapsedMilliseconds < 15000, $"Should fail within 15s, took {sw.ElapsedMilliseconds}ms");
+        // Should fail within timeout plus small tolerance for timer overhead, not hang forever
+        Assert.True(sw.ElapsedMilliseconds < 16000, $"Should fail within 16s, took {sw.ElapsedMilliseconds}ms");
     }
 
     // =========================================================================

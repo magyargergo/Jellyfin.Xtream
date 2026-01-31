@@ -33,6 +33,7 @@
 #include "context/context.hpp"
 #include "core/logging.hpp"
 #include "ipc/shared_memory_channel.hpp"
+#include "registry/channel_registry.hpp"
 #include "streaming/stream_pipeline.hpp"
 
 
@@ -1127,4 +1128,191 @@ TSDUCK_API int32_t tsduck_shm_producer_is_consumer_attached(void* producer) {
 
     auto* impl = static_cast<ipc::SharedMemoryProducer*>(producer);
     return impl->is_consumer_attached() ? 1 : 0;
+}
+
+// ============================================================================
+// Channel Registry API (Minimal - C++ handles health/quality internally)
+// ============================================================================
+
+namespace {
+constexpr const char* kRegistry = "Registry";
+
+inline registry::ChannelRegistry* toImpl(ChannelRegistryHandle h) {
+    return reinterpret_cast<registry::ChannelRegistry*>(h);
+}
+
+inline ChannelRegistryHandle toHandle(registry::ChannelRegistry* p) {
+    return reinterpret_cast<ChannelRegistryHandle>(p);
+}
+}  // namespace
+
+// NOLINTBEGIN(cppcoreguidelines-owning-memory) - C API uses raw pointers for P/Invoke
+TSDUCK_API ChannelRegistryHandle tsduck_registry_create(void) {
+    LOG_DEBUG(kRegistry, "tsduck_registry_create called");
+
+    try {
+        auto* reg = new registry::ChannelRegistry();
+        LOG_DEBUG(kRegistry, "tsduck_registry_create done, handle=%p", static_cast<void*>(reg));
+        return toHandle(reg);
+    } catch (const std::exception& e) {
+        LOG_ERROR(kRegistry, "tsduck_registry_create exception: %s", e.what());
+        return nullptr;
+    } catch (...) {
+        LOG_ERROR(kRegistry, "tsduck_registry_create unknown exception");
+        return nullptr;
+    }
+}
+
+TSDUCK_API void tsduck_registry_destroy(ChannelRegistryHandle registry) {
+    auto* impl = toImpl(registry);
+    LOG_DEBUG(kRegistry, "tsduck_registry_destroy handle=%p", static_cast<void*>(impl));
+    delete impl;
+}
+// NOLINTEND(cppcoreguidelines-owning-memory)
+
+TSDUCK_API int32_t tsduck_registry_add_provider(
+    ChannelRegistryHandle registry,
+    const RegistryProviderInfoNative* info)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr || info == nullptr) {
+        LOG_WARNING(kRegistry, "tsduck_registry_add_provider: null handle or info");
+        return -1;
+    }
+
+    try {
+        registry::ProviderInfoNative native_info;
+        std::strncpy(native_info.id, info->id, sizeof(native_info.id) - 1);
+        native_info.id[sizeof(native_info.id) - 1] = '\0';
+        std::strncpy(native_info.name, info->name, sizeof(native_info.name) - 1);
+        native_info.name[sizeof(native_info.name) - 1] = '\0';
+        std::strncpy(native_info.base_url, info->base_url, sizeof(native_info.base_url) - 1);
+        native_info.base_url[sizeof(native_info.base_url) - 1] = '\0';
+        std::strncpy(native_info.username, info->username, sizeof(native_info.username) - 1);
+        native_info.username[sizeof(native_info.username) - 1] = '\0';
+        std::strncpy(native_info.password, info->password, sizeof(native_info.password) - 1);
+        native_info.password[sizeof(native_info.password) - 1] = '\0';
+        native_info.priority = info->priority;
+        native_info.id_hash = info->id_hash;
+        native_info.initial_health = info->initial_health;
+
+        int32_t index = impl->add_provider(native_info);
+        LOG_INFO(kRegistry, "tsduck_registry_add_provider: '%s' -> index %d",
+                 native_info.name, index);
+        return index;
+    } catch (const std::exception& e) {
+        LOG_ERROR(kRegistry, "tsduck_registry_add_provider exception: %s", e.what());
+        return -1;
+    } catch (...) {
+        LOG_ERROR(kRegistry, "tsduck_registry_add_provider unknown exception");
+        return -1;
+    }
+}
+
+TSDUCK_API int32_t tsduck_registry_add_stream(
+    ChannelRegistryHandle registry,
+    int32_t provider_index,
+    int32_t stream_id,
+    const char* name,
+    const char* icon_url)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return -1;
+    }
+
+    try {
+        return impl->add_stream(provider_index, stream_id, name, icon_url);
+    } catch (const std::exception& e) {
+        LOG_ERROR(kRegistry, "tsduck_registry_add_stream exception: %s", e.what());
+        return -1;
+    } catch (...) {
+        LOG_ERROR(kRegistry, "tsduck_registry_add_stream unknown exception");
+        return -1;
+    }
+}
+
+TSDUCK_API bool tsduck_registry_build(ChannelRegistryHandle registry) {
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return false;
+    }
+
+    try {
+        bool result = impl->build();
+        if (result) {
+            registry::RegistryStatsNative stats;
+            if (impl->get_stats(&stats)) {
+                LOG_INFO(kRegistry, "tsduck_registry_build: %d providers, %d channels, %d streams, %d GUIDs",
+                         stats.provider_count, stats.channel_count, stats.stream_count, stats.guid_count);
+            }
+        }
+        return result;
+    } catch (const std::exception& e) {
+        LOG_ERROR(kRegistry, "tsduck_registry_build exception: %s", e.what());
+        return false;
+    } catch (...) {
+        LOG_ERROR(kRegistry, "tsduck_registry_build unknown exception");
+        return false;
+    }
+}
+
+TSDUCK_API bool tsduck_registry_get_stats(
+    ChannelRegistryHandle registry,
+    RegistryStatsNative* out_stats)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr || out_stats == nullptr) {
+        return false;
+    }
+
+    registry::RegistryStatsNative stats;
+    if (!impl->get_stats(&stats)) {
+        return false;
+    }
+
+    out_stats->provider_count = stats.provider_count;
+    out_stats->channel_count = stats.channel_count;
+    out_stats->stream_count = stats.stream_count;
+    out_stats->guid_count = stats.guid_count;
+    out_stats->skipped_count = stats.skipped_count;
+    return true;
+}
+
+// ============================================================================
+// Streamer Registry Integration
+// ============================================================================
+
+TSDUCK_API int32_t tsduck_streamer_set_registry(
+    TsDuckStreamerHandle streamer,
+    ChannelRegistryHandle registry)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_set_registry: null streamer handle");
+        return TSDUCK_ERROR_NULL_HANDLE;
+    }
+
+    auto* reg_impl = toImpl(registry);
+    impl->set_registry(reg_impl);
+    LOG_DEBUG(kStreamer, "tsduck_streamer_set_registry: registry=%p", static_cast<void*>(reg_impl));
+    return TSDUCK_OK;
+}
+
+TSDUCK_API int32_t tsduck_streamer_set_channel_guid(
+    TsDuckStreamerHandle streamer,
+    int64_t guid_high,
+    int64_t guid_low)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_set_channel_guid: null streamer handle");
+        return TSDUCK_ERROR_NULL_HANDLE;
+    }
+
+    impl->set_channel_guid(guid_high, guid_low);
+    LOG_DEBUG(kStreamer, "tsduck_streamer_set_channel_guid: high=0x%016llx low=0x%016llx",
+              static_cast<unsigned long long>(guid_high),
+              static_cast<unsigned long long>(guid_low));
+    return TSDUCK_OK;
 }

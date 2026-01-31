@@ -870,6 +870,7 @@ typedef struct {
     int32_t low_speed_time_sec;         // Duration below limit (default: 10)
 
     int32_t stalls_before_switch;       // Consecutive stalls before URL rotation (default: 2)
+    int32_t timeout_immediate_switch;   // 1=switch URL on first timeout, 0=count as regular failure (default: 1)
 
     // Quality-based switching (TR 101 290 error rate thresholds)
     int32_t enable_quality_switch;      // 1 = enabled, 0 = disabled (default: 1)
@@ -1126,6 +1127,114 @@ TSDUCK_API void tsduck_shm_producer_clear_discontinuity(void* producer);
 /// @param producer The producer handle.
 /// @return 1 if consumer is attached, 0 otherwise.
 TSDUCK_API int32_t tsduck_shm_producer_is_consumer_attached(void* producer);
+
+// =============================================================================
+// Channel Registry (Native Channel-to-Provider Mapping)
+// =============================================================================
+//
+// Minimal C API for streaming setup. C++ handles all health tracking,
+// quality monitoring, and failover decisions internally.
+
+// Opaque handle
+typedef struct ChannelRegistry* ChannelRegistryHandle;
+
+// Provider information (blittable, for registration)
+typedef struct {
+    char id[16];              // Provider ID (null-terminated)
+    char name[64];            // Provider display name
+    char base_url[512];       // Base URL for API
+    char username[128];       // Username for auth
+    char password[128];       // Password for auth
+    int32_t priority;         // 0=highest priority
+    int32_t id_hash;          // Hash for GUID generation
+    double initial_health;    // Starting health score (0-100)
+} RegistryProviderInfoNative;
+
+// Registry statistics (blittable, for diagnostics)
+typedef struct {
+    int32_t provider_count;   // Number of providers registered
+    int32_t channel_count;    // Unique channels after deduplication
+    int32_t stream_count;     // Total streams before deduplication
+    int32_t guid_count;       // Total GUIDs in lookup
+    int32_t skipped_count;    // Streams with empty normalized names
+} RegistryStatsNative;
+
+/// Create a new channel registry.
+/// @return Registry handle, or NULL on failure.
+TSDUCK_API ChannelRegistryHandle tsduck_registry_create(void);
+
+/// Destroy a channel registry and free all resources.
+/// Safe to call with NULL handle.
+TSDUCK_API void tsduck_registry_destroy(ChannelRegistryHandle registry);
+
+/// Add a provider to the registry.
+/// @param registry The registry handle.
+/// @param info Provider information.
+/// @return Provider index (>=0) on success, -1 if already built.
+TSDUCK_API int32_t tsduck_registry_add_provider(
+    ChannelRegistryHandle registry,
+    const RegistryProviderInfoNative* info
+);
+
+/// Add a stream to the registry.
+/// @param registry The registry handle.
+/// @param provider_index Index returned by add_provider().
+/// @param stream_id Provider's stream ID.
+/// @param name Raw channel name (will be normalized).
+/// @param icon_url Optional icon URL (can be NULL).
+/// @return 0 on success, <0 on error (-1=built, -2=invalid provider, -3=null name).
+TSDUCK_API int32_t tsduck_registry_add_stream(
+    ChannelRegistryHandle registry,
+    int32_t provider_index,
+    int32_t stream_id,
+    const char* name,
+    const char* icon_url
+);
+
+/// Build the registry. After this, no more add_* calls allowed.
+/// Performs channel name normalization, quality scoring, and GUID generation.
+/// @param registry The registry handle.
+/// @return true on success, false if already built.
+TSDUCK_API bool tsduck_registry_build(ChannelRegistryHandle registry);
+
+/// Get registry statistics (for diagnostics/logging).
+/// @param registry The registry handle.
+/// @param out_stats Pointer to receive statistics.
+/// @return true on success.
+TSDUCK_API bool tsduck_registry_get_stats(
+    ChannelRegistryHandle registry,
+    RegistryStatsNative* out_stats
+);
+
+// =============================================================================
+// Streamer Registry Integration
+// =============================================================================
+//
+// Connect a channel registry to a streamer for GUID-based streaming.
+// The streamer will use the registry to look up URLs and track health.
+
+/// Set the channel registry for GUID-based URL lookups.
+/// The registry must outlive the streamer and must be built before start().
+/// @param streamer The streamer handle.
+/// @param registry The registry handle (can be NULL to clear).
+/// @return TSDUCK_OK on success.
+TSDUCK_API int32_t tsduck_streamer_set_registry(
+    TsDuckStreamerHandle streamer,
+    ChannelRegistryHandle registry
+);
+
+/// Set the channel GUID for registry-based streaming.
+/// When registry is set and GUID is valid, start() will populate URLs from registry.
+/// The GUID is 128-bit, passed as two 64-bit values for C interop.
+/// @param streamer The streamer handle.
+/// @param guid_high High 64 bits of the channel GUID.
+/// @param guid_low Low 64 bits of the channel GUID.
+/// @return TSDUCK_OK on success.
+TSDUCK_API int32_t tsduck_streamer_set_channel_guid(
+    TsDuckStreamerHandle streamer,
+    int64_t guid_high,
+    int64_t guid_low
+);
 
 #ifdef __cplusplus
 }

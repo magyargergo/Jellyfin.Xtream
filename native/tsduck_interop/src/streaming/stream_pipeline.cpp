@@ -23,6 +23,24 @@ namespace streaming {
 
 namespace {
 constexpr const char* kPipeline = "StreamPipeline";
+
+/// Classify a CURLcode into a DisconnectReason for failover decisions.
+constexpr DisconnectReason classify_curl_error(CURLcode code) noexcept {
+    switch (code) {
+        case CURLE_OPERATION_TIMEDOUT:
+            return DisconnectReason::Timeout;
+        case CURLE_COULDNT_CONNECT:
+        case CURLE_COULDNT_RESOLVE_HOST:
+        case CURLE_COULDNT_RESOLVE_PROXY:
+            return DisconnectReason::ConnectionFailed;
+        case CURLE_ABORTED_BY_CALLBACK:
+            return DisconnectReason::Aborted;
+        case CURLE_OK:
+            return DisconnectReason::Normal;
+        default:
+            return DisconnectReason::Unknown;
+    }
+}
 }  // namespace
 
 // curl_global_init() is NOT thread-safe and must only be called once.
@@ -157,6 +175,13 @@ bool StreamPipeline::start() noexcept {
         }
     }
 
+    // If registry is configured, populate URLs from it
+    if (registry_ != nullptr && (channel_guid_high_ != 0 || channel_guid_low_ != 0)) {
+        if (!populate_urls_from_registry()) {
+            LOG_WARNING(kPipeline, "start: failed to populate URLs from registry");
+        }
+    }
+
     if (source_.url_count() == 0) {
         LOG_WARNING(kPipeline, "start called with no URLs configured");
         return false;  // No URLs configured
@@ -283,7 +308,9 @@ void StreamPipeline::worker_loop() noexcept {
         }
 
         // Handle disconnection: retry same URL, switch to next, or fail
-        auto action = failover_.on_disconnected();
+        // Pass the disconnect reason for immediate-switch-on-timeout logic
+        auto action = failover_.on_disconnected(last_disconnect_reason_);
+        last_disconnect_reason_ = DisconnectReason::Unknown;  // Reset for next session
         if (action == FailoverManager::DisconnectAction::Failed) {
             // Max retries exhausted
             LOG_ERROR(kPipeline, "max retries exhausted (%d attempts), giving up", failover_.retry_count());
@@ -351,17 +378,28 @@ void StreamPipeline::stream_session() noexcept {
             CURLcode curl_code;
             long http_status;
             if (source_.check_transfer_done(&curl_code, &http_status)) {
+                // Capture disconnect reason for failover decision
+                last_disconnect_reason_ = classify_curl_error(curl_code);
+
+                // Override for HTTP errors (curl succeeded but server returned error)
+                if (curl_code == CURLE_OK && (http_status < 200 || http_status >= 400)) {
+                    last_disconnect_reason_ = DisconnectReason::HttpError;
+                }
+
                 if (curl_code == CURLE_OK && http_status >= 200 && http_status < 300) {
                     // Stream ended normally (server closed connection)
                     LOG_INFO(kPipeline, "stream ended normally, HTTP %ld", http_status);
+                    last_disconnect_reason_ = DisconnectReason::Normal;
                     emit_event(StreamEvent::Disconnected, static_cast<int32_t>(http_status));
                 } else if (curl_code == CURLE_ABORTED_BY_CALLBACK) {
                     // We aborted (stop requested)
+                    last_disconnect_reason_ = DisconnectReason::Aborted;
                     break;
                 } else {
-                    // Error
-                    LOG_WARNING(kPipeline, "stream error: curl_code=%d, http_status=%ld",
-                                static_cast<int>(curl_code), http_status);
+                    // Error - log the disconnect reason for debugging
+                    LOG_WARNING(kPipeline, "stream error: curl_code=%d, http_status=%ld, reason=%d",
+                                static_cast<int>(curl_code), http_status,
+                                static_cast<int>(last_disconnect_reason_));
                     emit_event(StreamEvent::Error,
                               curl_code != CURLE_OK ? static_cast<int32_t>(curl_code)
                                                    : static_cast<int32_t>(http_status));
@@ -416,6 +454,9 @@ void StreamPipeline::on_data_received(const uint8_t* data, size_t size) noexcept
 
     // Record success on current URL (boosts health score, clears quarantine)
     source_.record_success(static_cast<int64_t>(size));
+
+    // Also record to registry if available (centralized health tracking)
+    record_provider_success(static_cast<int64_t>(size));
 
     // If this is first data after connect, transition to Streaming
     if (failover_.state() == StreamerState::Connecting) {
@@ -530,8 +571,15 @@ void StreamPipeline::write_output(const uint8_t* data, int32_t length) noexcept 
                         result.bytes_written, length);
         }
 
-        // Signal consumer after each write for low latency
-        shm_producer_->signal_data_available();
+        // Batch signaling: signal every ~64KB or on overflow to balance latency vs syscall overhead.
+        // At 10 Mbps, 64KB = ~50ms of data, which is acceptable latency for streaming.
+        // Signal immediately on overflow to wake consumer for recovery.
+        constexpr std::size_t kSignalThreshold = 65536;
+        shm_bytes_since_signal_ += result.bytes_written;
+        if (result.overflow || shm_bytes_since_signal_ >= kSignalThreshold) {
+            shm_producer_->signal_data_available();
+            shm_bytes_since_signal_ = 0;
+        }
     } else if (config_.output_fd >= 0) {
         // Pipe mode: write to file descriptor
         int32_t written = 0;
@@ -562,6 +610,9 @@ void StreamPipeline::perform_switch() noexcept {
 
     int32_t old_index = source_.current_url_index();
 
+    // Record failure to registry (centralized health tracking)
+    record_provider_failure(last_disconnect_reason_);
+
     // Mark the old URL as failed (applies quarantine and score penalty)
     source_.mark_url_failed(old_index);
 
@@ -587,6 +638,7 @@ void StreamPipeline::perform_switch() noexcept {
     if (shm_producer_) {
         shm_producer_->set_discontinuity();
         shm_producer_->signal_data_available();
+        shm_bytes_since_signal_ = 0;  // Reset batching counter after explicit signal
     }
 
     // Start keyframe aligner - buffer data until IDR frame is found
@@ -679,6 +731,69 @@ bool StreamPipeline::interruptible_sleep(int32_t ms) noexcept {
     }
 
     return running_.load(std::memory_order_acquire);
+}
+
+// ============================================================================
+// Registry Integration
+// ============================================================================
+
+bool StreamPipeline::populate_urls_from_registry() noexcept {
+    if (registry_ == nullptr || !registry_->is_built()) {
+        return false;
+    }
+
+    // Get all URLs for this channel GUID
+    constexpr int32_t kMaxUrls = 16;
+    char url_buffer[kMaxUrls * 1024];
+    int32_t providers[kMaxUrls];
+    int32_t stream_ids[kMaxUrls];
+
+    int32_t url_count = registry_->get_all_urls(
+        channel_guid_high_, channel_guid_low_,
+        url_buffer, providers, stream_ids, kMaxUrls);
+
+    if (url_count <= 0) {
+        LOG_WARNING(kPipeline, "no URLs found for GUID %llx:%llx",
+                    static_cast<long long>(channel_guid_high_),
+                    static_cast<long long>(channel_guid_low_));
+        return false;
+    }
+
+    // Clear existing URLs
+    source_.clear_urls();
+
+    // Add URLs from registry with their health scores
+    for (int32_t i = 0; i < url_count; i++) {
+        const char* url = url_buffer + (i * 1024);
+        double health = registry_->get_provider_health(providers[i]);
+        source_.add_url_with_score(std::string(url), health);
+    }
+
+    // Store the first provider index for health tracking
+    if (url_count > 0) {
+        current_provider_index_ = providers[0];
+    }
+
+    LOG_INFO(kPipeline, "populated %d URLs from registry for GUID %llx:%llx",
+             url_count,
+             static_cast<long long>(channel_guid_high_),
+             static_cast<long long>(channel_guid_low_));
+
+    return true;
+}
+
+void StreamPipeline::record_provider_success(int64_t bytes) noexcept {
+    if (registry_ != nullptr && current_provider_index_ >= 0) {
+        registry_->record_success(current_provider_index_, bytes);
+    }
+}
+
+void StreamPipeline::record_provider_failure(DisconnectReason reason) noexcept {
+    if (registry_ != nullptr && current_provider_index_ >= 0) {
+        // Cast streaming::DisconnectReason to registry::DisconnectReason (same values)
+        registry_->record_failure(current_provider_index_,
+            static_cast<registry::DisconnectReason>(reason));
+    }
 }
 
 }  // namespace streaming

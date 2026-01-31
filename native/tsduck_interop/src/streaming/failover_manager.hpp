@@ -69,6 +69,7 @@ public:
     void on_data_received() noexcept { last_data_time_ = std::chrono::steady_clock::now(); }
 
     /// Called when connection drops or HTTP error occurs.
+    /// @param reason Classification of why the disconnect occurred (for failover decisions)
     /// @return ShouldRetry = continue retrying same URL,
     ///         ShouldSwitch = switch to next URL,
     ///         Failed = max retries exhausted.
@@ -77,7 +78,7 @@ public:
         ShouldSwitch,
         Failed
     };
-    DisconnectAction on_disconnected() noexcept {
+    DisconnectAction on_disconnected(DisconnectReason reason = DisconnectReason::Unknown) noexcept {
         retry_count_++;
         total_reconnections_++;
         consecutive_failures_++;
@@ -85,6 +86,12 @@ public:
         if (retry_count_ >= config_.max_retries) {
             state_.store(StreamerState::Failed, std::memory_order_release);
             return DisconnectAction::Failed;
+        }
+
+        // TIMEOUT FAST PATH: Immediately switch URL on timeout if configured.
+        // This prevents wasting time retrying the same URL when it's timing out.
+        if (config_.timeout_immediate_switch != 0 && reason == DisconnectReason::Timeout) {
+            return DisconnectAction::ShouldSwitch;
         }
 
         // Check if we should switch URL after consecutive failures

@@ -238,6 +238,8 @@ set(TSDUCK_INTEROP_SOURCES
     src/streaming/stream_source.cpp
     src/streaming/stream_pipeline.cpp
     src/ipc/shared_memory_channel.cpp
+    src/registry/channel_registry.cpp
+    src/registry/channel_normalizer.cpp
 )
 
 add_library(tsduck_interop SHARED ${TSDUCK_INTEROP_SOURCES})
@@ -258,6 +260,7 @@ target_include_directories(tsduck_interop
         ${CMAKE_CURRENT_SOURCE_DIR}/src/context
         ${CMAKE_CURRENT_SOURCE_DIR}/src/streaming
         ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/registry
         ${CURL_INCLUDE_DIRS}
 )
 
@@ -391,6 +394,7 @@ message(STATUS "  src/analysis/     PCR, IAT, A/V sync trackers")
 message(STATUS "  src/restamping/   Timestamp correction (via TsDuck)")
 message(STATUS "  src/context/      TsDuck context and analyzer")
 message(STATUS "  src/streaming/    HTTP streaming, failover, pipeline")
+message(STATUS "  src/registry/     Channel-to-provider registry, health tracking")
 message(STATUS "")
 
 # ============================================================================

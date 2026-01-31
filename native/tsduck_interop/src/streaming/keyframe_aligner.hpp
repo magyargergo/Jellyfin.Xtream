@@ -11,6 +11,7 @@
 #include <tsduck.h>
 #include "../core/constants.hpp"
 #include "../core/logging.hpp"
+#include "../platform/simd_memcpy.hpp"
 
 namespace tsduck_interop::streaming {
 
@@ -100,8 +101,9 @@ public:
         int32_t new_packets = length / static_cast<int32_t>(ts::PKT_SIZE);
         size_t old_size = buffer_.size();
         buffer_.resize(old_size + static_cast<size_t>(length));
+        // SIMD-optimized copy for keyframe accumulation (can be up to 376KB)
         // flawfinder: ignore - bounds checked by resize() above ensuring buffer_ can hold old_size + length
-        std::memcpy(buffer_.data() + old_size, data, static_cast<size_t>(length));
+        platform::simd_memcpy(buffer_.data() + old_size, data, static_cast<size_t>(length));
         packets_buffered_ += new_packets;
 
         // Scan for IDR if not yet found

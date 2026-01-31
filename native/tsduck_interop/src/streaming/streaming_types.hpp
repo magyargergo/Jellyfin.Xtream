@@ -39,6 +39,19 @@ enum class StreamEvent : int32_t {
     Stopped = 7,        // Streaming stopped (explicit or exhausted)
     QualityDegraded = 8 // TR 101 290 error rate exceeded threshold, switching URL
 };
+
+// ============================================================================
+// Disconnect Reasons (for failover decision-making)
+// ============================================================================
+
+enum class DisconnectReason : int32_t {
+    Unknown = 0,          // Unknown/unclassified reason
+    Normal = 1,           // Clean disconnect
+    Timeout = 2,          // CURLE_OPERATION_TIMEDOUT (28)
+    ConnectionFailed = 3, // CURLE_COULDNT_CONNECT (7), CURLE_COULDNT_RESOLVE_HOST (6)
+    HttpError = 4,        // HTTP 4xx/5xx response
+    Aborted = 5           // User abort / explicit stop
+};
 // NOLINTEND(performance-enum-size)
 
 // ============================================================================
@@ -72,6 +85,9 @@ struct StreamerConfig {
 
     // Consecutive stalls before URL rotation
     int32_t stalls_before_switch = 2;
+
+    // Timeout handling: 1 = switch URL immediately on timeout, 0 = count as regular failure
+    int32_t timeout_immediate_switch = 1;
 
     // Quality-based switching (TR 101 290 error rate thresholds)
     // When error rates exceed these thresholds, trigger URL switch.

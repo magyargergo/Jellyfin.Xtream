@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "../core/logging.hpp"
+#include "../platform/simd_memcpy.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -187,8 +188,8 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
 
     producer->data_region_ = reinterpret_cast<std::byte*>(producer->header_) + SHM_HEADER_SIZE;
 
-    // Zero the entire region
-    std::memset(producer->header_, 0, producer->total_size_);
+    // Zero the entire region (SIMD-optimized for large shared memory regions ~1MB+)
+    platform::simd_memset(producer->header_, 0, producer->total_size_);
 
     // Initialize header metadata
     producer->header_->magic = SHM_MAGIC;
@@ -321,6 +322,7 @@ WriteResult SharedMemoryProducer::write(std::span<const std::byte> data) noexcep
     const std::size_t packets_to_write = data.size() / TS_PACKET_SIZE;
     const std::size_t packets_per_slot = slot_size_ / TS_PACKET_SIZE;
 
+    // Load write_pos first (we own this), then acquire read_pos
     std::uint64_t write_pos = header_->write_position.load(std::memory_order_relaxed);
     std::uint64_t read_pos = header_->read_position.load(std::memory_order_acquire);
 
@@ -342,6 +344,9 @@ WriteResult SharedMemoryProducer::write(std::span<const std::byte> data) noexcep
         LOG_WARNING(kLogComponent, "Buffer overflow, dropped %zu slots of data", slots_needed);
     }
 
+    // Track previous write_pos for wrap detection
+    const std::uint64_t prev_wrap_epoch = write_pos / slot_count_;
+
     // Write data in slot-sized chunks
     const std::byte* src = data.data();
     std::size_t remaining = data.size();
@@ -351,11 +356,12 @@ WriteResult SharedMemoryProducer::write(std::span<const std::byte> data) noexcep
         std::size_t to_copy = std::min(remaining, slot_size_);
         std::byte* dest = data_region_ + (slot_index * slot_size_);
 
-        std::memcpy(dest, src, to_copy);
+        // SIMD-optimized copy for streaming hot path
+        platform::simd_memcpy(dest, src, to_copy);
 
         // Pad remainder of slot with 0xFF (invalid sync byte pattern)
         if (to_copy < slot_size_) {
-            std::memset(dest + to_copy, 0xFF, slot_size_ - to_copy);
+            platform::simd_memset(dest + to_copy, 0xFF, slot_size_ - to_copy);
         }
 
         src += to_copy;
@@ -368,16 +374,30 @@ WriteResult SharedMemoryProducer::write(std::span<const std::byte> data) noexcep
         available_slots--;
     }
 
-    // Update write position with release semantics to ensure data visibility
+    // Single release fence before updating write_position ensures all data writes are visible
+    // before the consumer sees the new position. This is the only barrier needed for correctness.
     header_->write_position.store(write_pos, std::memory_order_release);
-    header_->write_sequence.fetch_add(1, std::memory_order_release);
-    header_->last_write_timestamp.store(get_timestamp_ns(), std::memory_order_release);
+
+    // Statistics updates: use relaxed ordering as these are diagnostic only.
+    // Batch updates to minimize cache line traffic.
+    // Note: write_sequence is only needed if consumer uses seqlock validation.
+    header_->write_sequence.fetch_add(1, std::memory_order_relaxed);
     header_->total_bytes_written.fetch_add(result.bytes_written, std::memory_order_relaxed);
     header_->total_packets_written.fetch_add(result.packets_written, std::memory_order_relaxed);
 
-    // Track wrap count for diagnostics
-    if (write_pos >= slot_count_) {
-        header_->write_wrap_count.fetch_add(1, std::memory_order_relaxed);
+    // Track wrap count correctly: only increment when we cross a wrap boundary
+    const std::uint64_t new_wrap_epoch = write_pos / slot_count_;
+    if (new_wrap_epoch > prev_wrap_epoch) {
+        header_->write_wrap_count.fetch_add(
+            static_cast<std::uint64_t>(new_wrap_epoch - prev_wrap_epoch),
+            std::memory_order_relaxed);
+    }
+
+    // Defer timestamp update: only update periodically to avoid syscall overhead.
+    // Consumer can use write_sequence change as a staleness indicator.
+    // Update timestamp every 16 writes (amortize syscall cost).
+    if ((result.packets_written > 0) && ((header_->write_sequence.load(std::memory_order_relaxed) & 0xF) == 0)) {
+        header_->last_write_timestamp.store(get_timestamp_ns(), std::memory_order_relaxed);
     }
 
     return result;
@@ -791,7 +811,8 @@ std::size_t SharedMemoryConsumer::read(std::span<std::byte> buffer) noexcept {
         std::size_t chunk_size = std::min(bytes_to_read - total_read, slot_size_);
         const std::byte* src = data_region_ + (slot_index * slot_size_);
 
-        std::memcpy(buffer.data() + total_read, src, chunk_size);
+        // SIMD-optimized copy for streaming hot path
+        platform::simd_memcpy(buffer.data() + total_read, src, chunk_size);
         total_read += chunk_size;
         slot_index = (slot_index + 1) & slot_mask_;
         read_pos++;

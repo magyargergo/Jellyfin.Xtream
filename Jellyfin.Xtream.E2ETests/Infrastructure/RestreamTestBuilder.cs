@@ -34,6 +34,8 @@ public sealed class RestreamTestBuilder
     private string _channelName = "Test Channel";
     private string _qualityHint = "HD";
     private ILoggerFactory? _loggerFactory;
+    private int _streamOpenTimeoutMs = 15000;
+    private int _firstByteTimeoutMs = 15000;
 
     /// <summary>
     /// Adds URLs to the URL list for the restream.
@@ -102,6 +104,28 @@ public sealed class RestreamTestBuilder
     }
 
     /// <summary>
+    /// Sets the stream open timeout (total time budget for connection + failover).
+    /// </summary>
+    /// <param name="timeoutMs">The timeout in milliseconds.</param>
+    /// <returns>This builder for chaining.</returns>
+    public RestreamTestBuilder WithStreamOpenTimeout(int timeoutMs)
+    {
+        _streamOpenTimeoutMs = timeoutMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the first byte timeout (time to receive first data after connection).
+    /// </summary>
+    /// <param name="timeoutMs">The timeout in milliseconds.</param>
+    /// <returns>This builder for chaining.</returns>
+    public RestreamTestBuilder WithFirstByteTimeout(int timeoutMs)
+    {
+        _firstByteTimeoutMs = timeoutMs;
+        return this;
+    }
+
+    /// <summary>
     /// Builds the <see cref="Restream"/> instance with the configured options.
     /// </summary>
     /// <returns>A new <see cref="Restream"/> instance.</returns>
@@ -138,7 +162,17 @@ public sealed class RestreamTestBuilder
         var logger = loggerFactory.CreateLogger<Restream>();
         var scores = _scores.Count > 0 ? _scores : null;
 
-        return new Restream(appHost, logger, loggerFactory, mediaSource, _urls, scores, discordService: null);
+        return new Restream(
+            appHost,
+            logger,
+            loggerFactory,
+            mediaSource,
+            _urls,
+            scores,
+            discordService: null,
+            streamOpenTimeoutMs: _streamOpenTimeoutMs,
+            firstByteTimeoutMs: _firstByteTimeoutMs
+        );
     }
 
     private static ILoggerFactory CreateTestLoggerFactory()
