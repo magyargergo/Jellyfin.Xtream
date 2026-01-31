@@ -219,8 +219,8 @@ public class CatchupChannel(ILogger<CatchupChannel> logger) : IChannel, IDisable
                                 provider,
                                 StreamType.CatchUp,
                                 channelId,
-                                null,
-                                null,
+                                name: null,
+                                extension: null,
                                 restream: false,
                                 start,
                                 durationMinutes
@@ -248,8 +248,8 @@ public class CatchupChannel(ILogger<CatchupChannel> logger) : IChannel, IDisable
                     provider,
                     StreamType.CatchUp,
                     channelId,
-                    null,
-                    null,
+name: null,
+extension: null,
                     restream: false,
                     epg.StartLocalTime,
                     durationMinutes

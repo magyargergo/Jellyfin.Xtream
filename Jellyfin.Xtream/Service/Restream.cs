@@ -476,7 +476,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         finally
         {
             _receivingData = false;
-            _nativeStreamer.SetEventCallback(null);
+            _nativeStreamer.SetEventCallback(callback: null);
             _nativeStreamer.Stop();
             _shmConsumer?.Dispose();
             _shmConsumer = null;
@@ -863,7 +863,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _buffer.Dispose();
         _shmConsumer?.Dispose();
         _shmConsumer = null;
-        Interlocked.Exchange(ref _nativeStreamer, null)?.Dispose();
+        Interlocked.Exchange(ref _nativeStreamer, value: null)?.Dispose();
         _openLock.Dispose();
         _readerPool.Dispose();
 

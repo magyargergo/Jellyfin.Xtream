@@ -191,7 +191,7 @@ public sealed class ProviderHealthScorer
 
         public void RecordSuccess(int qualityScore, double connectionTimeMs)
         {
-            _samples.Enqueue(new PerformanceSample(DateTime.UtcNow, true, qualityScore, connectionTimeMs, null));
+            _samples.Enqueue(new PerformanceSample(DateTime.UtcNow, Success: true, qualityScore, connectionTimeMs, FailureType: null));
 
             LastSuccessTime = DateTime.UtcNow;
             Interlocked.Exchange(ref _consecutiveFailures, 0);
@@ -200,7 +200,7 @@ public sealed class ProviderHealthScorer
 
         public void RecordFailure(FailureType failureType)
         {
-            _samples.Enqueue(new PerformanceSample(DateTime.UtcNow, false, 0, 0, failureType));
+            _samples.Enqueue(new PerformanceSample(DateTime.UtcNow, Success: false, 0, 0, failureType));
 
             LastFailureTime = DateTime.UtcNow;
             Interlocked.Increment(ref _consecutiveFailures);

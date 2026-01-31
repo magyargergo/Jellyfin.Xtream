@@ -73,7 +73,7 @@ public sealed class SharedMemoryHeaderTests
         var ptr = Marshal.AllocHGlobal(size);
         try
         {
-            Marshal.StructureToPtr(header, ptr, false);
+            Marshal.StructureToPtr(header, ptr, fDeleteOld: false);
             var roundTrip = Marshal.PtrToStructure<SharedMemoryHeader>(ptr);
 
             Assert.Equal(header.Magic, roundTrip.Magic);

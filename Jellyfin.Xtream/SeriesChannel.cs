@@ -180,9 +180,9 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
                 StreamType.Series,
                 episode.EpisodeId,
                 episode.ContainerExtension,
-                null,
+                extension: null,
                 restream: false,
-                null,
+                start: null,
                 0,
                 episode.Info?.Video,
                 episode.Info?.Audio
