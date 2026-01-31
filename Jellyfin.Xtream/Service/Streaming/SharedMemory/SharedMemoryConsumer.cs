@@ -298,10 +298,18 @@ public sealed class SharedMemoryConsumer : IDisposable
         ulong currentSlot = readPos & _slotMask;
         long dataOffset = _dataOffset;
 
+        long totalSize = _totalSize;
         while (totalRead < bytesToRead)
         {
             int chunkSize = Math.Min(bytesToRead - totalRead, (int)slotSize);
             long slotOffset = dataOffset + (long)(currentSlot * slotSize);
+
+            // Bounds check: ensure we don't read past the mapped memory region
+            if (slotOffset < dataOffset || slotOffset + chunkSize > totalSize)
+            {
+                // Corrupted shared memory state - stop reading to prevent access violation
+                break;
+            }
 
             // Copy directly from cached pointer
             new ReadOnlySpan<byte>(ptr + slotOffset, chunkSize).CopyTo(buffer.Slice(totalRead, chunkSize));
@@ -377,12 +385,20 @@ public sealed class SharedMemoryConsumer : IDisposable
         long dataOffset = _dataOffset;
 
         // Batch write: accumulate contiguous slots when possible
+        long totalSize = _totalSize;
         while (totalWritten < bytesToRead)
         {
             // Calculate contiguous region from current slot
             int remainingBytes = bytesToRead - totalWritten;
             int chunkSize = Math.Min(remainingBytes, (int)slotSize);
             long slotOffset = dataOffset + (long)(currentSlot * slotSize);
+
+            // Bounds check: ensure we don't read past the mapped memory region
+            if (slotOffset < dataOffset || slotOffset + chunkSize > totalSize)
+            {
+                // Corrupted shared memory state - stop reading to prevent access violation
+                break;
+            }
 
             // Write directly from shared memory to destination stream
             var span = new ReadOnlySpan<byte>(ptr + slotOffset, chunkSize);
