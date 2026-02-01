@@ -41,6 +41,23 @@ constexpr DisconnectReason classify_curl_error(CURLcode code) noexcept {
             return DisconnectReason::Unknown;
     }
 }
+
+/// Check if a curl error warrants immediate forced ejection with longer duration.
+/// These are infrastructure-level failures that indicate the host itself is problematic.
+constexpr bool is_severe_infrastructure_error(CURLcode code) noexcept {
+    switch (code) {
+        case CURLE_COULDNT_RESOLVE_HOST:     // DNS failure
+        case CURLE_COULDNT_RESOLVE_PROXY:    // Proxy DNS failure
+        case CURLE_SSL_CONNECT_ERROR:        // SSL handshake failed
+        case CURLE_PEER_FAILED_VERIFICATION: // SSL cert invalid
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// Duration for forced ejection of providers with severe errors (5 minutes).
+constexpr int64_t SEVERE_ERROR_EJECTION_MS = 300000;
 }  // namespace
 
 // curl_global_init() is NOT thread-safe and must only be called once.
@@ -91,6 +108,30 @@ void StreamPipeline::init_common(const TsDuckConfigNative* analyzer_config) {
         default_cfg.stream_bitrate_hint = 0;
         analyzer_ = std::make_unique<context::TsDuckAnalyzer>(context_.get(), &default_cfg);
     }
+
+    // Initialize unified provider health manager (brpc circuit breaker + Finagle EWMA + P2C)
+    ProviderHealthConfig health_cfg;
+    // Map existing config to health manager config
+    health_cfg.circuit_breaker.min_isolation_duration_ms = config_.quarantine_duration_ms;
+    health_cfg.circuit_breaker.max_isolation_duration_ms = config_.max_quarantine_duration_ms;
+    health_cfg.circuit_breaker.half_open_window_size = 3;  // Test 3 requests before full recovery
+
+    // Apply circuit breaker window sizes from config (allows E2E tests to use smaller windows)
+    if (config_.circuit_breaker_short_window_size > 0) {
+        health_cfg.circuit_breaker.short_window_size = config_.circuit_breaker_short_window_size;
+    }
+    if (config_.circuit_breaker_long_window_size > 0) {
+        health_cfg.circuit_breaker.long_window_size = config_.circuit_breaker_long_window_size;
+    }
+    if (config_.circuit_breaker_short_window_error_percent > 0) {
+        health_cfg.circuit_breaker.short_window_error_percent = config_.circuit_breaker_short_window_error_percent;
+    }
+    if (config_.circuit_breaker_long_window_error_percent > 0) {
+        health_cfg.circuit_breaker.long_window_error_percent = config_.circuit_breaker_long_window_error_percent;
+    }
+
+    health_manager_ = std::make_unique<UnifiedProviderHealthManager>(health_cfg);
+    source_.set_health_manager(health_manager_.get());
 
     // Wire up the data path: curl -> this -> alignment -> restamp -> output
     source_.set_data_callback([this](const uint8_t* data, size_t size) {
@@ -355,9 +396,22 @@ void StreamPipeline::stream_session() noexcept {
     failover_.on_connecting();
     update_status();
 
+    // Register request start with health manager BEFORE connecting
+    // This ensures failed connection attempts are tracked for success rate calculation
+    int32_t provider_idx = get_effective_provider_index();
+    if (health_manager_ && provider_idx >= 0) {
+        health_manager_->on_request_start(provider_idx);
+    }
+
     if (!source_.connect()) {
         LOG_WARNING(kPipeline, "connection failed to URL index %d", source_.current_url_index());
         emit_event(StreamEvent::Error, -1);
+
+        // Record failure for failed connection attempts
+        if (health_manager_ && provider_idx >= 0) {
+            health_manager_->on_failure(provider_idx);
+            health_manager_->on_request_end(provider_idx);
+        }
         return;
     }
 
@@ -403,6 +457,20 @@ void StreamPipeline::stream_session() noexcept {
                     emit_event(StreamEvent::Error,
                               curl_code != CURLE_OK ? static_cast<int32_t>(curl_code)
                                                    : static_cast<int32_t>(http_status));
+
+                    // Record failure in health manager (replaces old blacklist system)
+                    int32_t provider_idx = get_effective_provider_index();
+                    if (health_manager_ && provider_idx >= 0) {
+                        health_manager_->on_failure(provider_idx);
+                        health_manager_->on_request_end(provider_idx);
+
+                        // Force longer ejection for severe infrastructure errors
+                        if (is_severe_infrastructure_error(curl_code)) {
+                            health_manager_->force_eject(provider_idx, SEVERE_ERROR_EJECTION_MS);
+                            LOG_WARNING(kPipeline, "provider %d force ejected due to infrastructure error (curl=%d)",
+                                        provider_idx, static_cast<int>(curl_code));
+                        }
+                    }
                 }
             }
             source_.disconnect();
@@ -440,6 +508,14 @@ void StreamPipeline::stream_session() noexcept {
         update_status();
     }
 
+    // End request tracking in health manager
+    {
+        int32_t provider_idx = get_effective_provider_index();
+        if (health_manager_ && provider_idx >= 0) {
+            health_manager_->on_request_end(provider_idx);
+        }
+    }
+
     source_.disconnect();
 }
 
@@ -459,12 +535,29 @@ void StreamPipeline::on_data_received(const uint8_t* data, size_t size) noexcept
     record_provider_success(static_cast<int64_t>(size));
 
     // If this is first data after connect, transition to Streaming
+    // and record success in health manager (once per connection, not per chunk)
     if (failover_.state() == StreamerState::Connecting) {
+        // Check HTTP status before recording success - don't count HTTP errors as successful
+        // This prevents HTTP 503 error responses from being counted as successful connections
+        int32_t http_status = source_.get_current_http_status();
+        bool is_http_success = (http_status >= 200 && http_status < 300) || http_status == 0;
+
         failover_.on_connected();
         quality_trigger_.reset();  // Fresh quality baseline on new connection
         LOG_INFO(kPipeline, "connected to URL index %d (score: %.1f), streaming started",
                  source_.current_url_index(), source_.get_url_score(source_.current_url_index()));
         emit_event(StreamEvent::Connected, source_.current_url_index());
+
+        // Record success in unified health manager (once per successful connection)
+        // Note: on_request_start() was already called at session start
+        // Only record success for HTTP 2xx responses (not for error response bodies)
+        int32_t provider_idx = get_effective_provider_index();
+        if (health_manager_ && provider_idx >= 0 && is_http_success) {
+            // Record success with initial latency (time to first byte)
+            double latency_ms = static_cast<double>(failover_.ms_since_last_data());
+            if (latency_ms < 1.0) latency_ms = 1.0;  // Minimum 1ms
+            health_manager_->on_success(provider_idx, latency_ms);
+        }
 
         if (first_data_after_switch_) {
             emit_event(StreamEvent::DataReceived, source_.current_url_index());
@@ -612,6 +705,13 @@ void StreamPipeline::perform_switch() noexcept {
 
     // Record failure to registry (centralized health tracking)
     record_provider_failure(last_disconnect_reason_);
+
+    // Record failure in unified health manager
+    int32_t provider_idx = get_effective_provider_index();
+    if (health_manager_ && provider_idx >= 0) {
+        health_manager_->on_request_end(provider_idx);
+        health_manager_->on_failure(provider_idx);
+    }
 
     // Mark the old URL as failed (applies quarantine and score penalty)
     source_.mark_url_failed(old_index);

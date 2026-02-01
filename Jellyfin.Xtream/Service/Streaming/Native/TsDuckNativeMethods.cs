@@ -614,4 +614,72 @@ internal static partial class TsDuckNativeMethods
     /// <returns>A <see cref="DnsErrorType"/> value indicating the last DNS error.</returns>
     [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_last_dns_error")]
     internal static partial int StreamerGetLastDnsError(nint streamer);
+
+    // =========================================================================
+    // Provider Health System (E2E testing and diagnostics)
+    // =========================================================================
+
+    /// <summary>
+    /// Gets the current state of a provider.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>ProviderState enum value, or -1 on error.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_provider_state")]
+    internal static partial int StreamerGetProviderState(nint streamer, int providerIndex);
+
+    /// <summary>
+    /// Gets detailed health snapshot for a provider.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <param name="snapshot">Receives the health snapshot.</param>
+    /// <returns>true if snapshot retrieved, false on error.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_provider_health")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool StreamerGetProviderHealth(
+        nint streamer,
+        int providerIndex,
+        out ProviderHealthSnapshotNative snapshot
+    );
+
+    /// <summary>
+    /// Gets the number of times a provider's circuit has been opened.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>Isolated times count, or -1 on error.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_isolated_times")]
+    internal static partial int StreamerGetIsolatedTimes(nint streamer, int providerIndex);
+
+    /// <summary>
+    /// Runs outlier detection manually (for testing).
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_run_outlier_detection")]
+    internal static partial void StreamerRunOutlierDetection(nint streamer);
+
+    /// <summary>
+    /// Gets the number of registered providers in the health system.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <returns>Provider count, or 0 on error.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_provider_count")]
+    internal static partial int StreamerGetProviderCount(nint streamer);
+
+    /// <summary>
+    /// Resets all providers to Active state (for testing).
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_reset_all_providers")]
+    internal static partial void StreamerResetAllProviders(nint streamer);
+
+    /// <summary>
+    /// Force ejects a provider (for testing).
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <param name="durationMs">Duration of ejection in milliseconds.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_force_eject_provider")]
+    internal static partial void StreamerForceEjectProvider(nint streamer, int providerIndex, int durationMs);
 }

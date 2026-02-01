@@ -115,6 +115,12 @@ struct StreamerConfig {
     double score_boost_on_success = 0.5;        // Score increase on successful data
     double score_penalty_on_failure = 5.0;      // Score decrease on failure
     double default_health_score = 50.0;         // Default score for new URLs
+
+    // Circuit breaker settings (use small values for E2E testing)
+    int32_t circuit_breaker_short_window_size = 0;  // 0 = use default (1500)
+    int32_t circuit_breaker_long_window_size = 0;   // 0 = use default (3000)
+    int32_t circuit_breaker_short_window_error_percent = 0; // 0 = use default (10%)
+    int32_t circuit_breaker_long_window_error_percent = 0;  // 0 = use default (5%)
 };
 
 // ============================================================================

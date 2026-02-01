@@ -19,6 +19,11 @@
 #include "network_config.hpp"
 #include "streaming_types.hpp"
 
+// Forward declaration
+namespace tsduck_interop::streaming {
+class UnifiedProviderHealthManager;
+}
+
 namespace tsduck_interop::streaming {
 
 // ============================================================================
@@ -194,6 +199,21 @@ public:
     void reset_url_status(int32_t url_index) noexcept;
 
     // ========================================================================
+    // Health Manager Integration
+    // ========================================================================
+
+    /// Set the unified health manager for provider selection and tracking.
+    /// The manager must outlive this source. Not thread-safe - call before streaming.
+    void set_health_manager(UnifiedProviderHealthManager* mgr) noexcept {
+        health_manager_ = mgr;
+    }
+
+    /// Get the health manager.
+    [[nodiscard]] UnifiedProviderHealthManager* health_manager() const noexcept {
+        return health_manager_;
+    }
+
+    // ========================================================================
     // Callback
     // ========================================================================
 
@@ -252,6 +272,10 @@ public:
     CURLcode last_curl_error() const noexcept { return last_curl_error_; }
     bool is_connected() const noexcept { return connected_; }
 
+    /// Get current HTTP response code during active transfer.
+    /// Returns 0 if not available yet.
+    [[nodiscard]] int32_t get_current_http_status() const noexcept;
+
 private:
     StreamerConfig config_;
     const NetworkConfig* network_config_{nullptr};
@@ -269,6 +293,9 @@ private:
     bool connected_{false};
 
     DataCallback data_callback_;
+
+    // Health manager (owned by StreamPipeline)
+    UnifiedProviderHealthManager* health_manager_{nullptr};
 
     /// Clean up all curl resources.
     void cleanup() noexcept;

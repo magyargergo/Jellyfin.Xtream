@@ -449,6 +449,12 @@ internal struct TsDuckStreamerConfigNative
     public double ScorePenaltyOnFailure;
     public double DefaultHealthScore;
 
+    // Circuit breaker settings (for E2E testing - use small values for fast tests)
+    public int CircuitBreakerShortWindowSize;
+    public int CircuitBreakerLongWindowSize;
+    public int CircuitBreakerShortWindowErrorPercent;
+    public int CircuitBreakerLongWindowErrorPercent;
+
     /// <summary>
     /// Creates a default configuration.
     /// </summary>
@@ -484,6 +490,10 @@ internal struct TsDuckStreamerConfigNative
             ScoreBoostOnSuccess = 0.5,
             ScorePenaltyOnFailure = 5.0,
             DefaultHealthScore = 50.0,
+            CircuitBreakerShortWindowSize = 1500,
+            CircuitBreakerLongWindowSize = 3000,
+            CircuitBreakerShortWindowErrorPercent = 10,
+            CircuitBreakerLongWindowErrorPercent = 5,
         };
 }
 
@@ -653,4 +663,91 @@ public readonly record struct StreamerStatus(
     /// Gets whether the streamer has reached a terminal state.
     /// </summary>
     public bool IsTerminal => State is StreamerState.Stopped or StreamerState.Failed;
+}
+
+// =============================================================================
+// Provider Health System Structures
+// =============================================================================
+
+/// <summary>
+/// Provider health state for the three-state model.
+/// </summary>
+public enum ProviderState
+{
+    /// <summary>Fully healthy, eligible for selection.</summary>
+    Active = 0,
+
+    /// <summary>Recently recovered, under observation.</summary>
+    Probation = 1,
+
+    /// <summary>Circuit open, temporarily unavailable.</summary>
+    Ejected = 2,
+}
+
+/// <summary>
+/// Native provider health snapshot.
+/// Layout must match ProviderHealthSnapshotNative in tsduck_interop.h exactly.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct ProviderHealthSnapshotNative
+{
+    public int ProviderIndex;
+    public int State;
+    public double SuccessRate;
+    public double LatencyEwmaMs;
+    public int ActiveRequests;
+    public int IsolatedTimes;
+    public int IsolationDurationMs;
+    public int Reserved;
+
+    /// <summary>
+    /// Converts to managed ProviderHealthSnapshot.
+    /// </summary>
+    public readonly ProviderHealthSnapshot ToManaged() =>
+        new(
+            ProviderIndex,
+            (ProviderState)State,
+            SuccessRate,
+            LatencyEwmaMs,
+            ActiveRequests,
+            IsolatedTimes,
+            IsolationDurationMs
+        );
+}
+
+/// <summary>
+/// Managed provider health snapshot for diagnostics and testing.
+/// </summary>
+/// <param name="ProviderIndex">Provider index.</param>
+/// <param name="State">Current provider state.</param>
+/// <param name="SuccessRate">Success rate (0.0 to 1.0).</param>
+/// <param name="LatencyEwmaMs">Current EWMA latency in milliseconds.</param>
+/// <param name="ActiveRequests">Current active requests.</param>
+/// <param name="IsolatedTimes">Number of times circuit has opened.</param>
+/// <param name="IsolationDurationMs">Current isolation duration.</param>
+[StructLayout(LayoutKind.Auto)]
+public readonly record struct ProviderHealthSnapshot(
+    int ProviderIndex,
+    ProviderState State,
+    double SuccessRate,
+    double LatencyEwmaMs,
+    int ActiveRequests,
+    int IsolatedTimes,
+    int IsolationDurationMs
+)
+{
+    /// <summary>
+    /// Gets whether this provider is currently ejected.
+    /// </summary>
+    public bool IsEjected => State == ProviderState.Ejected;
+
+    /// <summary>
+    /// Gets whether this provider is under probation.
+    /// </summary>
+    public bool IsInProbation => State == ProviderState.Probation;
+
+    /// <summary>
+    /// Gets whether this provider is fully healthy.
+    /// </summary>
+    public bool IsHealthy => State == ProviderState.Active && SuccessRate >= 0.9;
 }

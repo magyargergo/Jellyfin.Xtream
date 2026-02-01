@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -8,8 +10,123 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Xtream.E2ETests.Infrastructure;
 
 /// <summary>
+/// Configurable behavior for a simulated provider.
+/// </summary>
+public sealed class ProviderBehavior
+{
+    /// <summary>
+    /// Gets or sets the connection/response latency in milliseconds.
+    /// Applied before first byte is sent.
+    /// </summary>
+    public int LatencyMs { get; set; }
+
+    /// <summary>
+    /// Gets or sets the failure rate (0.0 to 1.0).
+    /// When a request fails, the server returns HTTP 503.
+    /// </summary>
+    public double FailureRate { get; set; }
+
+    /// <summary>
+    /// Gets or sets how many milliseconds to stream before dropping the connection.
+    /// 0 = never drop (infinite stream).
+    /// </summary>
+    public int DropAfterMs { get; set; }
+
+    /// <summary>
+    /// Gets or sets the streaming bitrate in Kbps.
+    /// </summary>
+    public int BitrateKbps { get; set; } = 5000;
+
+    /// <summary>
+    /// Gets or sets whether to immediately refuse connections (connection refused).
+    /// </summary>
+    public bool SimulateConnectionRefused { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether to hang indefinitely without sending data (timeout test).
+    /// </summary>
+    public bool SimulateResponseTimeout { get; set; }
+
+    /// <summary>
+    /// Gets or sets after how many milliseconds latency should increase.
+    /// 0 = no latency degradation.
+    /// </summary>
+    public int SlowdownAfterMs { get; set; }
+
+    /// <summary>
+    /// Gets or sets the latency multiplier after SlowdownAfterMs.
+    /// E.g., 3.0 means latency becomes 3x higher per chunk.
+    /// </summary>
+    public double SlowdownFactor { get; set; } = 1.0;
+
+    /// <summary>
+    /// Gets or sets whether to corrupt TS packets (bad sync byte + TEI flag).
+    /// </summary>
+    public bool CorruptPackets { get; set; }
+
+    /// <summary>
+    /// Gets or sets the corruption rate (0.0 to 1.0) when CorruptPackets is enabled.
+    /// </summary>
+    public double CorruptionRate { get; set; } = 0.1;
+}
+
+/// <summary>
+/// Statistics tracked per provider.
+/// </summary>
+public sealed class ProviderStats
+{
+    private int _connectionAttempts;
+    private int _successfulConnections;
+    private int _failedConnections;
+    private int _droppedConnections;
+    private long _bytesServed;
+    private long _requestsServed;
+
+    /// <summary>Gets the total connection attempts.</summary>
+    public int ConnectionAttempts => Volatile.Read(ref _connectionAttempts);
+
+    /// <summary>Gets the successful connections.</summary>
+    public int SuccessfulConnections => Volatile.Read(ref _successfulConnections);
+
+    /// <summary>Gets the failed connections (HTTP errors).</summary>
+    public int FailedConnections => Volatile.Read(ref _failedConnections);
+
+    /// <summary>Gets the connections that were dropped mid-stream.</summary>
+    public int DroppedConnections => Volatile.Read(ref _droppedConnections);
+
+    /// <summary>Gets the total bytes served.</summary>
+    public long BytesServed => Volatile.Read(ref _bytesServed);
+
+    /// <summary>Gets the total requests served.</summary>
+    public long RequestsServed => Volatile.Read(ref _requestsServed);
+
+    internal void IncrementConnectionAttempt() => Interlocked.Increment(ref _connectionAttempts);
+
+    internal void IncrementSuccessful() => Interlocked.Increment(ref _successfulConnections);
+
+    internal void IncrementFailed() => Interlocked.Increment(ref _failedConnections);
+
+    internal void IncrementDropped() => Interlocked.Increment(ref _droppedConnections);
+
+    internal void AddBytes(long bytes) => Interlocked.Add(ref _bytesServed, bytes);
+
+    internal void IncrementRequests() => Interlocked.Increment(ref _requestsServed);
+
+    internal void Reset()
+    {
+        Volatile.Write(ref _connectionAttempts, 0);
+        Volatile.Write(ref _successfulConnections, 0);
+        Volatile.Write(ref _failedConnections, 0);
+        Volatile.Write(ref _droppedConnections, 0);
+        Volatile.Write(ref _bytesServed, 0);
+        Volatile.Write(ref _requestsServed, 0);
+    }
+}
+
+/// <summary>
 /// Simple HTTP test server using Kestrel that serves MPEG-TS streams.
-/// Supports throttled streaming, finite streams, delayed responses, and unstable connections.
+/// Supports throttled streaming, finite streams, delayed responses, unstable connections,
+/// and per-provider configurable behaviors for health system testing.
 /// </summary>
 internal sealed class SimpleHttpTestServer : IAsyncDisposable
 {
@@ -20,6 +137,14 @@ internal sealed class SimpleHttpTestServer : IAsyncDisposable
     private readonly int _port;
     private int _connectionCount;
     private int _unstableDropAfterMs = 2000;
+
+    // Per-provider configurable behaviors for health system testing
+    private readonly ConcurrentDictionary<string, ProviderBehavior> _behaviors = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ProviderStats> _stats = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, int> _failNextCounts = new(StringComparer.Ordinal);
+    private readonly Random _random = new();
+    private int _totalProviderConnections;
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>
     /// Gets the base URL of the test server.
@@ -41,12 +166,74 @@ internal sealed class SimpleHttpTestServer : IAsyncDisposable
     }
 
     /// <summary>
+    /// Gets the total number of provider connections across all providers.
+    /// </summary>
+    public int TotalProviderConnectionCount => Volatile.Read(ref _totalProviderConnections);
+
+    /// <summary>
+    /// Gets or sets the default behavior for providers without explicit configuration.
+    /// </summary>
+    public ProviderBehavior DefaultBehavior { get; set; } = new();
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="SimpleHttpTestServer"/> class.
     /// </summary>
     /// <param name="port">Port to listen on (0 for random).</param>
     public SimpleHttpTestServer(int port = 0)
     {
         _port = port == 0 ? GetRandomPort() : port;
+    }
+
+    /// <summary>
+    /// Gets the URL for a specific provider.
+    /// </summary>
+    /// <param name="providerId">The provider identifier.</param>
+    /// <returns>The full URL for streaming from this provider.</returns>
+    public string GetProviderUrl(string providerId) => $"{BaseUrl}/provider/{providerId}/stream";
+
+    /// <summary>
+    /// Configures the behavior for a specific provider.
+    /// </summary>
+    /// <param name="providerId">The provider identifier.</param>
+    /// <param name="behavior">The behavior configuration.</param>
+    public void ConfigureProvider(string providerId, ProviderBehavior behavior)
+    {
+        _behaviors[providerId] = behavior;
+        _stats.GetOrAdd(providerId, _ => new ProviderStats());
+    }
+
+    /// <summary>
+    /// Gets the statistics for a specific provider.
+    /// </summary>
+    /// <param name="providerId">The provider identifier.</param>
+    /// <returns>The provider statistics, or a new empty stats object if not found.</returns>
+    public ProviderStats GetStats(string providerId)
+    {
+        return _stats.GetOrAdd(providerId, _ => new ProviderStats());
+    }
+
+    /// <summary>
+    /// Configures the provider to fail the next N requests.
+    /// </summary>
+    /// <param name="providerId">The provider identifier.</param>
+    /// <param name="count">Number of requests to fail.</param>
+    public void FailNextRequests(string providerId, int count)
+    {
+        _failNextCounts[providerId] = count;
+    }
+
+    /// <summary>
+    /// Resets all provider statistics.
+    /// </summary>
+    public void ResetAllProviderStats()
+    {
+        foreach (var stats in _stats.Values)
+        {
+            stats.Reset();
+        }
+
+        _failNextCounts.Clear();
+        Interlocked.Exchange(ref _totalProviderConnections, 0);
     }
 
     /// <summary>
@@ -282,7 +469,235 @@ internal sealed class SimpleHttpTestServer : IAsyncDisposable
             }
         );
 
+        // GET /provider/{providerId}/stream - provider-specific streaming with configurable behavior
+        _app.MapGet("/provider/{providerId}/stream", HandleProviderStream);
+
+        // POST /provider/{providerId}/configure - configure provider behavior dynamically
+        _app.MapPost(
+            "/provider/{providerId}/configure",
+            async (string providerId, HttpContext ctx) =>
+            {
+                try
+                {
+                    var behavior = await JsonSerializer.DeserializeAsync<ProviderBehavior>(
+                        ctx.Request.Body,
+                        JsonOptions,
+                        ctx.RequestAborted
+                    );
+
+                    if (behavior != null)
+                    {
+                        ConfigureProvider(providerId, behavior);
+                        ctx.Response.StatusCode = 200;
+                        await ctx.Response.WriteAsync("OK");
+                    }
+                    else
+                    {
+                        ctx.Response.StatusCode = 400;
+                        await ctx.Response.WriteAsync("Invalid behavior configuration");
+                    }
+                }
+                catch (JsonException ex)
+                {
+                    ctx.Response.StatusCode = 400;
+                    await ctx.Response.WriteAsync($"JSON error: {ex.Message}");
+                }
+            }
+        );
+
+        // GET /provider/{providerId}/stats - get provider statistics
+        _app.MapGet(
+            "/provider/{providerId}/stats",
+            async (string providerId, HttpContext ctx) =>
+            {
+                var stats = GetStats(providerId);
+                ctx.Response.ContentType = "application/json";
+                await JsonSerializer.SerializeAsync(
+                    ctx.Response.Body,
+                    new
+                    {
+                        stats.ConnectionAttempts,
+                        stats.SuccessfulConnections,
+                        stats.FailedConnections,
+                        stats.DroppedConnections,
+                        stats.BytesServed,
+                        stats.RequestsServed,
+                    }
+                );
+            }
+        );
+
+        // POST /provider/{providerId}/fail-next/{count} - fail next N requests
+        _app.MapPost(
+            "/provider/{providerId}/fail-next/{count:int}",
+            (string providerId, int count, HttpContext ctx) =>
+            {
+                FailNextRequests(providerId, count);
+                ctx.Response.StatusCode = 200;
+                return ctx.Response.WriteAsync($"Will fail next {count} requests for provider {providerId}");
+            }
+        );
+
+        // POST /provider/{providerId}/reset - reset provider stats
+        _app.MapPost(
+            "/provider/{providerId}/reset",
+            (string providerId, HttpContext ctx) =>
+            {
+                if (_stats.TryGetValue(providerId, out var stats))
+                {
+                    stats.Reset();
+                }
+
+                _failNextCounts.TryRemove(providerId, out _);
+                ctx.Response.StatusCode = 200;
+                return ctx.Response.WriteAsync("OK");
+            }
+        );
+
         await _app.StartAsync();
+    }
+
+    private async Task HandleProviderStream(string providerId, HttpContext ctx)
+    {
+        Interlocked.Increment(ref _connectionCount);
+        Interlocked.Increment(ref _totalProviderConnections);
+        var stats = _stats.GetOrAdd(providerId, _ => new ProviderStats());
+        stats.IncrementConnectionAttempt();
+
+        var behavior = _behaviors.GetValueOrDefault(providerId) ?? DefaultBehavior;
+
+        // Check for forced failures
+        if (_failNextCounts.TryGetValue(providerId, out var failCount) && failCount > 0)
+        {
+            _failNextCounts[providerId] = failCount - 1;
+            stats.IncrementFailed();
+            ctx.Response.StatusCode = 503;
+            await ctx.Response.WriteAsync("Forced failure");
+            return;
+        }
+
+        // Check for connection refused simulation
+        if (behavior.SimulateConnectionRefused)
+        {
+            stats.IncrementFailed();
+            ctx.Abort();
+            return;
+        }
+
+        // Check for response timeout simulation (hang forever)
+        if (behavior.SimulateResponseTimeout)
+        {
+            stats.IncrementFailed();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, ctx.RequestAborted);
+            }
+            catch (OperationCanceledException)
+            {
+                // Client timeout expected
+            }
+
+            return;
+        }
+
+        // Random failure based on failure rate
+        if (behavior.FailureRate > 0)
+        {
+            double roll;
+            lock (_random)
+            {
+                roll = _random.NextDouble();
+            }
+
+            if (roll < behavior.FailureRate)
+            {
+                stats.IncrementFailed();
+                ctx.Response.StatusCode = 503;
+                await ctx.Response.WriteAsync("Random failure");
+                return;
+            }
+        }
+
+        // Apply initial latency
+        if (behavior.LatencyMs > 0)
+        {
+            await Task.Delay(behavior.LatencyMs, ctx.RequestAborted);
+        }
+
+        // Start streaming
+        stats.IncrementSuccessful();
+        ctx.Response.ContentType = "video/mp2t";
+        ctx.Response.Headers["Connection"] = "close";
+
+        var generator = new TestStreamGenerator(behavior.BitrateKbps);
+        var bytesPerSecond = behavior.BitrateKbps * 1000.0 / 8.0;
+        var stopwatch = Stopwatch.StartNew();
+        long totalBytesSent = 0;
+        const int chunkPackets = 50;
+
+        try
+        {
+            while (!ctx.RequestAborted.IsCancellationRequested)
+            {
+                // Check if we should drop the connection
+                if (behavior.DropAfterMs > 0 && stopwatch.ElapsedMilliseconds > behavior.DropAfterMs)
+                {
+                    stats.IncrementDropped();
+                    ctx.Abort();
+                    return;
+                }
+
+                var chunk = generator.GenerateChunk(chunkPackets);
+
+                // Apply corruption if enabled
+                if (behavior.CorruptPackets)
+                {
+                    double roll;
+                    lock (_random)
+                    {
+                        roll = _random.NextDouble();
+                    }
+
+                    if (roll < behavior.CorruptionRate)
+                    {
+                        // Corrupt first packet sync byte
+                        chunk[0] = 0xFF;
+
+                        // Set TEI (transport error indicator) on second packet
+                        if (chunk.Length >= TsPacketSize * 2)
+                        {
+                            chunk[TsPacketSize + 1] |= 0x80;
+                        }
+                    }
+                }
+
+                await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
+                totalBytesSent += chunk.Length;
+                stats.AddBytes(chunk.Length);
+
+                // Calculate throttle delay with optional slowdown
+                double currentLatencyFactor = 1.0;
+                if (behavior.SlowdownAfterMs > 0 && stopwatch.ElapsedMilliseconds > behavior.SlowdownAfterMs)
+                {
+                    currentLatencyFactor = behavior.SlowdownFactor;
+                }
+
+                var targetElapsedMs = totalBytesSent / bytesPerSecond * 1000.0 * currentLatencyFactor;
+                var actualElapsedMs = stopwatch.Elapsed.TotalMilliseconds;
+                var sleepMs = (int)(targetElapsedMs - actualElapsedMs);
+
+                if (sleepMs > 1)
+                {
+                    await Task.Delay(sleepMs, ctx.RequestAborted);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Client disconnected normally
+        }
+
+        stats.IncrementRequests();
     }
 
     /// <summary>

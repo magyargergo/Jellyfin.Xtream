@@ -555,6 +555,125 @@ public sealed class NativeStreamer : IDisposable
             : null;
     }
 
+    // =========================================================================
+    // Provider Health System (E2E testing and diagnostics)
+    // =========================================================================
+
+    /// <summary>
+    /// Gets the current state of a provider.
+    /// </summary>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>The provider state, or <see cref="ProviderState.Ejected"/> if disposed or invalid index.</returns>
+    public ProviderState GetProviderState(int providerIndex)
+    {
+        if (_disposed)
+        {
+            return ProviderState.Ejected;
+        }
+
+        var state = TsDuckNativeMethods.StreamerGetProviderState(_streamer.DangerousGetHandle(), providerIndex);
+        return state < 0 ? ProviderState.Ejected : (ProviderState)state;
+    }
+
+    /// <summary>
+    /// Gets detailed health snapshot for a provider.
+    /// </summary>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>The health snapshot, or null if unavailable.</returns>
+    public ProviderHealthSnapshot? GetProviderHealth(int providerIndex)
+    {
+        if (_disposed)
+        {
+            return null;
+        }
+
+        if (
+            TsDuckNativeMethods.StreamerGetProviderHealth(_streamer.DangerousGetHandle(), providerIndex, out var native)
+        )
+        {
+            return native.ToManaged();
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Gets the number of times a provider's circuit has been opened.
+    /// </summary>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>Isolated times count, or -1 if unavailable.</returns>
+    public int GetIsolatedTimes(int providerIndex)
+    {
+        if (_disposed)
+        {
+            return -1;
+        }
+
+        return TsDuckNativeMethods.StreamerGetIsolatedTimes(_streamer.DangerousGetHandle(), providerIndex);
+    }
+
+    /// <summary>
+    /// Runs outlier detection manually (for testing).
+    /// Normally called periodically by the health system.
+    /// </summary>
+    public void RunOutlierDetection()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        TsDuckNativeMethods.StreamerRunOutlierDetection(_streamer.DangerousGetHandle());
+    }
+
+    /// <summary>
+    /// Gets the number of registered providers in the health system.
+    /// </summary>
+    /// <returns>Provider count, or 0 if unavailable.</returns>
+    public int GetProviderCount()
+    {
+        if (_disposed)
+        {
+            return 0;
+        }
+
+        return TsDuckNativeMethods.StreamerGetProviderCount(_streamer.DangerousGetHandle());
+    }
+
+    /// <summary>
+    /// Resets all providers to Active state (for testing).
+    /// </summary>
+    public void ResetAllProviders()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        TsDuckNativeMethods.StreamerResetAllProviders(_streamer.DangerousGetHandle());
+        _logger?.LogDebugIfEnabled("NativeStreamer: all providers reset to Active");
+    }
+
+    /// <summary>
+    /// Force ejects a provider (for testing).
+    /// </summary>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <param name="durationMs">Duration of ejection in milliseconds.</param>
+    public void ForceEjectProvider(int providerIndex, int durationMs)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        TsDuckNativeMethods.StreamerForceEjectProvider(_streamer.DangerousGetHandle(), providerIndex, durationMs);
+        _logger?.LogDebugIfEnabled(
+            "NativeStreamer: provider {Index} force ejected for {Duration}ms",
+            providerIndex,
+            durationMs
+        );
+    }
+
     /// <inheritdoc/>
     public void Dispose()
     {

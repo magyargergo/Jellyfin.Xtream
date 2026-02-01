@@ -1477,3 +1477,156 @@ TSDUCK_API int32_t tsduck_streamer_set_channel_guid(
               static_cast<unsigned long long>(guid_low));
     return TSDUCK_OK;
 }
+
+// ============================================================================
+// Provider Health System
+// ============================================================================
+
+TSDUCK_API int32_t tsduck_streamer_get_provider_state(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_provider_state: null streamer handle");
+        return -1;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_provider_state: null health manager");
+        return -1;
+    }
+
+    auto state = health_mgr->get_state(provider_index);
+    return static_cast<int32_t>(state);
+}
+
+TSDUCK_API bool tsduck_streamer_get_provider_health(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index,
+    ProviderHealthSnapshotNative* out_snapshot)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr || out_snapshot == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_provider_health: null handle or output");
+        return false;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_provider_health: null health manager");
+        return false;
+    }
+
+    auto snapshot = health_mgr->get_snapshot(provider_index);
+
+    out_snapshot->provider_index = snapshot.provider_index;
+    out_snapshot->state = static_cast<int32_t>(snapshot.state);
+    out_snapshot->success_rate = snapshot.success_rate;
+    out_snapshot->latency_ewma_ms = snapshot.latency_ewma_ms;
+    out_snapshot->active_requests = snapshot.active_requests;
+    out_snapshot->isolated_times = snapshot.isolated_times;
+    out_snapshot->isolation_duration_ms = snapshot.isolation_duration_ms;
+    out_snapshot->reserved = 0;
+
+    return true;
+}
+
+TSDUCK_API int32_t tsduck_streamer_get_isolated_times(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_isolated_times: null streamer handle");
+        return -1;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_isolated_times: null health manager");
+        return -1;
+    }
+
+    auto snapshot = health_mgr->get_snapshot(provider_index);
+    return snapshot.isolated_times;
+}
+
+TSDUCK_API void tsduck_streamer_run_outlier_detection(
+    TsDuckStreamerHandle streamer)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_run_outlier_detection: null streamer handle");
+        return;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_run_outlier_detection: null health manager");
+        return;
+    }
+
+    health_mgr->run_outlier_detection();
+    LOG_DEBUG(kStreamer, "tsduck_streamer_run_outlier_detection: executed");
+}
+
+TSDUCK_API int32_t tsduck_streamer_get_provider_count(
+    TsDuckStreamerHandle streamer)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_provider_count: null streamer handle");
+        return 0;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_provider_count: null health manager");
+        return 0;
+    }
+
+    return health_mgr->provider_count();
+}
+
+TSDUCK_API void tsduck_streamer_reset_all_providers(
+    TsDuckStreamerHandle streamer)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_reset_all_providers: null streamer handle");
+        return;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_reset_all_providers: null health manager");
+        return;
+    }
+
+    health_mgr->reset_all();
+    LOG_DEBUG(kStreamer, "tsduck_streamer_reset_all_providers: all providers reset to Active");
+}
+
+TSDUCK_API void tsduck_streamer_force_eject_provider(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index,
+    int32_t duration_ms)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_force_eject_provider: null streamer handle");
+        return;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_force_eject_provider: null health manager");
+        return;
+    }
+
+    health_mgr->force_eject(provider_index, duration_ms);
+    LOG_DEBUG(kStreamer, "tsduck_streamer_force_eject_provider: provider %d ejected for %d ms",
+              provider_index, duration_ms);
+}

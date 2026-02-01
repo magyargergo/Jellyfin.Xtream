@@ -3,6 +3,10 @@
 
 #include "stream_source.hpp"
 
+#include "provider_health.hpp"
+
+#include "../core/logging.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -10,6 +14,10 @@
 #include <cstring>
 
 namespace tsduck_interop::streaming {
+
+namespace {
+constexpr const char* kStreamSource = "StreamSource";
+}  // namespace
 
 // ============================================================================
 // Health-Based URL Selection
@@ -35,6 +43,12 @@ int32_t StreamSource::select_best_url() noexcept {
             continue;
         }
 
+        // Skip providers ejected via the health manager (unified health system)
+        // This ensures ForceEjectProvider() is respected in URL selection
+        if (health_manager_ != nullptr && health_manager_->is_ejected(i)) {
+            continue;
+        }
+
         if (info.health_score > best_score) {
             best_score = info.health_score;
             best_idx = i;
@@ -46,7 +60,7 @@ int32_t StreamSource::select_best_url() noexcept {
         return best_idx;
     }
 
-    // All URLs are quarantined - pick the one with least recent failure
+    // All URLs are quarantined/ejected - pick the one with least recent failure
     best_idx = select_least_recently_failed();
     if (best_idx >= 0) {
         current_url_index_ = best_idx;
@@ -60,16 +74,19 @@ int32_t StreamSource::select_least_recently_failed() const noexcept {
         return -1;
     }
 
-    int32_t best_idx = 0;
-    auto earliest_failure = urls_[0].last_failure_time;
+    int32_t best_idx = -1;
+    TimePoint earliest_failure{};
+    bool first_valid = true;
 
-    for (int32_t i = 1; i < static_cast<int32_t>(urls_.size()); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(urls_.size()); ++i) {
         const auto& info = urls_[i];
+
         // Prefer URLs that failed earlier (more time to recover)
         // or URLs that never failed (time_point{} is earliest)
-        if (info.last_failure_time < earliest_failure) {
+        if (first_valid || info.last_failure_time < earliest_failure) {
             earliest_failure = info.last_failure_time;
             best_idx = i;
+            first_valid = false;
         }
     }
 
@@ -304,6 +321,15 @@ void StreamSource::cleanup() noexcept {
         curl_multi_cleanup(curl_multi_);
         curl_multi_ = nullptr;
     }
+}
+
+int32_t StreamSource::get_current_http_status() const noexcept {
+    if (curl_handle_ == nullptr) {
+        return 0;
+    }
+    long http_code = 0;
+    curl_easy_getinfo(curl_handle_, CURLINFO_RESPONSE_CODE, &http_code);
+    return static_cast<int32_t>(http_code);
 }
 
 // ============================================================================

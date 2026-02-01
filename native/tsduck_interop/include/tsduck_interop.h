@@ -888,6 +888,12 @@ typedef struct {
     double score_boost_on_success;      // Score increase on data received (default: 0.5)
     double score_penalty_on_failure;    // Score decrease on failure (default: 5.0)
     double default_health_score;        // Default score for new URLs (default: 50.0)
+
+    // Circuit breaker settings (use small values for E2E testing)
+    int32_t circuit_breaker_short_window_size;  // Short window samples (default: 1500)
+    int32_t circuit_breaker_long_window_size;   // Long window samples (default: 3000)
+    int32_t circuit_breaker_short_window_error_percent; // Max error % in short window (default: 10)
+    int32_t circuit_breaker_long_window_error_percent;  // Max error % in long window (default: 5)
 } TsDuckStreamerConfigNative;
 
 // Streamer status snapshot (blittable)
@@ -1344,6 +1350,88 @@ TSDUCK_API int32_t tsduck_streamer_set_channel_guid(
     TsDuckStreamerHandle streamer,
     int64_t guid_high,
     int64_t guid_low
+);
+
+// =============================================================================
+// Provider Health System (for E2E testing and diagnostics)
+// =============================================================================
+
+/// Provider state enumeration (matches C++ ProviderState)
+typedef enum {
+    PROVIDER_STATE_ACTIVE = 0,      ///< Fully healthy, eligible for selection
+    PROVIDER_STATE_PROBATION = 1,   ///< Recently recovered, under observation
+    PROVIDER_STATE_EJECTED = 2      ///< Circuit open, temporarily unavailable
+} ProviderStateNative;
+
+/// Health snapshot for a single provider (blittable)
+typedef struct {
+    int32_t provider_index;         ///< Provider index
+    int32_t state;                  ///< ProviderStateNative enum value
+    double success_rate;            ///< Success rate (0.0 to 1.0)
+    double latency_ewma_ms;         ///< Current EWMA latency in milliseconds
+    int32_t active_requests;        ///< Current active requests
+    int32_t isolated_times;         ///< Number of times circuit has opened
+    int32_t isolation_duration_ms;  ///< Current isolation duration
+    int32_t reserved;               ///< Padding for alignment
+} ProviderHealthSnapshotNative;
+
+/// Get the current state of a provider.
+/// @param streamer The streamer handle.
+/// @param provider_index Index of the provider (0-based).
+/// @return ProviderStateNative enum value, or -1 on error.
+TSDUCK_API int32_t tsduck_streamer_get_provider_state(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index
+);
+
+/// Get detailed health snapshot for a provider.
+/// @param streamer The streamer handle.
+/// @param provider_index Index of the provider (0-based).
+/// @param out_snapshot Pointer to receive health snapshot.
+/// @return true if snapshot retrieved, false on error.
+TSDUCK_API bool tsduck_streamer_get_provider_health(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index,
+    ProviderHealthSnapshotNative* out_snapshot
+);
+
+/// Get the number of times a provider's circuit has been opened.
+/// @param streamer The streamer handle.
+/// @param provider_index Index of the provider (0-based).
+/// @return Isolated times count, or -1 on error.
+TSDUCK_API int32_t tsduck_streamer_get_isolated_times(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index
+);
+
+/// Run outlier detection manually (for testing).
+/// Normally called periodically by the health system.
+/// @param streamer The streamer handle.
+TSDUCK_API void tsduck_streamer_run_outlier_detection(
+    TsDuckStreamerHandle streamer
+);
+
+/// Get the number of registered providers in the health system.
+/// @param streamer The streamer handle.
+/// @return Provider count, or 0 on error.
+TSDUCK_API int32_t tsduck_streamer_get_provider_count(
+    TsDuckStreamerHandle streamer
+);
+
+/// Reset all providers to Active state (for testing).
+/// @param streamer The streamer handle.
+TSDUCK_API void tsduck_streamer_reset_all_providers(
+    TsDuckStreamerHandle streamer
+);
+
+/// Force eject a provider (for testing).
+/// @param streamer The streamer handle.
+/// @param provider_index Index of the provider (0-based).
+/// @param duration_ms Duration of ejection in milliseconds.
+TSDUCK_API void tsduck_streamer_force_eject_provider(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index,
+    int32_t duration_ms
 );
 
 #ifdef __cplusplus

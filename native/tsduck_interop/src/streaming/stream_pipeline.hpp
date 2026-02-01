@@ -17,6 +17,7 @@
 #include "keyframe_aligner.hpp"
 #include "streaming_types.hpp"
 #include "quality_switch_trigger.hpp"
+#include "provider_health.hpp"
 #include "../context/analyzer.hpp"
 #include "../context/context.hpp"
 #include "../concurrency/seqlock.hpp"
@@ -58,13 +59,23 @@ public:
     // ========================================================================
 
     /// Add a streaming URL to the source list with default health score.
-    void add_url(const std::string& url) { source_.add_url(url); }
+    void add_url(const std::string& url) {
+        source_.add_url(url);
+        // Register with health manager for circuit breaker tracking
+        if (health_manager_) {
+            health_manager_->register_provider(url, config_.default_health_score);
+        }
+    }
 
     /// Add a streaming URL with specified health score.
     /// @param url The URL to add.
     /// @param health_score Health score (0.0-100.0), higher = better.
     void add_url_with_score(const std::string& url, double health_score) {
         source_.add_url_with_score(url, health_score);
+        // Register with health manager for circuit breaker tracking
+        if (health_manager_) {
+            health_manager_->register_provider(url, health_score);
+        }
     }
 
     /// Update health score for existing URL by index.
@@ -81,7 +92,13 @@ public:
     }
 
     /// Clear all URLs.
-    void clear_urls() { source_.clear_urls(); }
+    void clear_urls() {
+        source_.clear_urls();
+        // Clear providers from health manager too
+        if (health_manager_) {
+            health_manager_->clear_providers();
+        }
+    }
 
     // ========================================================================
     // Registry-based Configuration (alternative to add_url)
@@ -182,6 +199,15 @@ public:
     context::TsDuckAnalyzer* analyzer() noexcept { return analyzer_.get(); }
     const context::TsDuckAnalyzer* analyzer() const noexcept { return analyzer_.get(); }
 
+    // ========================================================================
+    // Health Manager Access (for E2E testing and diagnostics)
+    // ========================================================================
+
+    /// Get the health manager (for testing/diagnostics).
+    /// The pipeline owns the health manager - do NOT delete it.
+    UnifiedProviderHealthManager* health_manager() noexcept { return health_manager_.get(); }
+    const UnifiedProviderHealthManager* health_manager() const noexcept { return health_manager_.get(); }
+
 private:
     StreamerConfig config_;
     StreamSource source_;
@@ -190,6 +216,9 @@ private:
     AlignmentBuffer alignment_;
     KeyframeAligner keyframe_aligner_;
     NetworkConfig network_config_{};  // Stored internally, pointer passed to source_
+
+    // Unified provider health manager (brpc circuit breaker + Finagle EWMA + P2C)
+    std::unique_ptr<UnifiedProviderHealthManager> health_manager_;
 
     std::unique_ptr<context::TsDuckContext> context_;
     std::unique_ptr<context::TsDuckAnalyzer> analyzer_;
@@ -232,7 +261,19 @@ private:
     registry::ChannelRegistry* registry_{nullptr};
     int64_t channel_guid_high_{0};
     int64_t channel_guid_low_{0};
-    int32_t current_provider_index_{-1};  // For health tracking
+    int32_t current_provider_index_{-1};  // For registry-based health tracking
+
+    /// Get effective provider index for health manager.
+    /// When using add_url() directly, source URL indices match health manager indices.
+    /// When using registry, use the stored current_provider_index_.
+    [[nodiscard]] int32_t get_effective_provider_index() const noexcept {
+        // If we have a registry, use the registry's provider index
+        if (registry_ != nullptr) {
+            return current_provider_index_;
+        }
+        // Otherwise, source URL index matches health manager index (add_url mode)
+        return source_.current_url_index();
+    }
 
     // ========================================================================
     // Worker Thread

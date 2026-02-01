@@ -12,16 +12,10 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests verify that DNS settings, timeouts, and TCP keep-alive work correctly in production scenarios.
 /// </summary>
 [Collection("E2E-Failover")]
-public class NetworkConfigurationE2ETests
+public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelper output)
 {
-    private readonly DockerTestFixture _fixture;
-    private readonly ITestOutputHelper _output;
-
-    public NetworkConfigurationE2ETests(DockerTestFixture fixture, ITestOutputHelper output)
-    {
-        _fixture = fixture;
-        _output = output;
-    }
+    private readonly DockerTestFixture _fixture = fixture;
+    private readonly ITestOutputHelper _output = output;
 
     // ========================================================================
     // Basic Network Configuration Tests
