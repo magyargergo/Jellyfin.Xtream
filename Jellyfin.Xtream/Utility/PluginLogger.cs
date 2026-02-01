@@ -16,6 +16,7 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service.Logging;
 using Microsoft.Extensions.Logging;

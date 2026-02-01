@@ -16,6 +16,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
