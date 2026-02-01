@@ -367,12 +367,7 @@ public class NativeLoggingTests
         // - Callback checks IsEnabled → skips marshaling for any filtered logs
 
         // Simulate only Warning+ reaching the callback (native filtering)
-        var levelsReachingCallback = new[]
-        {
-            LogLevel.Warning,
-            LogLevel.Error,
-            LogLevel.Critical,
-        };
+        var levelsReachingCallback = new[] { LogLevel.Warning, LogLevel.Error, LogLevel.Critical };
 
         foreach (var level in levelsReachingCallback)
         {
@@ -450,19 +445,21 @@ public class NativeLoggingTests
             string? channelName = null
         )
         {
-            CapturedLogs.Add(new PluginLogEntry
-            {
-                Id = CapturedLogs.Count + 1,
-                Timestamp = DateTime.UtcNow,
-                Level = level,
-                Category = category,
-                Message = message,
-                ExceptionMessage = exception?.Message,
-                ExceptionStackTrace = exception?.StackTrace,
-                IsDebug = isDebug,
-                StreamId = streamId,
-                ChannelName = channelName,
-            });
+            CapturedLogs.Add(
+                new PluginLogEntry
+                {
+                    Id = CapturedLogs.Count + 1,
+                    Timestamp = DateTime.UtcNow,
+                    Level = level,
+                    Category = category,
+                    Message = message,
+                    ExceptionMessage = exception?.Message,
+                    ExceptionStackTrace = exception?.StackTrace,
+                    IsDebug = isDebug,
+                    StreamId = streamId,
+                    ChannelName = channelName,
+                }
+            );
         }
 
         public IReadOnlyList<PluginLogEntry> GetEntries(
@@ -481,11 +478,7 @@ public class NativeLoggingTests
             bool includeDebug = true
         ) => CapturedLogs;
 
-        public PluginLogStats GetStats() => new()
-        {
-            TotalEntries = CapturedLogs.Count,
-            MaxEntries = MaxEntries,
-        };
+        public PluginLogStats GetStats() => new() { TotalEntries = CapturedLogs.Count, MaxEntries = MaxEntries };
 
         public void Clear() => CapturedLogs.Clear();
     }
