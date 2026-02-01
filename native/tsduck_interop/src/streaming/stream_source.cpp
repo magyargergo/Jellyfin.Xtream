@@ -215,8 +215,8 @@ bool StreamSource::connect() noexcept {
     // Thread safety: don't use signals for timeouts
     curl_easy_setopt(curl_handle_, CURLOPT_NOSIGNAL, 1L);
 
-    // Buffer size hint (64KB is good for streaming)
-    curl_easy_setopt(curl_handle_, CURLOPT_BUFFERSIZE, 65536L);
+    // Apply network configuration (DNS, IP resolve, timeouts, TCP keep-alive)
+    apply_network_config(curl_handle_);
 
     // Accept any content type (IPTV providers may not set correct MIME)
     curl_easy_setopt(curl_handle_, CURLOPT_ACCEPT_ENCODING, "");
@@ -339,6 +339,123 @@ int StreamSource::curl_progress_callback(void* userdata, curl_off_t /*dltotal*/,
     }
 
     return 0;
+}
+
+// ============================================================================
+// Network Configuration
+// ============================================================================
+
+void StreamSource::apply_network_config(CURL* handle) noexcept {
+    if (handle == nullptr) {
+        return;
+    }
+
+    // Use network config if provided, otherwise apply sensible defaults
+    if (network_config_ != nullptr) {
+        const auto& cfg = *network_config_;
+
+        // IP version resolution mode
+        switch (static_cast<IpResolveMode>(cfg.ip_resolve_mode)) {
+            case IpResolveMode::Whatever:
+                curl_easy_setopt(handle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
+                break;
+            case IpResolveMode::IPv4Only:
+                curl_easy_setopt(handle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+                break;
+            case IpResolveMode::IPv6Only:
+                curl_easy_setopt(handle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V6);
+                break;
+            case IpResolveMode::PreferIPv4:
+                // Use Happy Eyeballs with short IPv6 timeout to prefer IPv4
+                curl_easy_setopt(handle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
+#if LIBCURL_VERSION_NUM >= 0x074600  // 7.70.0
+                curl_easy_setopt(handle, CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS,
+                                 static_cast<long>(cfg.happy_eyeballs_timeout_ms));
+#endif
+                break;
+            case IpResolveMode::PreferIPv6:
+                // Use Happy Eyeballs - naturally prefers IPv6 when available
+                curl_easy_setopt(handle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
+#if LIBCURL_VERSION_NUM >= 0x074600  // 7.70.0
+                // Longer timeout gives IPv6 more chance to succeed
+                curl_easy_setopt(handle, CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS,
+                                 static_cast<long>(cfg.happy_eyeballs_timeout_ms * 5));
+#endif
+                break;
+        }
+
+        // DNS resolution mode
+        switch (static_cast<DnsResolveMode>(cfg.dns_mode)) {
+            case DnsResolveMode::System:
+                // Use system resolver (default)
+                break;
+
+            case DnsResolveMode::CustomDns:
+                // Build comma-separated DNS server list
+                if (cfg.dns_server_count > 0) {
+                    std::string dns_list;
+                    for (int32_t i = 0; i < cfg.dns_server_count && i < MAX_DNS_SERVERS; ++i) {
+                        if (cfg.dns_servers[i][0] != '\0') {
+                            if (!dns_list.empty()) {
+                                dns_list += ",";
+                            }
+                            dns_list += cfg.dns_servers[i];
+                        }
+                    }
+                    if (!dns_list.empty()) {
+                        curl_easy_setopt(handle, CURLOPT_DNS_SERVERS, dns_list.c_str());
+                    }
+                }
+                break;
+
+            case DnsResolveMode::DnsOverHttps:
+#if LIBCURL_VERSION_NUM >= 0x074100  // 7.65.0
+                if (cfg.doh_url[0] != '\0') {
+                    curl_easy_setopt(handle, CURLOPT_DOH_URL, cfg.doh_url);
+                }
+#endif
+                break;
+        }
+
+        // DNS cache timeout
+        curl_easy_setopt(handle, CURLOPT_DNS_CACHE_TIMEOUT,
+                         static_cast<long>(cfg.dns_cache_timeout_sec));
+
+        // Connection timeout (covers DNS + TCP + TLS)
+        curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT_MS,
+                         static_cast<long>(cfg.tcp_connect_timeout_ms));
+
+        // TCP keep-alive
+        if (cfg.tcp_keepalive_enabled != 0) {
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE,
+                             static_cast<long>(cfg.tcp_keepalive_idle_sec));
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL,
+                             static_cast<long>(cfg.tcp_keepalive_interval_sec));
+        } else {
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 0L);
+        }
+
+        // Receive buffer size
+        curl_easy_setopt(handle, CURLOPT_BUFFERSIZE,
+                         static_cast<long>(cfg.recv_buffer_size));
+    } else {
+        // Default configuration when no NetworkConfig is provided
+        // Force IPv4 resolution - fixes DNS issues in Docker containers
+        // where IPv6 AAAA lookups may fail or timeout before falling back to A records
+        curl_easy_setopt(handle, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+
+        // Buffer size hint (64KB is good for streaming)
+        curl_easy_setopt(handle, CURLOPT_BUFFERSIZE, 65536L);
+
+        // Enable TCP keep-alive with reasonable defaults
+        curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
+        curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, 60L);
+        curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL, 60L);
+
+        // Default DNS cache (60 seconds)
+        curl_easy_setopt(handle, CURLOPT_DNS_CACHE_TIMEOUT, 60L);
+    }
 }
 
 }  // namespace tsduck_interop::streaming

@@ -59,6 +59,9 @@ public sealed class NativeStreamer : IDisposable
     // Registry integration (keep reference to prevent GC)
     private NativeChannelRegistry? _registry;
 
+    // Network configuration (keep copy for diagnostics)
+    private NetworkConfigNative? _networkConfig;
+
     private bool _disposed;
 
     /// <summary>
@@ -306,6 +309,60 @@ public sealed class NativeStreamer : IDisposable
         }
 
         _logger?.LogDebugIfEnabled("NativeStreamer channel GUID set: {Guid}", channelGuid);
+    }
+
+    /// <summary>
+    /// Sets the network configuration for the streamer.
+    /// Must be called before <see cref="Start"/>.
+    /// </summary>
+    /// <param name="config">The network configuration to apply.</param>
+    /// <exception cref="ArgumentNullException">Thrown if <paramref name="config"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if the streamer has been disposed or configuration fails.</exception>
+    /// <remarks>
+    /// This method allows customization of DNS resolution, connection timeouts,
+    /// TCP keepalive settings, and other network parameters. The configuration
+    /// is applied to all subsequent connections made by the streamer.
+    /// </remarks>
+    public void SetNetworkConfig(NetworkConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var native = config.ToNative();
+        _networkConfig = native;
+
+        var result = TsDuckNativeMethods.StreamerSetNetworkConfig(_streamer.DangerousGetHandle(), in native);
+        if (result != 0)
+        {
+            throw new InvalidOperationException($"Failed to set network config: error {result}");
+        }
+
+        _logger?.LogDebugIfEnabled(
+            "NativeStreamer network config set: DnsMode={DnsMode}, IpResolve={IpResolve}",
+            (DnsResolveMode)native.DnsMode,
+            (IpResolveMode)native.IpResolveMode
+        );
+    }
+
+    /// <summary>
+    /// Gets the last DNS error that occurred during streaming.
+    /// </summary>
+    /// <returns>
+    /// A <see cref="DnsErrorType"/> indicating the last DNS error,
+    /// or <see cref="DnsErrorType.None"/> if no error occurred or the streamer is disposed.
+    /// </returns>
+    /// <remarks>
+    /// This method is useful for diagnosing connection failures. After a connection
+    /// error event, check this property to determine if DNS resolution was the cause.
+    /// </remarks>
+    public DnsErrorType GetLastDnsError()
+    {
+        if (_disposed)
+        {
+            return DnsErrorType.None;
+        }
+
+        return (DnsErrorType)TsDuckNativeMethods.StreamerGetLastDnsError(_streamer.DangerousGetHandle());
     }
 
     /// <summary>

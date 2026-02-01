@@ -585,4 +585,33 @@ internal static partial class TsDuckNativeMethods
     /// <returns>TSDUCK_OK on success.</returns>
     [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_set_channel_guid")]
     internal static partial int StreamerSetChannelGuid(nint streamer, long guidHigh, long guidLow);
+
+    // =========================================================================
+    // Network Configuration
+    // =========================================================================
+
+    /// <summary>
+    /// Gets the default network configuration.
+    /// </summary>
+    /// <returns>A <see cref="NetworkConfigNative"/> with default values.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_network_config_default")]
+    internal static partial NetworkConfigNative NetworkConfigDefault();
+
+    /// <summary>
+    /// Sets the network configuration for a streamer.
+    /// Must be called before <see cref="StreamerStart"/>.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="config">The network configuration to apply.</param>
+    /// <returns>TSDUCK_OK on success, error code on failure.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_set_network_config")]
+    internal static partial int StreamerSetNetworkConfig(nint streamer, in NetworkConfigNative config);
+
+    /// <summary>
+    /// Gets the last DNS error that occurred during streaming.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <returns>A <see cref="DnsErrorType"/> value indicating the last DNS error.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_last_dns_error")]
+    internal static partial int StreamerGetLastDnsError(nint streamer);
 }

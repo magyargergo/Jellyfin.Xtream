@@ -987,6 +987,167 @@ TSDUCK_API int32_t tsduck_streamer_is_shared_memory_mode(
 }
 
 // ============================================================================
+// Network Configuration API
+// ============================================================================
+
+namespace {
+constexpr const char* kNetworkConfig = "NetworkConfig";
+
+/// Convert C API NetworkConfigNative to C++ NetworkConfig
+streaming::NetworkConfig convertNetworkConfig(const NetworkConfigNative* config) noexcept {
+    streaming::NetworkConfig cpp_config{};
+
+    if (config == nullptr) {
+        return cpp_config;
+    }
+
+    cpp_config.dns_mode = config->dns_mode;
+    cpp_config.dns_server_count = config->dns_server_count;
+    cpp_config.dns_cache_timeout_sec = config->dns_cache_timeout_sec;
+    cpp_config.ip_resolve_mode = config->ip_resolve_mode;
+    cpp_config.dns_timeout_ms = config->dns_timeout_ms;
+    cpp_config.tcp_connect_timeout_ms = config->tcp_connect_timeout_ms;
+    cpp_config.tls_handshake_timeout_ms = config->tls_handshake_timeout_ms;
+    cpp_config.first_byte_timeout_ms = config->first_byte_timeout_ms;
+    cpp_config.happy_eyeballs_timeout_ms = config->happy_eyeballs_timeout_ms;
+    cpp_config.tcp_keepalive_enabled = config->tcp_keepalive_enabled;
+    cpp_config.tcp_keepalive_idle_sec = config->tcp_keepalive_idle_sec;
+    cpp_config.tcp_keepalive_interval_sec = config->tcp_keepalive_interval_sec;
+    cpp_config.recv_buffer_size = config->recv_buffer_size;
+
+    // Copy DNS servers
+    for (int32_t i = 0; i < config->dns_server_count && i < streaming::MAX_DNS_SERVERS; ++i) {
+        std::strncpy(cpp_config.dns_servers[i], config->dns_servers[i],
+                     streaming::DNS_SERVER_MAX_LEN - 1);
+        cpp_config.dns_servers[i][streaming::DNS_SERVER_MAX_LEN - 1] = '\0';
+    }
+
+    // Copy DoH URL
+    std::strncpy(cpp_config.doh_url, config->doh_url, streaming::DOH_URL_MAX_LEN - 1);
+    cpp_config.doh_url[streaming::DOH_URL_MAX_LEN - 1] = '\0';
+
+    return cpp_config;
+}
+}  // namespace
+
+TSDUCK_API NetworkConfigNative tsduck_network_config_default(void) {
+    NetworkConfigNative config{};
+
+    // Use sensible defaults matching the C++ NetworkConfig defaults
+    config.dns_mode = DNS_RESOLVE_SYSTEM;
+    config.dns_server_count = 0;
+    config.dns_cache_timeout_sec = 60;
+    config.ip_resolve_mode = IP_RESOLVE_IPV4_ONLY;  // Safe default for IPTV
+    config.dns_timeout_ms = 5000;
+    config.tcp_connect_timeout_ms = 5000;
+    config.tls_handshake_timeout_ms = 5000;
+    config.first_byte_timeout_ms = 10000;
+    config.happy_eyeballs_timeout_ms = 200;
+    config.tcp_keepalive_enabled = 1;
+    config.tcp_keepalive_idle_sec = 60;
+    config.tcp_keepalive_interval_sec = 60;
+    config.recv_buffer_size = 65536;  // 64KB
+
+    // Zero out arrays
+    std::memset(config.dns_servers, 0, sizeof(config.dns_servers));
+    std::memset(config.doh_url, 0, sizeof(config.doh_url));
+    std::memset(config.reserved, 0, sizeof(config.reserved));
+
+    LOG_DEBUG(kNetworkConfig, "Created default network config (IPv4-only, system DNS)");
+    return config;
+}
+
+TSDUCK_API int32_t tsduck_network_config_add_dns_server(
+    NetworkConfigNative* config,
+    const char* server)
+{
+    if (config == nullptr || server == nullptr) {
+        return 0;
+    }
+
+    if (config->dns_server_count >= NETWORK_CONFIG_MAX_DNS_SERVERS) {
+        LOG_WARNING(kNetworkConfig, "Cannot add DNS server '%s': max servers (%d) reached",
+                    server, NETWORK_CONFIG_MAX_DNS_SERVERS);
+        return 0;
+    }
+
+    std::strncpy(config->dns_servers[config->dns_server_count], server,
+                 NETWORK_CONFIG_DNS_SERVER_MAX_LEN - 1);
+    config->dns_servers[config->dns_server_count][NETWORK_CONFIG_DNS_SERVER_MAX_LEN - 1] = '\0';
+    config->dns_server_count++;
+
+    LOG_DEBUG(kNetworkConfig, "Added DNS server: %s (total: %d)", server, config->dns_server_count);
+    return 1;
+}
+
+TSDUCK_API void tsduck_network_config_set_doh_url(
+    NetworkConfigNative* config,
+    const char* url)
+{
+    if (config == nullptr) {
+        return;
+    }
+
+    if (url == nullptr) {
+        config->doh_url[0] = '\0';
+        return;
+    }
+
+    std::strncpy(config->doh_url, url, NETWORK_CONFIG_DOH_URL_MAX_LEN - 1);
+    config->doh_url[NETWORK_CONFIG_DOH_URL_MAX_LEN - 1] = '\0';
+
+    LOG_DEBUG(kNetworkConfig, "Set DoH URL: %s", url);
+}
+
+TSDUCK_API void tsduck_network_config_clear_dns_servers(NetworkConfigNative* config) {
+    if (config == nullptr) {
+        return;
+    }
+
+    config->dns_server_count = 0;
+    std::memset(config->dns_servers, 0, sizeof(config->dns_servers));
+
+    LOG_DEBUG(kNetworkConfig, "Cleared DNS servers");
+}
+
+TSDUCK_API int32_t tsduck_streamer_set_network_config(
+    TsDuckStreamerHandle streamer,
+    const NetworkConfigNative* config)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_set_network_config: null streamer handle");
+        return TSDUCK_ERROR_NULL_HANDLE;
+    }
+
+    if (config == nullptr) {
+        // Use default config
+        LOG_DEBUG(kStreamer, "Setting default network config on streamer");
+        streaming::NetworkConfig default_config{};
+        impl->set_network_config(default_config);
+    } else {
+        LOG_DEBUG(kStreamer, "Setting custom network config on streamer "
+                  "(dns_mode=%d, ip_mode=%d, dns_servers=%d)",
+                  config->dns_mode, config->ip_resolve_mode, config->dns_server_count);
+        auto cpp_config = convertNetworkConfig(config);
+        impl->set_network_config(cpp_config);
+    }
+
+    return TSDUCK_OK;
+}
+
+TSDUCK_API int32_t tsduck_streamer_get_last_dns_error(TsDuckStreamerHandle streamer) {
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        return DNS_ERROR_NONE;
+    }
+
+    // TODO: Track DNS errors in StreamPipeline/StreamSource and expose via this API
+    // For now, return NONE - DNS errors are logged but not tracked
+    return DNS_ERROR_NONE;
+}
+
+// ============================================================================
 // Shared Memory Producer API
 // ============================================================================
 

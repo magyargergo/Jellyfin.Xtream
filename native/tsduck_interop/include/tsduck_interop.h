@@ -1062,6 +1062,116 @@ TSDUCK_API int32_t tsduck_streamer_is_shared_memory_mode(
 );
 
 // =============================================================================
+// Network/DNS Configuration
+// =============================================================================
+
+/// Maximum DNS servers that can be configured
+#define NETWORK_CONFIG_MAX_DNS_SERVERS 4
+#define NETWORK_CONFIG_DNS_SERVER_MAX_LEN 256
+#define NETWORK_CONFIG_DOH_URL_MAX_LEN 512
+
+/// IP version resolve preference
+typedef enum {
+    IP_RESOLVE_WHATEVER = 0,    ///< Let curl decide
+    IP_RESOLVE_IPV4_ONLY = 1,   ///< Force IPv4 only (default)
+    IP_RESOLVE_IPV6_ONLY = 2,   ///< Force IPv6 only
+    IP_RESOLVE_PREFER_IPV4 = 3, ///< Try IPv4 first, fall back to IPv6
+    IP_RESOLVE_PREFER_IPV6 = 4  ///< Try IPv6 first, fall back to IPv4
+} IpResolveModeNative;
+
+/// DNS resolution method
+typedef enum {
+    DNS_RESOLVE_SYSTEM = 0,      ///< Use system resolver (default)
+    DNS_RESOLVE_CUSTOM_DNS = 1,  ///< Use custom DNS servers
+    DNS_RESOLVE_DOH = 2          ///< Use DNS-over-HTTPS (requires curl 7.65+)
+} DnsResolveModeNative;
+
+/// DNS error classification
+typedef enum {
+    DNS_ERROR_NONE = 0,
+    DNS_ERROR_RESOLUTION_FAILED = 1,  ///< CURLE_COULDNT_RESOLVE_HOST
+    DNS_ERROR_TIMEOUT = 2,
+    DNS_ERROR_SERVER_UNREACHABLE = 3,
+    DNS_ERROR_INVALID_CONFIG = 4,
+    DNS_ERROR_DOH_ERROR = 5
+} DnsErrorTypeNative;
+
+/// Network configuration structure (blittable for C# interop)
+typedef struct {
+    // DNS Configuration
+    int32_t dns_mode;                ///< DnsResolveModeNative enum
+    int32_t dns_server_count;        ///< Number of configured DNS servers (0-4)
+    char dns_servers[NETWORK_CONFIG_MAX_DNS_SERVERS][NETWORK_CONFIG_DNS_SERVER_MAX_LEN];
+    char doh_url[NETWORK_CONFIG_DOH_URL_MAX_LEN];
+    int32_t dns_cache_timeout_sec;   ///< DNS cache TTL (0=default 60s, -1=disable)
+
+    // IP Version Configuration
+    int32_t ip_resolve_mode;         ///< IpResolveModeNative enum
+
+    // Connection Timeouts (milliseconds)
+    int32_t dns_timeout_ms;          ///< DNS resolution timeout
+    int32_t tcp_connect_timeout_ms;  ///< TCP connection timeout
+    int32_t tls_handshake_timeout_ms;///< TLS handshake timeout
+    int32_t first_byte_timeout_ms;   ///< Time to first byte timeout
+    int32_t happy_eyeballs_timeout_ms;///< Happy Eyeballs algorithm timeout
+
+    // TCP Keep-Alive
+    int32_t tcp_keepalive_enabled;   ///< 1=enabled, 0=disabled
+    int32_t tcp_keepalive_idle_sec;  ///< Idle time before first probe
+    int32_t tcp_keepalive_interval_sec;///< Probe interval
+
+    // Buffer Configuration
+    int32_t recv_buffer_size;        ///< Receive buffer size hint
+
+    // Reserved for future expansion
+    int32_t reserved[4];
+} NetworkConfigNative;
+
+/// Create a default network configuration with sensible defaults.
+/// @return NetworkConfigNative with IPv4-only, system DNS, 5s timeouts.
+TSDUCK_API NetworkConfigNative tsduck_network_config_default(void);
+
+/// Add a DNS server to the configuration.
+/// @param config The configuration to modify.
+/// @param server DNS server address (e.g., "8.8.8.8", "1.1.1.1").
+/// @return 1 if added, 0 if max servers reached or invalid input.
+TSDUCK_API int32_t tsduck_network_config_add_dns_server(
+    NetworkConfigNative* config,
+    const char* server
+);
+
+/// Set the DNS-over-HTTPS URL.
+/// @param config The configuration to modify.
+/// @param url DoH URL (e.g., "https://cloudflare-dns.com/dns-query").
+TSDUCK_API void tsduck_network_config_set_doh_url(
+    NetworkConfigNative* config,
+    const char* url
+);
+
+/// Clear all DNS servers from the configuration.
+/// @param config The configuration to modify.
+TSDUCK_API void tsduck_network_config_clear_dns_servers(
+    NetworkConfigNative* config
+);
+
+/// Set network configuration on a streamer.
+/// Must be called before tsduck_streamer_start().
+/// @param streamer The streamer handle.
+/// @param config Network configuration. Pass NULL to use defaults.
+/// @return TSDUCK_OK on success.
+TSDUCK_API int32_t tsduck_streamer_set_network_config(
+    TsDuckStreamerHandle streamer,
+    const NetworkConfigNative* config
+);
+
+/// Get the last DNS error from a streamer.
+/// @param streamer The streamer handle.
+/// @return DnsErrorTypeNative enum value.
+TSDUCK_API int32_t tsduck_streamer_get_last_dns_error(
+    TsDuckStreamerHandle streamer
+);
+
+// =============================================================================
 // Shared Memory Producer (for E2E testing)
 // =============================================================================
 

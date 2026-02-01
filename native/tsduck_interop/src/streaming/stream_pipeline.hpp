@@ -126,6 +126,14 @@ public:
                                   std::size_t slot_count = ipc::DEFAULT_SLOT_COUNT,
                                   std::size_t slot_size = ipc::DEFAULT_SLOT_SIZE) noexcept;
 
+    /// Set network configuration for DNS resolution, timeouts, and TCP settings.
+    /// Must be called before start(). The config is copied internally.
+    /// @param config Network configuration to apply.
+    void set_network_config(const NetworkConfig& config) noexcept {
+        network_config_ = config;
+        source_.set_network_config(&network_config_);
+    }
+
     /// Get the shared memory name (for C# to connect).
     /// @return The shared memory name, or empty string if not configured.
     const std::string& shared_memory_name() const noexcept { return shm_name_; }
@@ -181,6 +189,7 @@ private:
     QualitySwitchTrigger quality_trigger_;
     AlignmentBuffer alignment_;
     KeyframeAligner keyframe_aligner_;
+    NetworkConfig network_config_{};  // Stored internally, pointer passed to source_
 
     std::unique_ptr<context::TsDuckContext> context_;
     std::unique_ptr<context::TsDuckAnalyzer> analyzer_;

@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "network_config.hpp"
 #include "streaming_types.hpp"
 
 namespace tsduck_interop::streaming {
@@ -198,6 +199,10 @@ public:
 
     void set_data_callback(DataCallback callback) { data_callback_ = std::move(callback); }
 
+    /// Set network configuration for DNS, timeouts, and TCP settings.
+    /// @param config Pointer to NetworkConfig (must remain valid during streaming).
+    void set_network_config(const NetworkConfig* config) noexcept { network_config_ = config; }
+
     // ========================================================================
     // Connection Lifecycle (call from worker thread only)
     // ========================================================================
@@ -249,6 +254,7 @@ public:
 
 private:
     StreamerConfig config_;
+    const NetworkConfig* network_config_{nullptr};
     CURL* curl_handle_{nullptr};
     CURLM* curl_multi_{nullptr};
 
@@ -281,6 +287,10 @@ private:
     /// Calculate quarantine duration with exponential backoff.
     /// @param consecutive_failures Number of consecutive failures.
     int32_t calculate_quarantine_ms(int32_t consecutive_failures) const noexcept;
+
+    /// Apply network configuration to curl handle.
+    /// Sets DNS, IP resolve, timeout, and TCP keep-alive options.
+    void apply_network_config(CURL* handle) noexcept;
 };
 
 }  // namespace tsduck_interop::streaming

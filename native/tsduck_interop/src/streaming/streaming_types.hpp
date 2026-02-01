@@ -45,12 +45,15 @@ enum class StreamEvent : int32_t {
 // ============================================================================
 
 enum class DisconnectReason : int32_t {
-    Unknown = 0,          // Unknown/unclassified reason
-    Normal = 1,           // Clean disconnect
-    Timeout = 2,          // CURLE_OPERATION_TIMEDOUT (28)
-    ConnectionFailed = 3, // CURLE_COULDNT_CONNECT (7), CURLE_COULDNT_RESOLVE_HOST (6)
-    HttpError = 4,        // HTTP 4xx/5xx response
-    Aborted = 5           // User abort / explicit stop
+    Unknown = 0,           // Unknown/unclassified reason
+    Normal = 1,            // Clean disconnect
+    Timeout = 2,           // CURLE_OPERATION_TIMEDOUT (28)
+    ConnectionFailed = 3,  // CURLE_COULDNT_CONNECT (7), CURLE_COULDNT_RESOLVE_HOST (6)
+    HttpError = 4,         // HTTP 4xx/5xx response
+    Aborted = 5,           // User abort / explicit stop
+    DnsResolutionFailed = 6, // CURLE_COULDNT_RESOLVE_HOST (6) - DNS specific
+    DnsTimeout = 7,        // DNS resolution timed out
+    SslHandshakeFailed = 8 // CURLE_SSL_CONNECT_ERROR (35), CURLE_PEER_FAILED_VERIFICATION (60)
 };
 // NOLINTEND(performance-enum-size)
 
