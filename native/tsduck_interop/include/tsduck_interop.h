@@ -894,6 +894,10 @@ typedef struct {
     int32_t circuit_breaker_long_window_size;   // Long window samples (default: 3000)
     int32_t circuit_breaker_short_window_error_percent; // Max error % in short window (default: 10)
     int32_t circuit_breaker_long_window_error_percent;  // Max error % in long window (default: 5)
+
+    // DNS failure settings
+    int32_t dns_retry_count;            // DNS failures before ejection (default: 3)
+    int64_t dns_ejection_duration_ms;   // Duration of DNS-based ejection (default: 300000 = 5 minutes)
 } TsDuckStreamerConfigNative;
 
 // Streamer status snapshot (blittable)
@@ -1433,6 +1437,40 @@ TSDUCK_API void tsduck_streamer_force_eject_provider(
     int32_t provider_index,
     int32_t duration_ms
 );
+
+// =============================================================================
+// DNS Failure Tracking (for E2E testing)
+// =============================================================================
+
+/// Get the DNS failure count for a provider.
+/// @param streamer Streamer handle.
+/// @param provider_index Index of the provider (0-based).
+/// @return Current DNS failure count, or 0 if invalid.
+TSDUCK_API int32_t tsduck_streamer_get_dns_failure_count(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index);
+
+/// Simulate a DNS failure for testing purposes.
+/// Returns the policy: 0=Switch, 1=EjectAndSwitch.
+/// @param streamer Streamer handle.
+/// @param provider_index Index of the provider (0-based).
+/// @return DNS failure policy, or -1 on error.
+TSDUCK_API int32_t tsduck_streamer_simulate_dns_failure(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index);
+
+/// Reset DNS failure count for a provider (simulates successful connection).
+/// @param streamer Streamer handle.
+/// @param provider_index Index of the provider (0-based).
+TSDUCK_API void tsduck_streamer_reset_dns_failure_count(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index);
+
+/// Check for provider recovery from ejection.
+/// Call this to trigger ejection expiry checks and transition providers
+/// from Ejected to Probation when their quarantine period has elapsed.
+/// @param streamer Streamer handle.
+TSDUCK_API void tsduck_streamer_check_recovery(TsDuckStreamerHandle streamer);
 
 #ifdef __cplusplus
 }

@@ -455,6 +455,10 @@ internal struct TsDuckStreamerConfigNative
     public int CircuitBreakerShortWindowErrorPercent;
     public int CircuitBreakerLongWindowErrorPercent;
 
+    // DNS failure settings
+    public int DnsRetryCount;
+    public long DnsEjectionDurationMs;
+
     /// <summary>
     /// Creates a default configuration.
     /// </summary>
@@ -494,6 +498,8 @@ internal struct TsDuckStreamerConfigNative
             CircuitBreakerLongWindowSize = 3000,
             CircuitBreakerShortWindowErrorPercent = 10,
             CircuitBreakerLongWindowErrorPercent = 5,
+            DnsRetryCount = 3,
+            DnsEjectionDurationMs = 300000, // 5 minutes
         };
 }
 
@@ -682,6 +688,19 @@ public enum ProviderState
 
     /// <summary>Circuit open, temporarily unavailable.</summary>
     Ejected = 2,
+}
+
+/// <summary>
+/// DNS failure policy returned by the health manager.
+/// Indicates how to handle a DNS failure for failover decisions.
+/// </summary>
+public enum DnsFailurePolicy
+{
+    /// <summary>Transient failure - switch to next URL but don't eject.</summary>
+    Switch = 0,
+
+    /// <summary>Persistent failure - eject provider for 5 minutes, then switch.</summary>
+    EjectAndSwitch = 1,
 }
 
 /// <summary>

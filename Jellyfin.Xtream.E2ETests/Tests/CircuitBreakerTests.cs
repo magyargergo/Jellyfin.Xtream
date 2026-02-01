@@ -361,10 +361,7 @@ public class CircuitBreakerTests
 
         // Healthy provider should have been used (either as failover or never tested if partial worked)
         // The key assertion is that success rates are being tracked
-        Assert.True(
-            partialHealth != null || healthyHealth != null,
-            "At least one provider should have health data"
-        );
+        Assert.True(partialHealth != null || healthyHealth != null, "At least one provider should have health data");
     }
 
     /// <summary>

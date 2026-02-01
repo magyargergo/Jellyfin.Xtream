@@ -121,6 +121,14 @@ struct StreamerConfig {
     int32_t circuit_breaker_long_window_size = 0;   // 0 = use default (3000)
     int32_t circuit_breaker_short_window_error_percent = 0; // 0 = use default (10%)
     int32_t circuit_breaker_long_window_error_percent = 0;  // 0 = use default (5%)
+
+    // DNS retry settings (for transient DNS failures)
+    // DNS failures can be temporary (e.g., DNS server overload, network hiccup)
+    // so we retry a few times before force-ejecting the provider for 5 minutes.
+    // Note: The actual DNS failure threshold is managed by UnifiedProviderHealthManager
+    // which uses provider-indexed tracking. This field is kept for backward compatibility.
+    int32_t dns_retry_count = 3;          // Retries before force ejection (deprecated, use health manager config)
+    int64_t dns_ejection_duration_ms = 300000;  // Duration of DNS-based ejection (default: 5 minutes)
 };
 
 // ============================================================================

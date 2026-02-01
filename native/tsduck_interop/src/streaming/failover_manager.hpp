@@ -94,6 +94,14 @@ public:
             return DisconnectAction::ShouldSwitch;
         }
 
+        // DNS FAILURE FAST PATH: Immediately try another URL on DNS failure.
+        // DNS failures indicate the provider's host is unreachable, so retrying
+        // the same URL is unlikely to help. Switch to next healthy URL immediately.
+        // The StreamPipeline tracks cumulative DNS failures for eventual ejection.
+        if (reason == DisconnectReason::DnsResolutionFailed) {
+            return DisconnectAction::ShouldSwitch;
+        }
+
         // Check if we should switch URL after consecutive failures
         // (errors count the same as stalls for this purpose)
         if (consecutive_failures_ >= config_.stalls_before_switch) {

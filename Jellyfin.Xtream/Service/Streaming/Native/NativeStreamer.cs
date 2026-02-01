@@ -674,6 +674,77 @@ public sealed class NativeStreamer : IDisposable
         );
     }
 
+    // ========================================================================
+    // DNS Failure Tracking (E2E testing)
+    // ========================================================================
+
+    /// <summary>
+    /// Gets the current DNS failure count for a provider.
+    /// </summary>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>DNS failure count, or 0 if disposed or invalid index.</returns>
+    public int GetDnsFailureCount(int providerIndex)
+    {
+        if (_disposed)
+        {
+            return 0;
+        }
+
+        return TsDuckNativeMethods.StreamerGetDnsFailureCount(_streamer.DangerousGetHandle(), providerIndex);
+    }
+
+    /// <summary>
+    /// Simulates a DNS failure for testing purposes.
+    /// Returns the resulting policy: 0=Switch, 1=EjectAndSwitch.
+    /// </summary>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>DNS failure policy (0=Switch, 1=EjectAndSwitch), or -1 on error.</returns>
+    public DnsFailurePolicy SimulateDnsFailure(int providerIndex)
+    {
+        if (_disposed)
+        {
+            return DnsFailurePolicy.Switch;
+        }
+
+        var result = TsDuckNativeMethods.StreamerSimulateDnsFailure(_streamer.DangerousGetHandle(), providerIndex);
+        _logger?.LogDebugIfEnabled(
+            "NativeStreamer: simulated DNS failure for provider {Index}, policy={Policy}",
+            providerIndex,
+            result
+        );
+        return result < 0 ? DnsFailurePolicy.Switch : (DnsFailurePolicy)result;
+    }
+
+    /// <summary>
+    /// Resets DNS failure count for a provider (simulates successful connection).
+    /// </summary>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    public void ResetDnsFailureCount(int providerIndex)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        TsDuckNativeMethods.StreamerResetDnsFailureCount(_streamer.DangerousGetHandle(), providerIndex);
+        _logger?.LogDebugIfEnabled("NativeStreamer: DNS failure count reset for provider {Index}", providerIndex);
+    }
+
+    /// <summary>
+    /// Check for provider recovery from ejection.
+    /// Triggers ejection expiry checks and transitions providers from Ejected to Probation
+    /// when their quarantine period has elapsed.
+    /// </summary>
+    public void CheckRecovery()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        TsDuckNativeMethods.StreamerCheckRecovery(_streamer.DangerousGetHandle());
+    }
+
     /// <inheritdoc/>
     public void Dispose()
     {

@@ -682,4 +682,43 @@ internal static partial class TsDuckNativeMethods
     /// <param name="durationMs">Duration of ejection in milliseconds.</param>
     [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_force_eject_provider")]
     internal static partial void StreamerForceEjectProvider(nint streamer, int providerIndex, int durationMs);
+
+    // =========================================================================
+    // DNS Failure Tracking (E2E testing)
+    // =========================================================================
+
+    /// <summary>
+    /// Gets the current DNS failure count for a provider.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>DNS failure count, or 0 on error.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_dns_failure_count")]
+    internal static partial int StreamerGetDnsFailureCount(nint streamer, int providerIndex);
+
+    /// <summary>
+    /// Simulates a DNS failure for testing purposes.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    /// <returns>DNS failure policy: 0=Switch, 1=EjectAndSwitch, -1=error.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_simulate_dns_failure")]
+    internal static partial int StreamerSimulateDnsFailure(nint streamer, int providerIndex);
+
+    /// <summary>
+    /// Resets DNS failure count for a provider (simulates successful connection).
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="providerIndex">Index of the provider (0-based).</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_reset_dns_failure_count")]
+    internal static partial void StreamerResetDnsFailureCount(nint streamer, int providerIndex);
+
+    /// <summary>
+    /// Check for provider recovery from ejection.
+    /// Triggers ejection expiry checks and transitions providers from Ejected to Probation
+    /// when their quarantine period has elapsed.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_check_recovery")]
+    internal static partial void StreamerCheckRecovery(nint streamer);
 }

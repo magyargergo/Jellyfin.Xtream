@@ -29,9 +29,10 @@ constexpr DisconnectReason classify_curl_error(CURLcode code) noexcept {
     switch (code) {
         case CURLE_OPERATION_TIMEDOUT:
             return DisconnectReason::Timeout;
-        case CURLE_COULDNT_CONNECT:
         case CURLE_COULDNT_RESOLVE_HOST:
         case CURLE_COULDNT_RESOLVE_PROXY:
+            return DisconnectReason::DnsResolutionFailed;  // DNS-specific for retry logic
+        case CURLE_COULDNT_CONNECT:
             return DisconnectReason::ConnectionFailed;
         case CURLE_ABORTED_BY_CALLBACK:
             return DisconnectReason::Aborted;
@@ -128,6 +129,14 @@ void StreamPipeline::init_common(const TsDuckConfigNative* analyzer_config) {
     }
     if (config_.circuit_breaker_long_window_error_percent > 0) {
         health_cfg.circuit_breaker.long_window_error_percent = config_.circuit_breaker_long_window_error_percent;
+    }
+
+    // Apply DNS failure settings from config
+    if (config_.dns_retry_count > 0) {
+        health_cfg.dns_failure_threshold = config_.dns_retry_count;
+    }
+    if (config_.dns_ejection_duration_ms > 0) {
+        health_cfg.dns_ejection_duration_ms = config_.dns_ejection_duration_ms;
     }
 
     health_manager_ = std::make_unique<UnifiedProviderHealthManager>(health_cfg);
@@ -464,11 +473,29 @@ void StreamPipeline::stream_session() noexcept {
                         health_manager_->on_failure(provider_idx);
                         health_manager_->on_request_end(provider_idx);
 
-                        // Force longer ejection for severe infrastructure errors
+                        // Handle severe infrastructure errors
                         if (is_severe_infrastructure_error(curl_code)) {
-                            health_manager_->force_eject(provider_idx, SEVERE_ERROR_EJECTION_MS);
-                            LOG_WARNING(kPipeline, "provider %d force ejected due to infrastructure error (curl=%d)",
-                                        provider_idx, static_cast<int>(curl_code));
+                            // DNS failures: use health manager's three-tier policy
+                            // - Transient (1-2 failures): Switch URLs, don't eject
+                            // - Persistent (>=3 failures): Force eject for 5 minutes
+                            if (last_disconnect_reason_ == DisconnectReason::DnsResolutionFailed) {
+                                auto policy = health_manager_->on_dns_failure(provider_idx);
+                                int32_t dns_failures = health_manager_->dns_failure_count(provider_idx);
+
+                                if (policy == DnsFailurePolicy::EjectAndSwitch) {
+                                    LOG_WARNING(kPipeline, "provider %d force ejected after DNS failures (curl=%d)",
+                                                provider_idx, static_cast<int>(curl_code));
+                                } else {
+                                    // Under threshold - log and let failover try next URL
+                                    LOG_INFO(kPipeline, "DNS failure %d/%d for provider %d, switching to next URL",
+                                             dns_failures, config_.dns_retry_count, provider_idx);
+                                }
+                            } else {
+                                // Non-DNS infrastructure errors (SSL, etc.) - force eject immediately
+                                health_manager_->force_eject(provider_idx, SEVERE_ERROR_EJECTION_MS);
+                                LOG_WARNING(kPipeline, "provider %d force ejected due to infrastructure error (curl=%d)",
+                                            provider_idx, static_cast<int>(curl_code));
+                            }
                         }
                     }
                 }
@@ -542,6 +569,12 @@ void StreamPipeline::on_data_received(const uint8_t* data, size_t size) noexcept
         int32_t http_status = source_.get_current_http_status();
         bool is_http_success = (http_status >= 200 && http_status < 300) || http_status == 0;
 
+        // Reset DNS failure count on successful connection (via health manager)
+        int32_t provider_idx = get_effective_provider_index();
+        if (health_manager_ && provider_idx >= 0) {
+            health_manager_->on_dns_success(provider_idx);
+        }
+
         failover_.on_connected();
         quality_trigger_.reset();  // Fresh quality baseline on new connection
         LOG_INFO(kPipeline, "connected to URL index %d (score: %.1f), streaming started",
@@ -551,7 +584,6 @@ void StreamPipeline::on_data_received(const uint8_t* data, size_t size) noexcept
         // Record success in unified health manager (once per successful connection)
         // Note: on_request_start() was already called at session start
         // Only record success for HTTP 2xx responses (not for error response bodies)
-        int32_t provider_idx = get_effective_provider_index();
         if (health_manager_ && provider_idx >= 0 && is_http_success) {
             // Record success with initial latency (time to first byte)
             double latency_ms = static_cast<double>(failover_.ms_since_last_data());

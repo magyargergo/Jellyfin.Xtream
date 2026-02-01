@@ -689,10 +689,24 @@ TSDUCK_API TsDuckStreamerHandle tsduck_streamer_create(
             if (config->default_health_score > 0.0) {
                 cfg.default_health_score = config->default_health_score;
             }
+
+            // Circuit breaker settings
+            cfg.circuit_breaker_short_window_size = config->circuit_breaker_short_window_size;
+            cfg.circuit_breaker_long_window_size = config->circuit_breaker_long_window_size;
+            cfg.circuit_breaker_short_window_error_percent = config->circuit_breaker_short_window_error_percent;
+            cfg.circuit_breaker_long_window_error_percent = config->circuit_breaker_long_window_error_percent;
+
+            // DNS failure settings
+            if (config->dns_retry_count > 0) {
+                cfg.dns_retry_count = config->dns_retry_count;
+            }
+            if (config->dns_ejection_duration_ms > 0) {
+                cfg.dns_ejection_duration_ms = config->dns_ejection_duration_ms;
+            }
         }
 
-        LOG_DEBUG(kStreamer, "config: enable_quality_switch=%d, stalls_before_switch=%d",
-                  cfg.enable_quality_switch, cfg.stalls_before_switch);
+        LOG_DEBUG(kStreamer, "config: enable_quality_switch=%d, stalls_before_switch=%d, dns_retry_count=%d, dns_ejection_duration_ms=%lld",
+                  cfg.enable_quality_switch, cfg.stalls_before_switch, cfg.dns_retry_count, static_cast<long long>(cfg.dns_ejection_duration_ms));
 
         // NOLINTBEGIN(cppcoreguidelines-owning-memory) - C API requires raw pointers
         auto* pipeline = new streaming::StreamPipeline(cfg, analyzer_config);
@@ -1629,4 +1643,86 @@ TSDUCK_API void tsduck_streamer_force_eject_provider(
     health_mgr->force_eject(provider_index, duration_ms);
     LOG_DEBUG(kStreamer, "tsduck_streamer_force_eject_provider: provider %d ejected for %d ms",
               provider_index, duration_ms);
+}
+
+// ============================================================================
+// DNS Failure Tracking
+// ============================================================================
+
+TSDUCK_API int32_t tsduck_streamer_get_dns_failure_count(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_dns_failure_count: null streamer handle");
+        return 0;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_dns_failure_count: null health manager");
+        return 0;
+    }
+
+    return health_mgr->dns_failure_count(provider_index);
+}
+
+TSDUCK_API int32_t tsduck_streamer_simulate_dns_failure(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_simulate_dns_failure: null streamer handle");
+        return -1;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_simulate_dns_failure: null health manager");
+        return -1;
+    }
+
+    auto policy = health_mgr->on_dns_failure(provider_index);
+    LOG_DEBUG(kStreamer, "tsduck_streamer_simulate_dns_failure: provider %d, policy=%d",
+              provider_index, static_cast<int>(policy));
+    return static_cast<int32_t>(policy);
+}
+
+TSDUCK_API void tsduck_streamer_reset_dns_failure_count(
+    TsDuckStreamerHandle streamer,
+    int32_t provider_index)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_reset_dns_failure_count: null streamer handle");
+        return;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_reset_dns_failure_count: null health manager");
+        return;
+    }
+
+    health_mgr->on_dns_success(provider_index);
+    LOG_DEBUG(kStreamer, "tsduck_streamer_reset_dns_failure_count: provider %d reset", provider_index);
+}
+
+TSDUCK_API void tsduck_streamer_check_recovery(TsDuckStreamerHandle streamer)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_check_recovery: null streamer handle");
+        return;
+    }
+
+    auto* health_mgr = impl->health_manager();
+    if (health_mgr == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_check_recovery: null health manager");
+        return;
+    }
+
+    health_mgr->check_recovery();
 }

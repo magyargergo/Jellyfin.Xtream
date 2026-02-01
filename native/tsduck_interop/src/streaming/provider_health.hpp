@@ -75,6 +75,10 @@ struct LoadBalancerConfig {
 struct ProviderHealthConfig {
     CircuitBreakerConfig circuit_breaker;
     LoadBalancerConfig load_balancer;
+
+    // DNS failure handling
+    int32_t dns_failure_threshold = 3;         // Failures before force ejection
+    int64_t dns_ejection_duration_ms = 300000; // 5 minutes
 };
 
 // ============================================================================
@@ -422,6 +426,20 @@ struct ProviderHealth {
     alignas(CACHE_LINE_SIZE) std::atomic<int64_t> total_successes{0};
     alignas(CACHE_LINE_SIZE) std::atomic<int64_t> last_success_ns{0};
     alignas(CACHE_LINE_SIZE) std::atomic<int64_t> last_failure_ns{0};
+
+    // DNS-specific tracking (cache-line aligned to prevent false sharing)
+    alignas(CACHE_LINE_SIZE) std::atomic<int32_t> dns_failure_count{0};
+    alignas(CACHE_LINE_SIZE) std::atomic<int64_t> last_dns_failure_ns{0};
+};
+
+// ============================================================================
+// DNS Failure Policy
+// ============================================================================
+
+/// Policy returned by on_dns_failure() to guide failover behavior.
+enum class DnsFailurePolicy : int32_t {
+    Switch = 0,         ///< Switch to next URL (transient failure)
+    EjectAndSwitch = 1  ///< Force eject provider, then switch (persistent failure)
 };
 
 // ============================================================================
@@ -768,6 +786,81 @@ public:
         p.breaker.mark_as_broken();
         p.state.store(ProviderState::Ejected, std::memory_order_release);
         p.ejected_until_ns.store(now + duration_ns, std::memory_order_release);
+    }
+
+    /// Check and recover any ejected providers whose quarantine has expired.
+    /// Call this periodically or before checking provider state to ensure
+    /// ejected providers transition to Probation when their time is up.
+    void check_recovery() noexcept {
+        std::shared_lock lock(mutex_);
+        int64_t now = now_ns();
+        for (auto& p : providers_) {
+            check_ejection_expiry(*p, now);
+        }
+    }
+
+    // ========================================================================
+    // DNS Failure Handling
+    // ========================================================================
+
+    /// Handle a DNS failure for a provider.
+    /// Implements three-tier policy:
+    /// - Transient (1-2 failures): Switch URLs, don't eject
+    /// - Persistent (>=3 failures): Force eject for 5 minutes, then switch
+    /// @param provider_index The provider that experienced DNS failure.
+    /// @return Policy indicating whether to just switch or eject and switch.
+    [[nodiscard]] [[gnu::hot]] DnsFailurePolicy on_dns_failure(int32_t provider_index) noexcept {
+        std::shared_lock lock(mutex_);
+        if (provider_index < 0 || provider_index >= static_cast<int32_t>(providers_.size())) [[unlikely]] {
+            return DnsFailurePolicy::Switch;
+        }
+
+        auto& p = *providers_[provider_index];
+        int64_t now = now_ns();
+
+        // Increment DNS failure counter (relaxed - no ordering requirements)
+        int32_t failures = p.dns_failure_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        p.last_dns_failure_ns.store(now, std::memory_order_relaxed);
+
+        // Check threshold
+        if (failures >= config_.dns_failure_threshold) [[unlikely]] {
+            // Persistent failure - force eject
+            int64_t duration_ns = config_.dns_ejection_duration_ms * 1'000'000;
+            p.breaker.mark_as_broken();
+            p.state.store(ProviderState::Ejected, std::memory_order_release);
+            p.ejected_until_ns.store(now + duration_ns, std::memory_order_release);
+            // Reset counter for when provider comes back from ejection
+            p.dns_failure_count.store(0, std::memory_order_relaxed);
+            return DnsFailurePolicy::EjectAndSwitch;
+        }
+
+        // Transient failure - just switch to next URL
+        return DnsFailurePolicy::Switch;
+    }
+
+    /// Record successful DNS resolution / connection for a provider.
+    /// Resets the DNS failure counter.
+    /// @param provider_index The provider that successfully connected.
+    [[gnu::hot]] void on_dns_success(int32_t provider_index) noexcept {
+        std::shared_lock lock(mutex_);
+        if (provider_index < 0 || provider_index >= static_cast<int32_t>(providers_.size())) [[unlikely]] {
+            return;
+        }
+
+        auto& p = *providers_[provider_index];
+        // Reset DNS failure counter on success (relaxed - no ordering requirements)
+        p.dns_failure_count.store(0, std::memory_order_relaxed);
+    }
+
+    /// Get current DNS failure count for a provider.
+    /// @param provider_index The provider to query.
+    /// @return Current DNS failure count, or 0 if invalid index.
+    [[nodiscard]] int32_t dns_failure_count(int32_t provider_index) const noexcept {
+        std::shared_lock lock(mutex_);
+        if (provider_index < 0 || provider_index >= static_cast<int32_t>(providers_.size())) {
+            return 0;
+        }
+        return providers_[provider_index]->dns_failure_count.load(std::memory_order_relaxed);
     }
 
 private:

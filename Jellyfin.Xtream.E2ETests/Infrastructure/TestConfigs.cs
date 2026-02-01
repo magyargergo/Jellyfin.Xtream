@@ -62,6 +62,10 @@ internal static class TestConfigs
             CircuitBreakerLongWindowSize = 20,
             CircuitBreakerShortWindowErrorPercent = 30, // Trip at 30% error rate (3 errors in 10 samples)
             CircuitBreakerLongWindowErrorPercent = 20,
+
+            // DNS failure settings - short for testing
+            DnsRetryCount = 3,
+            DnsEjectionDurationMs = 1000, // 1 second ejection for fast recovery tests
         };
 
     /// <summary>
@@ -119,6 +123,10 @@ internal static class TestConfigs
             CircuitBreakerLongWindowSize = 10,
             CircuitBreakerShortWindowErrorPercent = 40, // Trip at 40% error rate (2 errors in 5 samples)
             CircuitBreakerLongWindowErrorPercent = 30,
+
+            // DNS failure settings - very short for reactive testing
+            DnsRetryCount = 3,
+            DnsEjectionDurationMs = 500, // 500ms ejection for immediate recovery
         };
 
     /// <summary>
