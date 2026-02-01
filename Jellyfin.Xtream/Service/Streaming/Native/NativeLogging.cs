@@ -41,9 +41,9 @@ namespace Jellyfin.Xtream.Service.Streaming.Native;
 /// </remarks>
 public static unsafe class NativeLogging
 {
-    private static readonly object _lock = new();
-    private static ILogger? _logger;
-    private static bool _initialized;
+    private sealed record LoggingState(ILogger? Logger, bool Initialized);
+
+    private static LoggingState _state = new(null, false);
 
     /// <summary>
     /// Initializes native logging with the specified logger.
@@ -61,37 +61,37 @@ public static unsafe class NativeLogging
     /// </remarks>
     public static void Initialize(ILogger? logger)
     {
-        lock (_lock)
+        var current = Volatile.Read(ref _state);
+        var nativeLevel = DetermineNativeLogLevel(logger);
+
+        if (current.Initialized)
         {
-            _logger = logger;
+            // Already initialized - just update logger and level
+            Volatile.Write(ref _state, new LoggingState(logger, true));
+            TsDuckNativeMethods.SetLogLevel((int)nativeLevel);
+            return;
+        }
 
-            // Determine native log level based on what ILogger accepts
-            var nativeLevel = DetermineNativeLogLevel(logger);
+        // First-time initialization with CAS
+        var desired = new LoggingState(logger, true);
+        if (Interlocked.CompareExchange(ref _state, desired, current) != current)
+        {
+            // Another thread won - just update logger
+            Volatile.Write(ref _state, new LoggingState(logger, true));
+            TsDuckNativeMethods.SetLogLevel((int)nativeLevel);
+            return;
+        }
 
-            if (_initialized)
-            {
-                // Already initialized - just update log level in case config changed
-                TsDuckNativeMethods.SetLogLevel((int)nativeLevel);
-                return;
-            }
-
-            try
-            {
-                // Register function pointer callback with native code
-                TsDuckNativeMethods.SetLogCallback(&OnNativeLog, 0);
-
-                // Set native level to match ILogger's minimum
-                // Native filters at coarse level, callback checks IsEnabled for final filtering
-                TsDuckNativeMethods.SetLogLevel((int)nativeLevel);
-
-                _initialized = true;
-
-                _logger?.LogDebug("Native TsDuck logging initialized (native level: {NativeLevel})", nativeLevel);
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "Failed to initialize native logging - native logs will go to stderr");
-            }
+        try
+        {
+            TsDuckNativeMethods.SetLogCallback(&OnNativeLog, 0);
+            TsDuckNativeMethods.SetLogLevel((int)nativeLevel);
+            logger?.LogDebug("Native TsDuck logging initialized (native level: {NativeLevel})", nativeLevel);
+        }
+        catch (Exception ex)
+        {
+            Volatile.Write(ref _state, new LoggingState(null, false));
+            logger?.LogWarning(ex, "Failed to initialize native logging - native logs will go to stderr");
         }
     }
 
@@ -109,14 +109,10 @@ public static unsafe class NativeLogging
 
         // Check levels from most verbose to least verbose
         // Return the most verbose level that ILogger accepts
-        return logger.IsEnabled(LogLevel.Trace)
-            ? TsDuckNativeMethods.NativeLogLevel.Trace
-            : logger.IsEnabled(LogLevel.Debug)
-            ? TsDuckNativeMethods.NativeLogLevel.Debug
-            : logger.IsEnabled(LogLevel.Information)
-            ? TsDuckNativeMethods.NativeLogLevel.Info
-            : logger.IsEnabled(LogLevel.Warning)
-            ? TsDuckNativeMethods.NativeLogLevel.Warning
+        return logger.IsEnabled(LogLevel.Trace) ? TsDuckNativeMethods.NativeLogLevel.Trace
+            : logger.IsEnabled(LogLevel.Debug) ? TsDuckNativeMethods.NativeLogLevel.Debug
+            : logger.IsEnabled(LogLevel.Information) ? TsDuckNativeMethods.NativeLogLevel.Info
+            : logger.IsEnabled(LogLevel.Warning) ? TsDuckNativeMethods.NativeLogLevel.Warning
             : TsDuckNativeMethods.NativeLogLevel.Error;
     }
 
@@ -125,41 +121,31 @@ public static unsafe class NativeLogging
     /// </summary>
     public static void Shutdown()
     {
-        lock (_lock)
+        var current = Volatile.Read(ref _state);
+        if (!current.Initialized)
         {
-            if (!_initialized)
-            {
-                return;
-            }
+            return;
+        }
 
-            try
-            {
-                // Clear callback - native code will fall back to stderr
-                TsDuckNativeMethods.SetLogCallback(callback: null, 0);
-            }
-            catch
-            {
-                // Ignore errors during shutdown
-            }
+        if (Interlocked.CompareExchange(ref _state, new LoggingState(null, false), current) != current)
+        {
+            return; // Another thread shutdown
+        }
 
-            _logger = null;
-            _initialized = false;
+        try
+        {
+            TsDuckNativeMethods.SetLogCallback(null, 0);
+        }
+        catch
+        {
+            // Ignore errors during shutdown
         }
     }
 
     /// <summary>
     /// Gets a value indicating whether native logging is initialized.
     /// </summary>
-    public static bool IsInitialized
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _initialized;
-            }
-        }
-    }
+    public static bool IsInitialized => Volatile.Read(ref _state).Initialized;
 
     /// <summary>
     /// Callback invoked by native code for each log message.
@@ -182,7 +168,8 @@ public static unsafe class NativeLogging
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnNativeLog(int level, nint componentPtr, nint messagePtr, nint userData)
     {
-        var logger = _logger;
+        var state = Volatile.Read(ref _state);
+        var logger = state.Logger;
 
         try
         {
@@ -218,9 +205,10 @@ public static unsafe class NativeLogging
                 PluginLogger.DirectLog(logLevel, $"Native.{component}", formattedMessage);
             }
         }
-        catch
+        catch (Exception ex)
         {
             // Never throw from callback - could crash native code
+            System.Diagnostics.Debug.WriteLine($"[NativeLogging] Callback exception: {ex.Message}");
         }
     }
 

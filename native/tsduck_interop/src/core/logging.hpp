@@ -8,6 +8,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 namespace tsduck_interop {
 namespace logging {
@@ -42,10 +43,19 @@ using LogCallback = void (*)(int32_t level, const char* component, const char* m
 
 namespace detail {
 
+/// Bundles callback and user_data for atomic swap
+struct CallbackState {
+    LogCallback callback = nullptr;
+    void* user_data = nullptr;
+
+    constexpr CallbackState() noexcept = default;
+    constexpr CallbackState(LogCallback cb, void* ud) noexcept
+        : callback(cb), user_data(ud) {}
+};
+
 // Global state - using atomics for thread safety
 inline std::atomic<LogLevel> g_log_level{LogLevel::Warning};
-inline std::atomic<LogCallback> g_log_callback{nullptr};
-inline std::atomic<void*> g_log_user_data{nullptr};
+inline std::atomic<std::shared_ptr<const CallbackState>> g_callback_state{nullptr};
 inline std::atomic<FILE*> g_log_file{stderr};
 
 /// Get log level name
@@ -83,10 +93,9 @@ inline void log_impl(LogLevel level, const char* component, const char* format, 
     vsnprintf(message, sizeof(message), format, args);
 
     // Try custom callback first
-    LogCallback callback = g_log_callback.load(std::memory_order_acquire);
-    if (callback != nullptr) {
-        void* user_data = g_log_user_data.load(std::memory_order_relaxed);
-        callback(static_cast<int32_t>(level), component, message, user_data);
+    auto state = g_callback_state.load(std::memory_order_acquire);
+    if (state && state->callback) {
+        state->callback(static_cast<int32_t>(level), component, message, state->user_data);
         return;
     }
 
@@ -116,8 +125,14 @@ inline LogLevel get_level() noexcept {
 
 /// Set custom log callback (set to nullptr to use default file output)
 inline void set_callback(LogCallback callback, void* user_data = nullptr) noexcept {
-    detail::g_log_user_data.store(user_data, std::memory_order_relaxed);
-    detail::g_log_callback.store(callback, std::memory_order_release);
+    if (callback) {
+        detail::g_callback_state.store(
+            std::make_shared<const detail::CallbackState>(callback, user_data),
+            std::memory_order_release
+        );
+    } else {
+        detail::g_callback_state.store(nullptr, std::memory_order_release);
+    }
 }
 
 /// Set log output file (default: stderr)

@@ -29,14 +29,14 @@ namespace Jellyfin.Xtream.Utility;
 /// </summary>
 public static partial class PluginLogger
 {
-    private static IPluginLogService? _logService;
-    private static IPluginConfigurationProvider? _configProvider;
-    private static volatile bool _isCapturing;
+    private sealed record CaptureState(IPluginLogService LogService, IPluginConfigurationProvider? ConfigProvider);
+
+    private static CaptureState? _captureState;
 
     /// <summary>
     /// Gets whether log capture is currently active.
     /// </summary>
-    public static bool IsCapturing => _isCapturing;
+    public static bool IsCapturing => Volatile.Read(ref _captureState) != null;
 
     /// <summary>
     /// Initializes the plugin logger with the log service instance.
@@ -45,16 +45,21 @@ public static partial class PluginLogger
     /// <param name="configProvider">Optional configuration provider for debug logging state.</param>
     public static void Initialize(IPluginLogService? logService, IPluginConfigurationProvider? configProvider = null)
     {
-        _logService = logService;
-        _configProvider = configProvider;
-        _isCapturing = logService != null;
+        Volatile.Write(ref _captureState, logService != null ? new CaptureState(logService, configProvider) : null);
     }
 
     /// <summary>
     /// Enables or disables log capture at runtime.
+    /// Note: Disabling capture clears state; re-enabling requires Initialize call.
     /// </summary>
     /// <param name="enabled">Whether to enable capture.</param>
-    public static void SetCaptureEnabled(bool enabled) => _isCapturing = enabled && _logService != null;
+    public static void SetCaptureEnabled(bool enabled)
+    {
+        if (!enabled)
+        {
+            Volatile.Write(ref _captureState, null);
+        }
+    }
 
     /// <summary>
     /// Logs a debug message if debug logging is enabled.
@@ -77,7 +82,7 @@ public static partial class PluginLogger
         }
 
         logger.Log(LogLevel.Information, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Information, typeof(T).Name, message, args, exception: null, isDebug: true);
         }
@@ -103,7 +108,7 @@ public static partial class PluginLogger
         }
 
         logger.Log(LogLevel.Information, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Information, "Plugin", message, args, exception: null, isDebug: true);
         }
@@ -136,7 +141,7 @@ public static partial class PluginLogger
         }
 
         logger.Log(LogLevel.Information, exception, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Information, typeof(T).Name, message, args, exception, isDebug: true);
         }
@@ -168,7 +173,7 @@ public static partial class PluginLogger
         }
 
         logger.Log(LogLevel.Information, exception, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Information, "Plugin", message, args, exception, isDebug: true);
         }
@@ -189,7 +194,7 @@ public static partial class PluginLogger
     public static void PluginLogInformation<T>(this ILogger<T> logger, string message, params object?[] args)
     {
         logger.Log(LogLevel.Information, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Information, typeof(T).Name, message, args, exception: null, isDebug: false);
         }
@@ -209,7 +214,7 @@ public static partial class PluginLogger
     public static void PluginLogInformation(this ILogger logger, string message, params object?[] args)
     {
         logger.Log(LogLevel.Information, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Information, "Plugin", message, args, exception: null, isDebug: false);
         }
@@ -230,7 +235,7 @@ public static partial class PluginLogger
     public static void PluginLogWarning<T>(this ILogger<T> logger, string message, params object?[] args)
     {
         logger.Log(LogLevel.Warning, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Warning, typeof(T).Name, message, args, exception: null, isDebug: false);
         }
@@ -257,7 +262,7 @@ public static partial class PluginLogger
     )
     {
         logger.Log(LogLevel.Warning, exception, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Warning, typeof(T).Name, message, args, exception, isDebug: false);
         }
@@ -278,7 +283,7 @@ public static partial class PluginLogger
     public static void PluginLogError<T>(this ILogger<T> logger, string message, params object?[] args)
     {
         logger.Log(LogLevel.Error, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Error, typeof(T).Name, message, args, exception: null, isDebug: false);
         }
@@ -305,7 +310,7 @@ public static partial class PluginLogger
     )
     {
         logger.Log(LogLevel.Error, exception, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Error, typeof(T).Name, message, args, exception, isDebug: false);
         }
@@ -325,7 +330,7 @@ public static partial class PluginLogger
     public static void PluginLogWarning(this ILogger logger, string message, params object?[] args)
     {
         logger.Log(LogLevel.Warning, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Warning, "Plugin", message, args, exception: null, isDebug: false);
         }
@@ -346,7 +351,7 @@ public static partial class PluginLogger
     public static void PluginLogWarning(this ILogger logger, Exception exception, string message, params object?[] args)
     {
         logger.Log(LogLevel.Warning, exception, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Warning, "Plugin", message, args, exception, isDebug: false);
         }
@@ -366,7 +371,7 @@ public static partial class PluginLogger
     public static void PluginLogError(this ILogger logger, string message, params object?[] args)
     {
         logger.Log(LogLevel.Error, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Error, "Plugin", message, args, exception: null, isDebug: false);
         }
@@ -387,7 +392,7 @@ public static partial class PluginLogger
     public static void PluginLogError(this ILogger logger, Exception exception, string message, params object?[] args)
     {
         logger.Log(LogLevel.Error, exception, message, args);
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(LogLevel.Error, "Plugin", message, args, exception, isDebug: false);
         }
@@ -403,7 +408,7 @@ public static partial class PluginLogger
     /// <param name="exception">Optional exception.</param>
     public static void DirectLog(LogLevel level, string category, string message, Exception? exception = null)
     {
-        if (_isCapturing)
+        if (IsCapturing)
         {
             CaptureLog(level, category, message, [], exception, isDebug: false);
         }
@@ -416,14 +421,8 @@ public static partial class PluginLogger
     /// <returns>True if debug logging is enabled; otherwise, false.</returns>
     public static bool IsDebugEnabled(this ILogger _)
     {
-        // Use injected configuration provider
-        if (_configProvider != null)
-        {
-            return _configProvider.GetConfiguration()?.EnableDebugLogging ?? false;
-        }
-
-        // No configuration provider available (e.g., in test environment without initialization)
-        return false;
+        var state = Volatile.Read(ref _captureState);
+        return state?.ConfigProvider?.GetConfiguration()?.EnableDebugLogging ?? false;
     }
 
     private static void CaptureLog(
@@ -435,14 +434,19 @@ public static partial class PluginLogger
         bool isDebug
     )
     {
-        // Caller ensures _isCapturing is true, so _logService is non-null
+        var state = Volatile.Read(ref _captureState);
+        if (state == null)
+        {
+            return;
+        }
+
         try
         {
             var formattedMessage = FormatMessage(messageTemplate, args);
             var streamId = ExtractStreamId(args);
             var channelName = ExtractChannelName(args);
 
-            _logService!.Log(level, category, formattedMessage, exception, isDebug, streamId, channelName);
+            state.LogService.Log(level, category, formattedMessage, exception, isDebug, streamId, channelName);
         }
         catch
         {
