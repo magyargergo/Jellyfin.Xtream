@@ -29,164 +29,154 @@ This plugin was originally created by [Kevinjil](https://github.com/Kevinjil). T
 - **Rate Limiting**: Token bucket rate limiting to prevent provider bans
 - **Connection Management**: State tracking, connection limits, and auto-kill of oldest streams
 
+> **Warning: Security Notice**
+>
+> Jellyfin publishes remote paths in the API and default user interface. As Xtream format paths include credentials, anyone with library access can see your provider credentials. Use this plugin with caution on shared servers.
+
 ## System Architecture
 
 ### High-Level Overview
 
-```mermaid
-graph TB
-    subgraph Jellyfin["Jellyfin Server"]
-        LiveTV[LiveTvService]
-        API[XtreamController]
-        VOD[XtreamVodProvider]
-    end
-
-    subgraph Plugin["Jellyfin.Xtream Plugin"]
-        subgraph Streaming["Streaming Layer"]
-            StreamService[StreamService]
-            Restream[Restream Manager]
-            WriteBuffer[CircularBufferWriteStream]
-            ReadBuffer[CircularBufferReadStream]
-        end
-
-        subgraph Providers["Provider Management"]
-            Failover[AutomaticFailoverService]
-            Switch[ProviderSwitchService]
-            Trigger[ViolationSwitchTrigger]
-            Pool[PreconnectPool]
-            Warmup[ChannelWarmupService]
-        end
-
-        subgraph Quality["Quality Monitoring"]
-            TsIndexer[TsIndexer]
-            TsDuck[TsDuck Native Analyzer]
-            PcrTracker[PcrTimingTracker]
-            Scte35[SCTE-35 Monitor]
-            NalParser[NAL Parser]
-        end
-
-        subgraph EPG["EPG Services"]
-            Composite[CompositeEpgProvider]
-            Xtream[XtreamEpgProvider]
-            External[ExternalXmltvEpgProvider]
-        end
-    end
-
-    subgraph External["External Services"]
-        Provider1[(Provider 1)]
-        Provider2[(Provider 2)]
-        ProviderN[(Provider N)]
-        Discord[Discord Webhook]
-        EPGSource[XMLTV Source]
-    end
-
-    subgraph Clients["Jellyfin Clients"]
-        Client1[Client 1]
-        Client2[Client 2]
-        ClientN[Client N]
-    end
-
-    LiveTV --> StreamService
-    API --> StreamService
-    StreamService --> Restream
-    Restream --> WriteBuffer
-    WriteBuffer --> ReadBuffer
-    ReadBuffer --> Client1
-    ReadBuffer --> Client2
-    ReadBuffer --> ClientN
-
-    WriteBuffer --> TsIndexer
-    TsIndexer --> TsDuck
-    TsDuck --> Trigger
-    Trigger --> Switch
-    Switch --> Pool
-    Pool --> Provider1
-    Pool --> Provider2
-
-    Failover --> Provider1
-    Failover --> Provider2
-    Failover --> ProviderN
-
-    Composite --> Xtream
-    Composite --> External
-    External --> EPGSource
-
-    TsDuck -.-> Discord
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              Jellyfin Server                                     │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐                  │
+│  │   LiveTvService │  │ XtreamController│  │ XtreamVodProvider│                  │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘                  │
+└───────────┼─────────────────────┼───────────────────┼────────────────────────────┘
+            │                     │                   │
+            └─────────────────────┼───────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         Jellyfin.Xtream Plugin                                   │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                         Streaming Layer                                  │    │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │    │
+│  │  │StreamService│─▶│  Restream   │─▶│ WriteBuffer │─▶│ ReadBuffer  │     │    │
+│  │  └─────────────┘  │  Manager    │  └─────────────┘  └──────┬──────┘     │    │
+│  │                   └─────────────┘                          │            │    │
+│  └────────────────────────────────────────────────────────────┼────────────┘    │
+│                                                               │                  │
+│  ┌──────────────────────────────┐  ┌───────────────────────────────────────┐    │
+│  │    Provider Management       │  │  Quality Monitoring (Native C++)      │    │
+│  │  ┌────────────────────────┐  │  │  ┌─────────────────────────────────┐  │    │
+│  │  │AutomaticFailoverService│  │  │  │     TsDuck Native Analyzer      │  │    │
+│  │  └────────────────────────┘  │  │  │  ┌───────────┐ ┌─────────────┐  │  │    │
+│  │  ┌────────────────────────┐  │  │  │  │TR 101 290 │ │ PCR Timing  │  │  │    │
+│  │  │ ProviderSwitchService  │  │  │  │  └───────────┘ └─────────────┘  │  │    │
+│  │  └────────────────────────┘  │  │  │  ┌───────────┐ ┌─────────────┐  │  │    │
+│  │  ┌────────────────────────┐  │  │  │  │ SCTE-35   │ │ NAL Parser  │  │  │    │
+│  │  │ViolationSwitchTrigger  │◀─┼──┼──│  └───────────┘ └─────────────┘  │  │    │
+│  │  └────────────────────────┘  │  │  └─────────────────────────────────┘  │    │
+│  │  ┌────────────────────────┐  │  └───────────────────────────────────────┘    │
+│  │  │    PreconnectPool      │  │                                               │
+│  │  └────────────────────────┘  │                                               │
+│  │  ┌────────────────────────┐  │                                               │
+│  │  │  ChannelWarmupService  │  │                                               │
+│  │  └────────────────────────┘  │                                               │
+│  └──────────────────────────────┘                                               │
+│                                                                                  │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │                          EPG Services                                     │   │
+│  │  ┌────────────────────┐  ┌───────────────────┐  ┌─────────────────────┐  │   │
+│  │  │CompositeEpgProvider│─▶│XtreamEpgProvider  │  │ExternalXmltvProvider│  │   │
+│  │  └────────────────────┘  └───────────────────┘  └─────────────────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                  │
+     ┌────────────────────────────┼────────────────────────────┐
+     ▼                            ▼                            ▼
+┌──────────┐              ┌──────────────┐              ┌────────────┐
+│Provider 1│              │  Provider 2  │              │ Provider N │
+└──────────┘              └──────────────┘              └────────────┘
+     ▲                            ▲                            ▲
+     └────────────────────────────┼────────────────────────────┘
+                                  │
+     ┌────────────────────────────┼────────────────────────────┐
+     │                            │                            │
+     ▼                            ▼                            ▼
+┌──────────┐              ┌──────────────┐              ┌────────────┐
+│ Client 1 │              │   Client 2   │              │  Client N  │
+│  (Web)   │              │   (Mobile)   │              │   (TV)     │
+└──────────┘              └──────────────┘              └────────────┘
 ```
 
 ### Restreaming Architecture
 
 The plugin uses a native C++ streaming layer that handles HTTP connections, failover, and quality monitoring. Data flows from the native layer to C# via direct callbacks (188-byte aligned TS packets), then broadcasts to multiple Jellyfin clients using an optimized circular buffer.
 
-```mermaid
-flowchart LR
-    subgraph Provider["Xtream Providers"]
-        P1[(Provider 1)]
-        P2[(Provider 2)]
-        PN[(Provider N)]
-    end
-
-    subgraph Native["TsDuck Native Layer (C++)"]
-        direction TB
-        Pipeline[StreamPipeline]
-        Source[StreamSource<br/>Health-based URL selection]
-        Failover[FailoverManager<br/>Automatic rotation]
-        Quality[QualityTrigger<br/>TR 101 290]
-        Aligner[PacketAligner<br/>188-byte alignment]
-        Restamper[Restamper<br/>Timestamp correction]
-        Analyzer[Analyzer<br/>SCTE-35 + NAL]
-    end
-
-    subgraph Callbacks["Native Callbacks"]
-        DataCB[OnNativeDataReceived<br/>TS packets]
-        EventCB[OnStreamEvent<br/>State changes]
-    end
-
-    subgraph Managed["Managed Layer (C#)"]
-        direction TB
-        Restream[Restream Manager]
-        HealthScorer[ProviderHealthScorer]
-        Write[CircularBuffer<br/>WriteStream]
-        Ring[(Ring Buffer<br/>32-128 MB)]
-        Sessions[ReaderSessionManager]
-        Read1[ReadStream 1]
-        Read2[ReadStream 2]
-        ReadN[ReadStream N]
-    end
-
-    subgraph Clients["Jellyfin Clients"]
-        C1[Client 1<br/>Web]
-        C2[Client 2<br/>Mobile]
-        CN[Client N<br/>TV]
-    end
-
-    P1 --> Source
-    P2 --> Source
-    PN --> Source
-    Source --> Pipeline
-    Pipeline --> Failover
-    Pipeline --> Quality
-    Pipeline --> Aligner
-    Pipeline --> Restamper
-    Pipeline --> Analyzer
-
-    Aligner --> DataCB
-    Pipeline --> EventCB
-
-    DataCB --> Restream
-    EventCB --> Restream
-    EventCB --> HealthScorer
-    Restream --> Write
-    Write --> Ring
-
-    Ring --> Sessions
-    Sessions --> Read1
-    Sessions --> Read2
-    Sessions --> ReadN
-
-    Read1 --> C1
-    Read2 --> C2
-    ReadN --> CN
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            Xtream Providers                                      │
+│  ┌──────────────┐        ┌──────────────┐        ┌──────────────┐               │
+│  │  Provider 1  │        │  Provider 2  │        │  Provider N  │               │
+│  └──────┬───────┘        └──────┬───────┘        └──────┬───────┘               │
+└─────────┼───────────────────────┼───────────────────────┼───────────────────────┘
+          │                       │                       │
+          └───────────────────────┼───────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      TsDuck Native Layer (C++)                                   │
+│                                                                                  │
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │                         StreamPipeline                                     │  │
+│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐            │  │
+│  │  │   StreamSource  │  │  FailoverManager│  │  QualityTrigger │            │  │
+│  │  │ (Health-based   │  │   (Automatic    │  │  (TR 101 290)   │            │  │
+│  │  │  URL selection) │  │    rotation)    │  │                 │            │  │
+│  │  └────────┬────────┘  └─────────────────┘  └─────────────────┘            │  │
+│  │           │                                                                │  │
+│  │  ┌────────▼────────┐  ┌─────────────────┐  ┌─────────────────┐            │  │
+│  │  │  PacketAligner  │  │    Restamper    │  │    Analyzer     │            │  │
+│  │  │ (188-byte align)│  │   (Timestamp    │  │ (SCTE-35 + NAL) │            │  │
+│  │  │                 │  │   correction)   │  │                 │            │  │
+│  │  └────────┬────────┘  └─────────────────┘  └─────────────────┘            │  │
+│  └───────────┼───────────────────────────────────────────────────────────────┘  │
+└──────────────┼──────────────────────────────────────────────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          Native Callbacks                                        │
+│  ┌───────────────────────────────┐  ┌───────────────────────────────┐           │
+│  │    OnNativeDataReceived       │  │      OnStreamEvent            │           │
+│  │        (TS packets)           │  │    (State changes)            │           │
+│  └───────────────┬───────────────┘  └───────────────┬───────────────┘           │
+└──────────────────┼──────────────────────────────────┼───────────────────────────┘
+                   │                                  │
+                   └──────────────────┬───────────────┘
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         Managed Layer (C#)                                       │
+│                                                                                  │
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │  ┌─────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐    │  │
+│  │  │ Restream Manager│─▶│ProviderHealthScorer│  │CircularBuffer Write │    │  │
+│  │  └────────┬────────┘  └─────────────────────┘  └──────────┬──────────┘    │  │
+│  │           │                                               │               │  │
+│  │           └───────────────────────────────────────────────┘               │  │
+│  │                                   │                                        │  │
+│  │                                   ▼                                        │  │
+│  │                    ┌──────────────────────────────┐                       │  │
+│  │                    │    Ring Buffer (32-128 MB)   │                       │  │
+│  │                    └──────────────┬───────────────┘                       │  │
+│  │                                   │                                        │  │
+│  │                                   ▼                                        │  │
+│  │                    ┌──────────────────────────────┐                       │  │
+│  │                    │    ReaderSessionManager      │                       │  │
+│  │                    └───┬──────────┬───────────┬───┘                       │  │
+│  │                        │          │           │                            │  │
+│  │            ┌───────────▼┐   ┌─────▼─────┐   ┌─▼───────────┐               │  │
+│  │            │ReadStream 1│   │ReadStream 2│   │ReadStream N│               │  │
+│  │            └─────┬──────┘   └─────┬──────┘   └─────┬──────┘               │  │
+│  └──────────────────┼────────────────┼────────────────┼──────────────────────┘  │
+└─────────────────────┼────────────────┼────────────────┼─────────────────────────┘
+                      │                │                │
+                      ▼                ▼                ▼
+               ┌──────────┐     ┌──────────┐     ┌──────────┐
+               │ Client 1 │     │ Client 2 │     │ Client N │
+               │  (Web)   │     │ (Mobile) │     │   (TV)   │
+               └──────────┘     └──────────┘     └──────────┘
 ```
 
 **Buffer sizes by quality:**
@@ -196,120 +186,172 @@ flowchart LR
 
 ### Provider Failover System
 
-```mermaid
-stateDiagram-v2
-    [*] --> Healthy: Provider Online
-
-    Healthy --> Degraded: Quality Violations
-    Healthy --> Failed: Connection Error
-
-    Degraded --> Healthy: Quality Restored
-    Degraded --> Switching: Threshold Exceeded
-
-    Failed --> Switching: Immediate
-
-    Switching --> WaitIDR: Find Sync Point
-    WaitIDR --> Aligned: IDR Frame Found
-    Aligned --> Healthy: New Provider Active
-
-    Switching --> Cooldown: All Providers Failed
-    Cooldown --> Switching: Cooldown Expired
-
-    note right of Degraded
-        TR 101 290 violations:
-        - PCR jitter > 500ns
-        - Continuity errors
-        - Transport errors
-    end note
-
-    note right of WaitIDR
-        IDR frame alignment
-        prevents decoder glitches
-    end note
+```
+                              ┌──────────────────────┐
+                              │   Provider Online    │
+                              └──────────┬───────────┘
+                                         │
+                                         ▼
+                              ┌──────────────────────┐
+                      ┌───────│       Healthy        │───────┐
+                      │       └──────────────────────┘       │
+                      │                  │                   │
+            Quality   │                  │                   │ Connection
+           Violations │                  │                   │ Error
+                      ▼                  │                   ▼
+           ┌──────────────────────┐      │      ┌──────────────────────┐
+           │      Degraded        │      │      │       Failed         │
+           │                      │      │      │                      │
+           │  TR 101 290 issues:  │      │      │    Immediate         │
+           │  - PCR jitter >500ns │      │      │    switch to         │
+           │  - Continuity errors │      │      │    backup            │
+           │  - Transport errors  │      │      │                      │
+           └──────────┬───────────┘      │      └──────────┬───────────┘
+                      │                  │                 │
+      Quality         │  Threshold       │                 │
+      Restored        │  Exceeded        │                 │
+          │           │                  │                 │
+          │           └──────────────────┼─────────────────┘
+          │                              │
+          │                              ▼
+          │               ┌──────────────────────────┐
+          │               │       Switching          │
+          │               └──────────────┬───────────┘
+          │                              │
+          │                              ▼
+          │               ┌──────────────────────────┐
+          │               │    Wait for IDR Frame    │──────────────┐
+          │               │                          │              │
+          │               │  IDR frame alignment     │              │
+          │               │  prevents decoder        │              │ All Providers
+          │               │  glitches                │              │ Failed
+          │               └──────────────┬───────────┘              │
+          │                              │                          │
+          │                       IDR Frame Found                   │
+          │                              │                          ▼
+          │                              ▼                ┌──────────────────┐
+          │               ┌──────────────────────────┐    │     Cooldown     │
+          │               │        Aligned           │    │                  │
+          │               └──────────────┬───────────┘    │  Wait before     │
+          │                              │                │  retry           │
+          │                              │                └────────┬─────────┘
+          │                              │                         │
+          │                              ▼                         │ Cooldown
+          │               ┌──────────────────────────┐             │ Expired
+          └───────────────│       Healthy            │◀────────────┘
+                          │   (New Provider Active)  │
+                          └──────────────────────────┘
 ```
 
 ### Provider Switch Sequence
 
-```mermaid
-sequenceDiagram
-    participant TsDuck as TsDuck Analyzer
-    participant Trig as ViolationSwitchTrigger
-    participant Svc as ProviderSwitchService
-    participant Fail as AutomaticFailoverService
-    participant Pool as PreconnectPool
-    participant Align as AlignedStreamSwitcher
-    participant Old as Current Provider
-    participant New as Backup Provider
-
-    TsDuck->>TsDuck: Detect quality violation
-    TsDuck->>Trig: OnStreamQualityViolation
-
-    Trig->>Trig: Increment violation counter
-    Note over Trig: 3 violations in 5 seconds
-
-    Trig->>Svc: TriggerSwitch(channelId)
-
-    Svc->>Fail: GetNextProvider(channelId)
-    Fail-->>Svc: Provider info
-
-    Svc->>Pool: GetWarmConnection(provider)
-    Note over Pool: Pre-established connection
-    Pool-->>Svc: Warm HTTP stream
-
-    Svc->>Align: PrepareSwitch(oldStream, newStream)
-
-    Align->>New: Read until IDR frame
-    Note over Align: Scan for RAI=1 or<br/>NAL unit type 5 (H.264)
-
-    Align->>Align: Calculate PTS/DTS offset
-    Note over Align: Ensure timestamp continuity
-
-    Align-->>Svc: StreamSwitchContext
-
-    Svc->>Old: Dispose connection
-    Svc->>Svc: Route to new stream
-
-    Svc-->>TsDuck: Switch complete
+```
+TsDuck        Violation        Provider         Failover        Preconnect      Aligned         Old           New
+Analyzer      SwitchTrigger    SwitchService    Service         Pool            Switcher        Provider      Provider
+   │               │                │               │               │               │               │             │
+   │ Detect quality violation       │               │               │               │               │             │
+   │───────────────▶               │               │               │               │               │             │
+   │               │               │               │               │               │               │             │
+   │               │ Increment     │               │               │               │               │             │
+   │               │ violation     │               │               │               │               │             │
+   │               │ counter       │               │               │               │               │             │
+   │               │ (3 in 5s)     │               │               │               │               │             │
+   │               │               │               │               │               │               │             │
+   │               │ TriggerSwitch(channelId)      │               │               │               │             │
+   │               │───────────────▶               │               │               │               │             │
+   │               │               │               │               │               │               │             │
+   │               │               │ GetNextProvider(channelId)    │               │               │             │
+   │               │               │───────────────▶               │               │               │             │
+   │               │               │               │               │               │               │             │
+   │               │               │◀──────────────│               │               │               │             │
+   │               │               │ Provider info │               │               │               │             │
+   │               │               │               │               │               │               │             │
+   │               │               │ GetWarmConnection(provider)   │               │               │             │
+   │               │               │───────────────────────────────▶               │               │             │
+   │               │               │               │               │               │               │             │
+   │               │               │◀──────────────────────────────│               │               │             │
+   │               │               │ Warm HTTP stream              │               │               │             │
+   │               │               │               │               │               │               │             │
+   │               │               │ PrepareSwitch(oldStream, newStream)           │               │             │
+   │               │               │───────────────────────────────────────────────▶               │             │
+   │               │               │               │               │               │               │             │
+   │               │               │               │               │               │ Read until    │             │
+   │               │               │               │               │               │ IDR frame     │             │
+   │               │               │               │               │               │───────────────────────────▶│
+   │               │               │               │               │               │               │             │
+   │               │               │               │               │               │ Scan for RAI=1 or          │
+   │               │               │               │               │               │ NAL unit type 5 (H.264)    │
+   │               │               │               │               │               │               │             │
+   │               │               │               │               │               │ Calculate PTS/DTS offset   │
+   │               │               │               │               │               │ (ensure timestamp          │
+   │               │               │               │               │               │  continuity)               │
+   │               │               │               │               │               │               │             │
+   │               │               │◀──────────────────────────────────────────────│               │             │
+   │               │               │ StreamSwitchContext           │               │               │             │
+   │               │               │               │               │               │               │             │
+   │               │               │ Dispose connection            │               │               │             │
+   │               │               │───────────────────────────────────────────────────────────────▶             │
+   │               │               │               │               │               │               │             │
+   │               │               │ Route to new stream           │               │               │             │
+   │               │               │               │               │               │               │             │
+   │◀──────────────────────────────│               │               │               │               │             │
+   │ Switch complete               │               │               │               │               │             │
+   │               │               │               │               │               │               │             │
 ```
 
 ### EPG Provider Chain
 
-```mermaid
-flowchart TD
-    subgraph Request["EPG Request"]
-        Channel[Channel ID]
-    end
-
-    subgraph Composite["CompositeEpgProvider"]
-        direction TB
-        Check1{Xtream EPG<br/>Available?}
-        Check2{External XMLTV<br/>Available?}
-        Check3{Cached Data<br/>Valid?}
-    end
-
-    subgraph Sources["EPG Sources"]
-        Xtream[XtreamEpgProvider<br/>get_short_epg API]
-        External[ExternalXmltvEpgProvider<br/>epg.ovh / custom]
-        Cache[(Memory Cache)]
-    end
-
-    subgraph Result["EPG Data"]
-        Programs[Program Listings]
-        Logos[Channel Logos]
-    end
-
-    Channel --> Check1
-    Check1 -->|Yes| Xtream
-    Check1 -->|No| Check2
-    Check2 -->|Yes| External
-    Check2 -->|No| Check3
-    Check3 -->|Yes| Cache
-    Check3 -->|No| Empty[Empty Result]
-
-    Xtream --> Programs
-    External --> Programs
-    Cache --> Programs
-    Programs --> Logos
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              EPG Request                                         │
+│                          ┌─────────────────┐                                    │
+│                          │   Channel ID    │                                    │
+│                          └────────┬────────┘                                    │
+└───────────────────────────────────┼─────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         CompositeEpgProvider                                     │
+│                                                                                  │
+│           ┌─────────────────────────────────────────────┐                       │
+│           │         Xtream EPG Available?               │                       │
+│           └──────────────┬─────────────┬────────────────┘                       │
+│                          │             │                                         │
+│                         Yes            No                                        │
+│                          │             │                                         │
+│                          ▼             ▼                                         │
+│    ┌───────────────────────┐    ┌─────────────────────────────────┐             │
+│    │   XtreamEpgProvider   │    │    External XMLTV Available?    │             │
+│    │   (get_short_epg API) │    └──────────────┬─────────────┬────┘             │
+│    └───────────┬───────────┘                   │             │                  │
+│                │                              Yes            No                  │
+│                │                               │             │                  │
+│                │                               ▼             ▼                  │
+│                │          ┌────────────────────────┐  ┌──────────────────────┐  │
+│                │          │ExternalXmltvEpgProvider│  │  Cached Data Valid?  │  │
+│                │          │  (epg.ovh / custom)    │  └──────────┬───────────┘  │
+│                │          └───────────┬────────────┘            │              │
+│                │                      │                    Yes  │  No          │
+│                │                      │                     │   │   │          │
+│                │                      │                     ▼   │   ▼          │
+│                │                      │            ┌──────────┐ │ ┌──────────┐ │
+│                │                      │            │  Cache   │ │ │  Empty   │ │
+│                │                      │            │          │ │ │  Result  │ │
+│                │                      │            └────┬─────┘ │ └──────────┘ │
+│                │                      │                 │       │              │
+└────────────────┼──────────────────────┼─────────────────┼───────┼──────────────┘
+                 │                      │                 │       │
+                 └──────────────────────┼─────────────────┘       │
+                                        │                         │
+                                        ▼                         │
+                         ┌──────────────────────────┐             │
+                         │     Program Listings     │             │
+                         └─────────────┬────────────┘             │
+                                       │                          │
+                                       ▼                          │
+                         ┌──────────────────────────┐             │
+                         │     Channel Logos        │◀────────────┘
+                         └──────────────────────────┘
 ```
 
 ## Installation
@@ -460,51 +502,57 @@ Configure one or more Xtream-compatible providers in the plugin settings.
 
 Real-time MPEG-TS analysis following TR 101 290 standards:
 
-```mermaid
-flowchart TD
-    subgraph Input["Transport Stream"]
-        Packets[TS Packets<br/>188 bytes each]
-    end
-
-    subgraph Priority1["Priority 1 Checks"]
-        TEI[Transport Error Indicator]
-        CC[Continuity Counter]
-        PCR[PCR Accuracy]
-        PCRPID[PCR PID Validation]
-    end
-
-    subgraph Priority2["Priority 2 Checks"]
-        PAT[PAT Version]
-        PMT[PMT Version]
-        PCRInt[PCR Interval]
-    end
-
-    subgraph Actions["Violation Actions"]
-        Log[Log Warning]
-        Discord[Discord Alert]
-        Counter[Increment Counter]
-        Switch{Threshold<br/>Exceeded?}
-        Failover[Trigger Failover]
-    end
-
-    Packets --> TEI
-    Packets --> CC
-    Packets --> PCR
-    Packets --> PCRPID
-    Packets --> PAT
-    Packets --> PMT
-    Packets --> PCRInt
-
-    TEI --> Log
-    CC --> Log
-    PCR --> Log
-    PCRPID --> Log
-
-    Log --> Discord
-    Log --> Counter
-    Counter --> Switch
-    Switch -->|Yes| Failover
-    Switch -->|No| Continue[Continue Monitoring]
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            Transport Stream                                      │
+│                    ┌──────────────────────────────┐                             │
+│                    │   TS Packets (188 bytes)     │                             │
+│                    └──────────────┬───────────────┘                             │
+└───────────────────────────────────┼─────────────────────────────────────────────┘
+                                    │
+          ┌─────────────────────────┼─────────────────────────┐
+          │                         │                         │
+          ▼                         ▼                         ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                           Priority 1 Checks                                    │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  ┌───────────┐ │
+│  │Transport Error  │  │ Continuity      │  │  PCR Accuracy   │  │ PCR PID   │ │
+│  │   Indicator     │  │   Counter       │  │                 │  │Validation │ │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘  └─────┬─────┘ │
+└───────────┼─────────────────────┼───────────────────┼─────────────────┼───────┘
+            │                     │                   │                 │
+            └─────────────────────┼───────────────────┼─────────────────┘
+                                  │                   │
+┌─────────────────────────────────┼───────────────────┼─────────────────────────┐
+│                           Priority 2 Checks        │                          │
+│  ┌─────────────────┐  ┌────────┴────────┐  ┌───────┴───────┐                  │
+│  │   PAT Version   │  │   PMT Version   │  │  PCR Interval │                  │
+│  └────────┬────────┘  └────────┬────────┘  └───────┬───────┘                  │
+└───────────┼─────────────────────┼──────────────────┼──────────────────────────┘
+            │                     │                  │
+            └─────────────────────┼──────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           Violation Actions                                      │
+│                                                                                  │
+│  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐            │
+│  │   Log Warning   │────▶│  Discord Alert  │────▶│Increment Counter│            │
+│  └─────────────────┘     └─────────────────┘     └────────┬────────┘            │
+│                                                           │                      │
+│                                                           ▼                      │
+│                                              ┌────────────────────────┐          │
+│                                              │  Threshold Exceeded?   │          │
+│                                              └──────────┬─────────────┘          │
+│                                                         │                        │
+│                                           ┌─────────────┴─────────────┐          │
+│                                          Yes                          No         │
+│                                           │                           │          │
+│                                           ▼                           ▼          │
+│                              ┌─────────────────────┐    ┌────────────────────┐   │
+│                              │  Trigger Failover   │    │Continue Monitoring │   │
+│                              └─────────────────────┘    └────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### SCTE-35 Ad Marker Detection
@@ -563,64 +611,81 @@ Benefits:
 
 ## Project Structure
 
-```mermaid
-graph TD
-    subgraph Plugin["Jellyfin.Xtream"]
-        Root[Plugin Entry]
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           Jellyfin.Xtream Plugin                                 │
+│                                                                                  │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │                            Plugin Entry                                     │ │
+│  └───────────────────────────────────┬────────────────────────────────────────┘ │
+│                                      │                                          │
+│         ┌────────────────────────────┼────────────────────────────┐             │
+│         │                            │                            │             │
+│         ▼                            ▼                            ▼             │
+│  ┌──────────────────┐    ┌──────────────────────┐    ┌──────────────────────┐  │
+│  │    API Layer     │    │    Service Layer     │    │  Provider Management │  │
+│  │                  │    │                      │    │                      │  │
+│  │ - XtreamController    │ - StreamService      │    │ - AutomaticFailover  │  │
+│  │ - Request/Response    │ - ChannelProviderMap │    │ - ProviderSwitch     │  │
+│  │   Models         │    │ - EPG Services       │    │ - Health Tracking    │  │
+│  └──────────────────┘    └──────────┬───────────┘    │ - Metrics Tracker    │  │
+│                                     │                └──────────────────────┘  │
+│                    ┌────────────────┴────────────────┐                         │
+│                    │                                 │                         │
+│                    ▼                                 ▼                         │
+│         ┌──────────────────────┐        ┌──────────────────────┐              │
+│         │  Native Interop      │        │    Buffer System     │              │
+│         │                      │        │                      │              │
+│         │ - NativeStreamer     │        │ - WriteStream        │              │
+│         │ - NativeLogging      │        │ - ReadStream         │              │
+│         │ - NativeChannelReg   │        │ - SessionManager     │              │
+│         │ - TsDuck Analyzer    │        │                      │              │
+│         └──────────────────────┘        └──────────────────────┘              │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
 
-        subgraph API["API Layer"]
-            Controller[XtreamController]
-            Models[Request/Response Models]
-        end
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           Jellyfin.Xtream.Tests                                  │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │  Unit Tests                           Integration Tests                   │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
 
-        subgraph Services["Service Layer"]
-            Stream[StreamService]
-            Channel[ChannelProviderMap]
-            EPG[EPG Services]
-        end
-
-        subgraph Provider["Provider Management"]
-            Failover[AutomaticFailoverService]
-            Switch[ProviderSwitchService]
-            Health[ProviderAvailabilityService]
-            Metrics[ProviderMetricsTracker]
-        end
-
-        subgraph MpegTs["MPEG-TS Module"]
-            Core[Core Types]
-            Parsing[Parsers]
-            Infra[Infrastructure]
-            UseCases[Interfaces]
-        end
-
-        subgraph Buffer["Buffer System"]
-            Write[WriteStream]
-            Read[ReadStream]
-            Session[SessionManager]
-        end
-    end
-
-    subgraph Tests["Jellyfin.Xtream.Tests"]
-        Unit[Unit Tests]
-        Integration[Integration Tests]
-    end
-
-    subgraph Benchmarks["Jellyfin.Xtream.Benchmarks"]
-        Perf[Performance Benchmarks]
-    end
-
-    Root --> API
-    Root --> Services
-    Services --> Provider
-    Services --> MpegTs
-    Services --> Buffer
-    MpegTs --> Buffer
-    Provider --> MpegTs
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         Jellyfin.Xtream.Benchmarks                               │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │  Performance Benchmarks                                                   │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Development Status
 
-### Recent Changes (January 2025)
+### Recent Changes (February 2026)
+
+#### Atomic State Pattern for Thread-Safe Logging
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **C++ Atomic Callback State** | ✅ Complete | `std::atomic<std::shared_ptr<const CallbackState>>` for race-free callback registration |
+| **C# Immutable LoggingState** | ✅ Complete | Lock-free initialization with `Interlocked.CompareExchange` |
+| **C# Immutable CaptureState** | ✅ Complete | Single null check replaces multi-field coordination in PluginLogger |
+
+#### Native Channel Registry
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **Channel Name Normalization** | ✅ Complete | Strip country prefixes, quality indicators, diacritics |
+| **Quality-Based Scoring** | ✅ Complete | 4K=100, FHD=80, HD=60, SD=40 with icon bonus |
+| **Deterministic GUIDs** | ✅ Complete | Stable IDs from normalized name + provider hash |
+
+#### SIMD Memory Operations
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **AVX2/SSE2/NEON Support** | ✅ Complete | Platform-optimized memory copies |
+| **Non-Temporal Stores** | ✅ Complete | Cache-friendly transfers for >256KB |
+| **Size-Based Dispatch** | ✅ Complete | std::memcpy for <512B, SIMD for larger |
 
 #### Native Streaming Architecture Refactor
 
@@ -694,7 +759,7 @@ Integrated into the native analyzer API for real-time stream analysis.
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **TsIndexer Simplification** | ✅ Complete | Removed built-in TR 101 290, delegated to TsDuck |
+| **TsIndexer Removed** | ✅ Complete | All TS analysis now handled by native TsDuck layer |
 | **Buffer Diagnostics** | ✅ Complete | Rate-limited progress logging (10MB intervals) |
 | **LiveTV Timeout Fix** | ✅ Complete | 2s timeout for optional channel name lookup |
 | **Logging Refactor** | ✅ Complete | IsDebugEnabled as extension method |
@@ -716,27 +781,30 @@ Integrated into the native analyzer API for real-time stream analysis.
 
 Current limitations and areas where the implementation could be enhanced:
 
-```mermaid
-mindmap
-  root((Improvement Areas))
-    Streaming
-      No adaptive bitrate ABR
-      Single-threaded PSI validation
-      FFmpeg 5MB probesize delay
-    Protocol Support
-      No HLS/DASH output
-      No WebRTC low-latency
-      No DVB subtitles extraction
-    Provider Management
-      No geo-routing optimization
-      Basic health scoring
-      No ML-based prediction
-      Manual failover thresholds
-    Monitoring
-      No real-time dashboard
-      Limited historical metrics
-      No anomaly detection
-      Basic alerting only
+```
+Improvement Areas
+│
+├── Streaming
+│   ├── No adaptive bitrate (ABR)
+│   ├── Single-threaded PSI validation
+│   └── FFmpeg 5MB probesize delay
+│
+├── Protocol Support
+│   ├── No HLS/DASH output
+│   ├── No WebRTC low-latency
+│   └── No DVB subtitles extraction
+│
+├── Provider Management
+│   ├── No geo-routing optimization
+│   ├── Basic health scoring
+│   ├── No ML-based prediction
+│   └── Manual failover thresholds
+│
+└── Monitoring
+    ├── No real-time dashboard
+    ├── Limited historical metrics
+    ├── No anomaly detection
+    └── Basic alerting only
 ```
 
 ### Current Limitations
@@ -754,21 +822,25 @@ mindmap
 
 ### Roadmap
 
-```mermaid
-timeline
-    title Development Roadmap
-    section Near Term
-        Q1 2025 : HLS Output Support
-                : Adaptive bitrate streaming
-                : Real-time metrics dashboard
-    section Mid Term
-        Q2 2025 : WebRTC low-latency mode
-                : GPU-accelerated transcoding
-                : SCTE-35 ad replacement
-    section Long Term
-        Q3 2025 : ML-based quality prediction
-                : Multi-region geo-routing
-                : Cloud hybrid failover
+```
+                              Development Roadmap
+================================================================================
+
+    Q2 2026                     Q3 2026                     Q4 2026
+  (Near Term)                 (Mid Term)                 (Long Term)
+--------------------------------------------------------------------------------
+       │                          │                          │
+       ▼                          ▼                          ▼
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│ HLS Output       │     │ WebRTC low-      │     │ ML-based quality │
+│ Support          │     │ latency mode     │     │ prediction       │
+├──────────────────┤     ├──────────────────┤     ├──────────────────┤
+│ Adaptive bitrate │     │ GPU-accelerated  │     │ Multi-region     │
+│ streaming        │     │ transcoding      │     │ geo-routing      │
+├──────────────────┤     ├──────────────────┤     ├──────────────────┤
+│ Real-time        │     │ SCTE-35 ad       │     │ Cloud hybrid     │
+│ metrics dashboard│     │ replacement      │     │ failover         │
+└──────────────────┘     └──────────────────┘     └──────────────────┘
 ```
 
 ### Recently Completed Features
@@ -784,7 +856,7 @@ These features were previously planned and are now complete:
 
 ### Planned Features
 
-#### Near-Term (Q1 2025)
+#### Near-Term (Q2 2026)
 
 | Feature | Description | Benefit |
 |---------|-------------|---------|
@@ -793,7 +865,7 @@ These features were previously planned and are now complete:
 | **Metrics Dashboard** | Real-time web UI | Visual monitoring without Discord |
 | **DVB Subtitle Extraction** | Parse DVB-SUB/teletext | Subtitle support in Jellyfin UI |
 
-#### Mid-Term (Q2 2025)
+#### Mid-Term (Q3 2026)
 
 | Feature | Description | Benefit |
 |---------|-------------|---------|
@@ -801,7 +873,7 @@ These features were previously planned and are now complete:
 | **GPU Transcoding** | NVENC/QSV/VAAPI acceleration | Lower CPU, higher quality |
 | **SCTE-35 Ad Replacement** | Replace detected ad breaks with custom content | Custom ad insertion |
 
-#### Long-Term (Q3+ 2025)
+#### Long-Term (Q4+ 2026)
 
 | Feature | Description | Benefit |
 |---------|-------------|---------|
@@ -812,34 +884,51 @@ These features were previously planned and are now complete:
 
 ### Architecture Evolution
 
-```mermaid
-graph LR
-    subgraph Current["Current Architecture"]
-        MPEG[MPEG-TS In] --> Buffer[Circular Buffer]
-        Buffer --> TS[MPEG-TS Out]
-    end
-
-    subgraph Future["Future Architecture"]
-        MPEG2[MPEG-TS In] --> Demux[FFmpeg Demux]
-        Demux --> Transcode{Transcode?}
-        Transcode -->|Yes| GPU[GPU Encoder]
-        Transcode -->|No| Passthrough[Passthrough]
-        GPU --> Mux[Adaptive Muxer]
-        Passthrough --> Mux
-        Mux --> HLS[HLS Segments]
-        Mux --> DASH[DASH Segments]
-        Mux --> WebRTC[WebRTC]
-        Mux --> MPEGTS[MPEG-TS]
-    end
-
-    Current -.->|Evolution| Future
 ```
-
-## Known Issues
-
-### Loss of Confidentiality
-
-Jellyfin publishes remote paths in the API and default user interface. As Xtream format paths include credentials, anyone with library access can see your provider credentials. Use this plugin with caution on shared servers.
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          Current Architecture                                    │
+│                                                                                  │
+│           ┌──────────────┐      ┌──────────────────┐      ┌──────────────┐      │
+│           │  MPEG-TS In  │─────▶│  Circular Buffer │─────▶│  MPEG-TS Out │      │
+│           └──────────────┘      └──────────────────┘      └──────────────┘      │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                       │
+                                       │ Evolution
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           Future Architecture                                    │
+│                                                                                  │
+│  ┌──────────────┐      ┌──────────────┐      ┌──────────────────────────────┐   │
+│  │  MPEG-TS In  │─────▶│ FFmpeg Demux │─────▶│       Transcode?             │   │
+│  └──────────────┘      └──────────────┘      └──────────────┬───────────────┘   │
+│                                                             │                    │
+│                                     ┌───────────────────────┴───────────────┐   │
+│                                    Yes                                      No   │
+│                                     │                                       │   │
+│                                     ▼                                       ▼   │
+│                          ┌──────────────────┐               ┌──────────────────┐│
+│                          │   GPU Encoder    │               │   Passthrough    ││
+│                          │ (NVENC/QSV/VAAPI)│               │                  ││
+│                          └────────┬─────────┘               └────────┬─────────┘│
+│                                   │                                  │          │
+│                                   └─────────────┬────────────────────┘          │
+│                                                 │                               │
+│                                                 ▼                               │
+│                                      ┌──────────────────┐                       │
+│                                      │  Adaptive Muxer  │                       │
+│                                      └────────┬─────────┘                       │
+│                                               │                                 │
+│              ┌────────────────────────────────┼────────────────────────────┐    │
+│              │                    │           │           │                │    │
+│              ▼                    ▼           ▼           ▼                │    │
+│     ┌──────────────┐     ┌──────────────┐ ┌────────┐ ┌──────────────┐      │    │
+│     │ HLS Segments │     │DASH Segments │ │ WebRTC │ │   MPEG-TS    │      │    │
+│     └──────────────┘     └──────────────┘ └────────┘ └──────────────┘      │    │
+│                                                                            │    │
+└────────────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
 
 ## Troubleshooting
 
@@ -857,28 +946,35 @@ Enable `Debug Logging` in the plugin settings for verbose diagnostics when troub
 
 ### Common Issues
 
-```mermaid
-flowchart TD
-    Problem1[No Video, Only Sound]
-    Solution1[Client starting at P/B frame<br/>Buffer seeks to nearest I-frame]
-
-    Problem2[HTTP 406 Error]
-    Solution2[Provider connection limit<br/>Restreaming shares single connection]
-
-    Problem3[Frequent Buffering]
-    Solution3[Check provider quality<br/>Enable failover to backup]
-
-    Problem4[EPG Not Loading]
-    Solution4[Check EPG URL<br/>Enable external XMLTV fallback]
-
-    Problem5[High CPU Usage]
-    Solution5[Reduce concurrent streams<br/>Check buffer sizes]
-
-    Problem1 --> Solution1
-    Problem2 --> Solution2
-    Problem3 --> Solution3
-    Problem4 --> Solution4
-    Problem5 --> Solution5
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Problem                           │ Solution                                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                   │                                          │
+│  No Video, Only Sound             │  Client starting at P/B frame            │
+│                                   │  Buffer seeks to nearest I-frame         │
+│                                   │                                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                   │                                          │
+│  HTTP 406 Error                   │  Provider connection limit               │
+│                                   │  Restreaming shares single connection    │
+│                                   │                                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                   │                                          │
+│  Frequent Buffering               │  Check provider quality                  │
+│                                   │  Enable failover to backup               │
+│                                   │                                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                   │                                          │
+│  EPG Not Loading                  │  Check EPG URL                           │
+│                                   │  Enable external XMLTV fallback          │
+│                                   │                                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                   │                                          │
+│  High CPU Usage                   │  Reduce concurrent streams               │
+│                                   │  Check buffer sizes                      │
+│                                   │                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## License
