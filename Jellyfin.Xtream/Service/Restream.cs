@@ -1174,6 +1174,38 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     ? (DateTime.UtcNow - lastDiscontinuityTime.Value).TotalSeconds
                     : null;
 
+                // Query native streamer for real-time status and quality metrics
+                var nativeStreamer = stream._nativeStreamer;
+                var streamerStatus = nativeStreamer?.GetStatus();
+                var metrics = nativeStreamer?.GetMetrics();
+                var avSync = nativeStreamer?.GetAvSyncAnalysis();
+                var providerCount = nativeStreamer?.GetProviderCount() ?? 0;
+
+                // Populate quality metrics from native analyzer
+                long packetErrors = 0L;
+                long continuityErrors = 0L;
+                long syncErrors = 0L;
+                long patViolations = 0L;
+                long crcErrors = 0L;
+                long tsBitrate = 0L;
+
+                if (metrics != null)
+                {
+                    packetErrors = metrics.Priority2.TransportError;
+                    continuityErrors = metrics.Priority1.ContinuityCountError;
+                    syncErrors = metrics.Priority1.SyncByteError + metrics.Priority1.SyncLoss;
+                    patViolations = metrics.Priority1.PatError + metrics.Priority1.PatError2;
+                    crcErrors = metrics.Priority2.CrcError;
+                    tsBitrate = metrics.TsBitrate;
+                }
+
+                double avDriftMs = avSync?.VideoAudioDriftMs ?? 0.0;
+                string syncStatus = avSync?.Status.ToString() ?? "Unknown";
+                bool hasQualityIssues = packetErrors > 0 || continuityErrors > 10 || syncErrors > 0;
+                string qualityLevel = hasQualityIssues
+                    ? (syncErrors > 0 || packetErrors > 100 ? "Critical" : "Warning")
+                    : "None";
+
                 result.Add(
                     new StreamInfoSnapshot
                     {
@@ -1189,17 +1221,31 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                         OverflowBytes = 0L,
                         Status = status,
                         IsAligned = true,
-                        // Quality metrics - defaults (native handles analysis internally)
-                        PacketErrors = 0L,
-                        ContinuityErrors = 0L,
-                        SyncErrors = 0L,
-                        PatViolations = 0L,
-                        CrcErrors = 0L,
-                        AvDriftMs = 0.0,
-                        SyncStatus = "Unknown",
-                        HasQualityIssues = false,
-                        QualityLevel = "None",
-                        QualityIssues = null,
+                        // Quality metrics from native analyzer
+                        PacketErrors = packetErrors,
+                        ContinuityErrors = continuityErrors,
+                        SyncErrors = syncErrors,
+                        PatViolations = patViolations,
+                        CrcErrors = crcErrors,
+                        AvDriftMs = avDriftMs,
+                        SyncStatus = syncStatus,
+                        HasQualityIssues = hasQualityIssues,
+                        QualityLevel = qualityLevel,
+                        QualityIssues = hasQualityIssues
+                            ? $"TEI:{packetErrors} CC:{continuityErrors} Sync:{syncErrors}"
+                            : null,
+                        // Native streamer status
+                        StreamerState = streamerStatus?.State.ToString() ?? "Unknown",
+                        CurrentUrlIndex = streamerStatus?.CurrentUrlIndex ?? 0,
+                        UrlCount = streamerStatus?.UrlCount ?? 0,
+                        BytesReceived = streamerStatus?.BytesReceived ?? 0L,
+                        PacketsOutput = streamerStatus?.PacketsOutput ?? 0L,
+                        SwitchesCompleted = streamerStatus?.SwitchesCompleted ?? 0L,
+                        QualitySwitches = streamerStatus?.QualitySwitches ?? 0L,
+                        TsBitrate = tsBitrate,
+                        LastHttpStatus = streamerStatus?.LastHttpStatus ?? 0,
+                        LastCurlError = streamerStatus?.LastCurlError ?? 0,
+                        ProviderCount = providerCount,
                         // Reconnection metrics
                         ReconnectionCount = reconnectionCount,
                         LastDiscontinuityOffset = lastDiscontinuityOffset,
@@ -1232,6 +1278,149 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Gets the provider health snapshot for a specific provider in a stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <param name="providerIndex">The provider index (0-based).</param>
+    /// <returns>The health snapshot, or null if not found.</returns>
+    public static Streaming.Native.ProviderHealthSnapshot? GetProviderHealth(string streamId, int providerIndex)
+    {
+        if (!_activeStreams.TryGetValue(streamId, out var stream))
+        {
+            return null;
+        }
+
+        return stream._nativeStreamer?.GetProviderHealth(providerIndex);
+    }
+
+    /// <summary>
+    /// Gets all provider health snapshots for a stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>List of provider health snapshots, or null if stream not found.</returns>
+    public static IReadOnlyList<Streaming.Native.ProviderHealthSnapshot>? GetAllProviderHealth(string streamId)
+    {
+        if (!_activeStreams.TryGetValue(streamId, out var stream))
+        {
+            return null;
+        }
+
+        var nativeStreamer = stream._nativeStreamer;
+        if (nativeStreamer == null)
+        {
+            return null;
+        }
+
+        var count = nativeStreamer.GetProviderCount();
+        var results = new List<Streaming.Native.ProviderHealthSnapshot>(count);
+        for (int i = 0; i < count; i++)
+        {
+            var health = nativeStreamer.GetProviderHealth(i);
+            if (health != null)
+            {
+                results.Add(health.Value);
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Requests a URL switch (force reconnect) for a stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>True if the switch was requested, false if stream not found.</returns>
+    public static bool RequestSwitch(string streamId)
+    {
+        if (!_activeStreams.TryGetValue(streamId, out var stream))
+        {
+            return false;
+        }
+
+        stream._nativeStreamer?.RequestSwitch();
+        return true;
+    }
+
+    /// <summary>
+    /// Gets detailed TR 101 290 metrics for a stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>The metrics, or null if not available.</returns>
+    public static Streaming.Native.TsDuckMetrics? GetStreamMetrics(string streamId)
+    {
+        if (!_activeStreams.TryGetValue(streamId, out var stream))
+        {
+            return null;
+        }
+
+        return stream._nativeStreamer?.GetMetrics();
+    }
+
+    /// <summary>
+    /// Gets A/V sync analysis for a stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>The A/V sync analysis, or null if not available.</returns>
+    public static Streaming.Native.AvSyncAnalysis? GetStreamAvSync(string streamId)
+    {
+        if (!_activeStreams.TryGetValue(streamId, out var stream))
+        {
+            return null;
+        }
+
+        return stream._nativeStreamer?.GetAvSyncAnalysis();
+    }
+
+    /// <summary>
+    /// Gets PCR analysis for a stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>The PCR analysis, or null if not available.</returns>
+    public static Streaming.Native.PcrAnalysis? GetStreamPcrAnalysis(string streamId)
+    {
+        if (!_activeStreams.TryGetValue(streamId, out var stream))
+        {
+            return null;
+        }
+
+        return stream._nativeStreamer?.GetPcrAnalysis();
+    }
+
+    /// <summary>
+    /// Force ejects a provider from a stream's health system.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <param name="providerIndex">The provider index (0-based).</param>
+    /// <param name="durationMs">Ejection duration in milliseconds.</param>
+    /// <returns>True if the provider was ejected, false if stream not found.</returns>
+    public static bool ForceEjectProvider(string streamId, int providerIndex, int durationMs)
+    {
+        if (!_activeStreams.TryGetValue(streamId, out var stream))
+        {
+            return false;
+        }
+
+        stream._nativeStreamer?.ForceEjectProvider(providerIndex, durationMs);
+        return true;
+    }
+
+    /// <summary>
+    /// Resets all providers in a stream to Active state.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>True if reset, false if stream not found.</returns>
+    public static bool ResetAllProviders(string streamId)
+    {
+        if (!_activeStreams.TryGetValue(streamId, out var stream))
+        {
+            return false;
+        }
+
+        stream._nativeStreamer?.ResetAllProviders();
+        return true;
     }
 
     /// <summary>

@@ -964,6 +964,294 @@ public class XtreamController(
         );
     }
 
+    // =========================================================================
+    // Per-Stream Provider Health & Control Endpoints
+    // =========================================================================
+
+    /// <summary>
+    /// Get all provider health snapshots for a specific stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>List of provider health snapshots.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("ActiveStreams/{streamId}/Providers")]
+    public ActionResult<object> GetStreamProviders(string streamId)
+    {
+        var providers = Restream.GetAllProviderHealth(streamId);
+        if (providers == null)
+        {
+            return NotFound(new { message = "Stream " + streamId + " not found" });
+        }
+
+        return Ok(
+            providers.Select(p => new
+            {
+                providerIndex = p.ProviderIndex,
+                state = p.State.ToString(),
+                successRate = p.SuccessRate,
+                latencyEwmaMs = p.LatencyEwmaMs,
+                activeRequests = p.ActiveRequests,
+                isolatedTimes = p.IsolatedTimes,
+                isolationDurationMs = p.IsolationDurationMs,
+                isHealthy = p.IsHealthy,
+                isEjected = p.IsEjected,
+            })
+        );
+    }
+
+    /// <summary>
+    /// Get health snapshot for a specific provider in a stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <param name="providerIndex">The provider index (0-based).</param>
+    /// <returns>Provider health snapshot.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("ActiveStreams/{streamId}/Providers/{providerIndex:int}/Health")]
+    public ActionResult<object> GetStreamProviderHealth(string streamId, int providerIndex)
+    {
+        var health = Restream.GetProviderHealth(streamId, providerIndex);
+        if (health == null)
+        {
+            return NotFound(new { message = "Stream or provider not found" });
+        }
+
+        var h = health.Value;
+        return Ok(
+            new
+            {
+                providerIndex = h.ProviderIndex,
+                state = h.State.ToString(),
+                successRate = h.SuccessRate,
+                latencyEwmaMs = h.LatencyEwmaMs,
+                activeRequests = h.ActiveRequests,
+                isolatedTimes = h.IsolatedTimes,
+                isolationDurationMs = h.IsolationDurationMs,
+                isHealthy = h.IsHealthy,
+                isEjected = h.IsEjected,
+                isInProbation = h.IsInProbation,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Force a URL switch (reconnect) for a specific stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("ActiveStreams/{streamId}/ForceReconnect")]
+    public ActionResult<object> ForceStreamReconnect(string streamId)
+    {
+        _logger.PluginLogWarning("Force reconnect requested for stream {StreamId}", streamId);
+
+        if (Restream.RequestSwitch(streamId))
+        {
+            return Ok(new { success = true, message = "URL switch requested for stream " + streamId });
+        }
+
+        return NotFound(new { message = "Stream " + streamId + " not found" });
+    }
+
+    /// <summary>
+    /// Force eject a provider from a stream's health system.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <param name="providerIndex">The provider index (0-based).</param>
+    /// <param name="durationMs">Ejection duration in milliseconds (default 30000).</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("ActiveStreams/{streamId}/Providers/{providerIndex:int}/Eject")]
+    public ActionResult<object> EjectProvider(string streamId, int providerIndex, [FromQuery] int durationMs = 30000)
+    {
+        _logger.PluginLogWarning(
+            "Ejecting provider {ProviderIndex} from stream {StreamId} for {Duration}ms",
+            providerIndex,
+            streamId,
+            durationMs
+        );
+
+        if (Restream.ForceEjectProvider(streamId, providerIndex, durationMs))
+        {
+            return Ok(new { success = true, message = $"Provider {providerIndex} ejected for {durationMs}ms" });
+        }
+
+        return NotFound(new { message = "Stream " + streamId + " not found" });
+    }
+
+    /// <summary>
+    /// Reset all providers in a stream to Active state.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("ActiveStreams/{streamId}/Providers/Reset")]
+    public ActionResult<object> ResetStreamProviders(string streamId)
+    {
+        if (Restream.ResetAllProviders(streamId))
+        {
+            return Ok(new { success = true, message = "All providers reset to Active" });
+        }
+
+        return NotFound(new { message = "Stream " + streamId + " not found" });
+    }
+
+    /// <summary>
+    /// Get detailed TR 101 290 quality metrics for a specific stream.
+    /// </summary>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>Detailed quality metrics including Priority 1, Priority 2, A/V sync, and PCR analysis.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("ActiveStreams/{streamId}/Metrics")]
+    public ActionResult<object> GetStreamMetrics(string streamId)
+    {
+        var metrics = Restream.GetStreamMetrics(streamId);
+        if (metrics == null)
+        {
+            return NotFound(new { message = "Stream " + streamId + " not found or no metrics available" });
+        }
+
+        var m = metrics;
+        var avSync = Restream.GetStreamAvSync(streamId);
+        var pcr = Restream.GetStreamPcrAnalysis(streamId);
+
+        return Ok(
+            new
+            {
+                timestamp = m.Timestamp,
+                tsBitrate = m.TsBitrate,
+                serviceCount = m.ServiceCount,
+                pidCount = m.PidCount,
+                priority1 = new
+                {
+                    syncByteError = m.Priority1.SyncByteError,
+                    syncLoss = m.Priority1.SyncLoss,
+                    patError = m.Priority1.PatError,
+                    patError2 = m.Priority1.PatError2,
+                    continuityCountError = m.Priority1.ContinuityCountError,
+                    pmtError = m.Priority1.PmtError,
+                    pmtError2 = m.Priority1.PmtError2,
+                    pidError = m.Priority1.PidError,
+                },
+                priority2 = new
+                {
+                    transportError = m.Priority2.TransportError,
+                    crcError = m.Priority2.CrcError,
+                    pcrRepetitionError = m.Priority2.PcrRepetitionError,
+                    pcrDiscontinuityError = m.Priority2.PcrDiscontinuityError,
+                    pcrAccuracyError = m.Priority2.PcrAccuracyError,
+                    ptsError = m.Priority2.PtsError,
+                    catError = m.Priority2.CatError,
+                },
+                avSync = avSync != null
+                    ? new
+                    {
+                        videoAudioDriftMs = avSync.Value.VideoAudioDriftMs,
+                        driftRateMsPerSec = avSync.Value.DriftRateMsPerSec,
+                        peakDriftMs = avSync.Value.PeakDriftMs,
+                        avgDriftMs = avSync.Value.AvgDriftMs,
+                        status = avSync.Value.Status.ToString(),
+                        statusDescription = avSync.Value.StatusDescription,
+                        isSynchronized = avSync.Value.IsSynchronized,
+                    }
+                    : (object?)null,
+                pcr = pcr != null
+                    ? new
+                    {
+                        pcrJitterUs = pcr.Value.PcrJitterUs,
+                        pcrJitterMaxUs = pcr.Value.PcrJitterMaxUs,
+                        pcrJitterAvgUs = pcr.Value.PcrJitterAvgUs,
+                        pcrIntervalMs = pcr.Value.PcrIntervalMs,
+                        pcrDriftPpm = pcr.Value.PcrDriftPpm,
+                        pcrCount = pcr.Value.PcrCount,
+                        pcrFrequencyOffsetPpm = pcr.Value.PcrFrequencyOffsetPpm,
+                        pcrAccuracyNs = pcr.Value.PcrAccuracyNs,
+                    }
+                    : (object?)null,
+            }
+        );
+    }
+
+    // =========================================================================
+    // Diagnostics Bundle
+    // =========================================================================
+
+    /// <summary>
+    /// Get a comprehensive diagnostics bundle with all stream, provider, and configuration data.
+    /// </summary>
+    /// <returns>Complete system diagnostics for troubleshooting.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Diagnostics/Bundle")]
+    public ActionResult<object> GetDiagnosticsBundle()
+    {
+        var config = Plugin.Instance.Configuration;
+        var streams = Restream.GetActiveStreamSnapshots();
+
+        // Collect per-stream provider health
+        var streamDetails = new List<object>();
+        foreach (var s in streams)
+        {
+            var providers = Restream.GetAllProviderHealth(s.StreamId);
+            var metrics = Restream.GetStreamMetrics(s.StreamId);
+            var avSync = Restream.GetStreamAvSync(s.StreamId);
+
+            streamDetails.Add(
+                new
+                {
+                    stream = s,
+                    providers = providers?.Select(p => new
+                    {
+                        providerIndex = p.ProviderIndex,
+                        state = p.State.ToString(),
+                        successRate = p.SuccessRate,
+                        latencyEwmaMs = p.LatencyEwmaMs,
+                        isolatedTimes = p.IsolatedTimes,
+                    }),
+                    tsBitrate = metrics?.TsBitrate,
+                    avSyncStatus = avSync?.Status.ToString(),
+                    avDriftMs = avSync?.VideoAudioDriftMs,
+                }
+            );
+        }
+
+        return Ok(
+            new
+            {
+                generatedAt = DateTime.UtcNow,
+                activeStreamCount = streams.Count,
+                configuration = new
+                {
+                    timeouts = new
+                    {
+                        connectTimeoutSeconds = config.StreamConnectTimeoutSeconds,
+                        firstByteTimeoutSeconds = config.StreamFirstByteTimeoutSeconds,
+                        responseHeadersTimeoutSeconds = config.StreamResponseHeadersTimeoutSeconds,
+                        dataStallTimeoutSeconds = config.StreamDataStallTimeoutSeconds,
+                        failoverBudgetSeconds = config.FailoverBudgetSeconds,
+                        providerBlacklistSeconds = config.ProviderBlacklistSeconds,
+                        maxFailoverAttempts = config.MaxFailoverAttempts,
+                        dnsTimeoutSeconds = config.DnsTimeoutSeconds,
+                        tcpKeepaliveEnabled = config.TcpKeepaliveEnabled,
+                    },
+                    health = new
+                    {
+                        enableP2C = config.EnableP2CLoadBalancing,
+                        enableOutlierDetection = config.EnableOutlierDetection,
+                        outlierStddevFactor = config.OutlierStddevFactor,
+                        probationSuccessThreshold = config.ProbationSuccessThreshold,
+                    },
+                    buffer = new
+                    {
+                        underrunThresholdPercent = config.BufferUnderrunThresholdPercent,
+                        nearFullThresholdPercent = config.BufferNearFullThresholdPercent,
+                        underrunNotificationThreshold = config.BufferUnderrunNotificationThreshold,
+                        consumerDisconnectGraceSeconds = config.ConsumerDisconnectGraceSeconds,
+                    },
+                },
+                streams = streamDetails,
+            }
+        );
+    }
+
     /// <summary>
     /// Get connection information from the Xtream provider.
     /// </summary>

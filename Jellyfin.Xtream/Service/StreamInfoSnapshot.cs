@@ -135,6 +135,63 @@ public readonly record struct StreamInfoSnapshot
     /// </summary>
     public string? QualityIssues { get; init; }
 
+    // Native Streamer Status
+
+    /// <summary>
+    /// Gets the current native streamer state (Idle, Connecting, Streaming, etc.).
+    /// </summary>
+    public string StreamerState { get; init; }
+
+    /// <summary>
+    /// Gets the index of the currently active URL (0-based).
+    /// </summary>
+    public int CurrentUrlIndex { get; init; }
+
+    /// <summary>
+    /// Gets the total number of URLs configured for failover.
+    /// </summary>
+    public int UrlCount { get; init; }
+
+    /// <summary>
+    /// Gets the total bytes received from the network by the native streamer.
+    /// </summary>
+    public long BytesReceived { get; init; }
+
+    /// <summary>
+    /// Gets the total TS packets output by the native streamer.
+    /// </summary>
+    public long PacketsOutput { get; init; }
+
+    /// <summary>
+    /// Gets the number of completed URL switches.
+    /// </summary>
+    public long SwitchesCompleted { get; init; }
+
+    /// <summary>
+    /// Gets the number of switches triggered by quality degradation (TR 101 290).
+    /// </summary>
+    public long QualitySwitches { get; init; }
+
+    /// <summary>
+    /// Gets the current transport stream bitrate in bits per second.
+    /// </summary>
+    public long TsBitrate { get; init; }
+
+    /// <summary>
+    /// Gets the last HTTP response status code.
+    /// </summary>
+    public int LastHttpStatus { get; init; }
+
+    /// <summary>
+    /// Gets the last libcurl error code (0 = no error).
+    /// </summary>
+    public int LastCurlError { get; init; }
+
+    /// <summary>
+    /// Gets the number of configured providers in the health system.
+    /// </summary>
+    public int ProviderCount { get; init; }
+
     // Reconnection/Discontinuity Metrics
 
     /// <summary>
