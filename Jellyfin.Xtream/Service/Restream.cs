@@ -21,6 +21,7 @@ using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service.Streaming.Native;
 using Jellyfin.Xtream.Service.Streaming.SharedMemory;
 using Jellyfin.Xtream.Utility;
@@ -65,12 +66,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private const int DefaultFirstByteTimeoutMs = 15000;
 
     // Cleanup and timing constants
-    private const int ConsumerDisconnectGraceSeconds = 5;
     private const int FirstBytePollIntervalMs = 50;
     private const int HealthCheckIntervalSeconds = 30;
-    private const double BufferUnderrunThresholdPercent = 10.0;
-    private const double BufferNearFullThresholdPercent = 90.0;
-    private const int BufferUnderrunNotificationThreshold = 5;
 
     // Data flow synchronization
     private volatile bool _receivingData;
@@ -92,6 +89,12 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private readonly DateTime _startTime = DateTime.UtcNow;
     private readonly int _streamOpenTimeoutMs;
     private readonly int _firstByteTimeoutMs;
+
+    // Cached buffer threshold values from plugin configuration (used in hot paths)
+    private readonly double _bufferUnderrunThresholdPercent;
+    private readonly double _bufferNearFullThresholdPercent;
+    private readonly int _bufferUnderrunNotificationThreshold;
+    private readonly int _consumerDisconnectGraceSeconds;
 
     private CancellationTokenSource _tokenSource;
     private Task? _broadcastTask;
@@ -174,6 +177,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory);
 
+        // Cache buffer threshold settings from plugin configuration for use in hot paths
+        var pluginConfig = GetPluginConfiguration();
+        _bufferUnderrunThresholdPercent = pluginConfig?.BufferUnderrunThresholdPercent ?? 10.0;
+        _bufferNearFullThresholdPercent = pluginConfig?.BufferNearFullThresholdPercent ?? 90.0;
+        _bufferUnderrunNotificationThreshold = pluginConfig?.BufferUnderrunNotificationThreshold ?? 5;
+        _consumerDisconnectGraceSeconds = pluginConfig?.ConsumerDisconnectGraceSeconds ?? 5;
+
         _logger.PluginLogInformation(
             "Initialized stream {StreamId} ({Quality}) with automatic quality-based buffering ({BufferSizeMB}MB buffer)",
             mediaSource.Id,
@@ -253,8 +263,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             }
 
             _logger.PluginLogInformation(
-                "All consumers disconnected from channel {ChannelId}. Scheduling cleanup in 5 seconds.",
-                MediaSource.Id
+                "All consumers disconnected from channel {ChannelId}. Scheduling cleanup in {GraceSeconds} seconds.",
+                MediaSource.Id,
+                _consumerDisconnectGraceSeconds
             );
             _cleanupCts?.Cancel();
             _cleanupCts?.Dispose();
@@ -266,7 +277,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 {
                     try
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(ConsumerDisconnectGraceSeconds), cancellationToken)
+                        await Task.Delay(TimeSpan.FromSeconds(_consumerDisconnectGraceSeconds), cancellationToken)
                             .ConfigureAwait(false);
                         if (ConsumerCount == 0 && !_isDisposed)
                         {
@@ -430,7 +441,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     private async Task BroadcastFromSourceAsync(CancellationToken cancellationToken)
     {
-        var streamerConfig = TsDuckStreamerConfigNative.Default;
+        var streamerConfig = BuildStreamerConfig();
         var analyzerConfig = TsDuckConfigNative.FromManaged(TsDuckConfiguration.Default);
 
         _nativeStreamer?.Dispose();
@@ -488,6 +499,52 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             _shmConsumer?.Dispose();
             _shmConsumer = null;
             _buffer.SignalSourceDisconnected();
+        }
+    }
+
+    /// <summary>
+    /// Builds a <see cref="TsDuckStreamerConfigNative"/> from the plugin configuration,
+    /// mapping user-configured timeouts and resilience settings to native struct fields.
+    /// Falls back to <see cref="TsDuckStreamerConfigNative.Default"/> values when the
+    /// plugin instance is not available.
+    /// </summary>
+    /// <returns>A configured native streamer configuration struct.</returns>
+    private static TsDuckStreamerConfigNative BuildStreamerConfig()
+    {
+        var streamerConfig = TsDuckStreamerConfigNative.Default;
+        var pluginConfig = GetPluginConfiguration();
+
+        if (pluginConfig == null)
+        {
+            return streamerConfig;
+        }
+
+        // Map user-configured timeouts (seconds to milliseconds)
+        streamerConfig.ConnectTimeoutMs = pluginConfig.StreamConnectTimeoutSeconds * 1000;
+        streamerConfig.ResponseTimeoutMs = pluginConfig.StreamResponseHeadersTimeoutSeconds * 1000;
+        streamerConfig.StallTimeoutMs = pluginConfig.StreamDataStallTimeoutSeconds * 1000;
+
+        // Map resilience settings
+        streamerConfig.MaxRetries = pluginConfig.MaxFailoverAttempts;
+        streamerConfig.QuarantineDurationMs = pluginConfig.ProviderBlacklistSeconds * 1000;
+
+        return streamerConfig;
+    }
+
+    /// <summary>
+    /// Safely retrieves the plugin configuration, returning null if the plugin is not yet initialized.
+    /// This allows Restream to be used in test environments where the plugin may not be registered.
+    /// </summary>
+    /// <returns>The current plugin configuration, or null if unavailable.</returns>
+    private static PluginConfiguration? GetPluginConfiguration()
+    {
+        try
+        {
+            return Plugin.Instance.Configuration;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
         }
     }
 
@@ -708,7 +765,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         var bufferFillPct =
             (double)(_buffer.TotalBytesWritten % _buffer.BufferSize) * 100.0 / (double)_buffer.BufferSize;
 
-        if (bufferFillPct < BufferUnderrunThresholdPercent)
+        if (bufferFillPct < _bufferUnderrunThresholdPercent)
         {
             _bufferUnderrunCount++;
 
@@ -721,7 +778,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     bufferFillPct
                 );
 
-                if (_bufferUnderrunCount >= BufferUnderrunNotificationThreshold)
+                if (_bufferUnderrunCount >= _bufferUnderrunNotificationThreshold)
                 {
                     var fillPct = bufferFillPct;
                     var count = _bufferUnderrunCount;
@@ -737,7 +794,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 }
             }
         }
-        else if (bufferFillPct > BufferNearFullThresholdPercent)
+        else if (bufferFillPct > _bufferNearFullThresholdPercent)
         {
             _bufferHealthWarnings++;
             _logger.LogDebugIfEnabled(

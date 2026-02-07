@@ -544,6 +544,53 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool ForceRemux { get; set; } = true;
 
     // ============================================================================
+    // Buffer Health Thresholds
+    // ============================================================================
+
+    /// <summary>
+    /// Gets or sets the buffer underrun threshold as a percentage of total buffer capacity (0-100).
+    /// </summary>
+    /// <remarks>
+    /// When the buffer fill level drops below this percentage during a health check,
+    /// it is counted as a buffer underrun event. Frequent underruns indicate the source
+    /// is not delivering data fast enough to keep up with consumer playback.
+    /// Default: 10%.
+    /// </remarks>
+    public double BufferUnderrunThresholdPercent { get; set; } = 10.0;
+
+    /// <summary>
+    /// Gets or sets the buffer near-full threshold as a percentage of total buffer capacity (0-100).
+    /// </summary>
+    /// <remarks>
+    /// When the buffer fill level exceeds this percentage during a health check,
+    /// a debug warning is logged. This can indicate consumers are reading too slowly
+    /// relative to the incoming data rate.
+    /// Default: 90%.
+    /// </remarks>
+    public double BufferNearFullThresholdPercent { get; set; } = 90.0;
+
+    /// <summary>
+    /// Gets or sets the number of buffer underruns before a Discord notification is sent.
+    /// </summary>
+    /// <remarks>
+    /// Buffer underrun notifications are only sent once the cumulative underrun count
+    /// for a stream reaches this threshold, avoiding notification spam for transient dips.
+    /// Default: 5.
+    /// </remarks>
+    public int BufferUnderrunNotificationThreshold { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets the grace period in seconds before cleaning up a stream with no consumers.
+    /// </summary>
+    /// <remarks>
+    /// When all consumers disconnect, the stream waits this many seconds before disposing.
+    /// This allows brief reconnections (e.g., channel surfing or client rebuffering) without
+    /// tearing down and re-establishing the upstream connection.
+    /// Default: 5 seconds.
+    /// </remarks>
+    public int ConsumerDisconnectGraceSeconds { get; set; } = 5;
+
+    // ============================================================================
     // External EPG Configuration
     // ============================================================================
 

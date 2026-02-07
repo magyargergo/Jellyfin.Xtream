@@ -445,11 +445,168 @@ public class XtreamController(
                 p.Id,
                 p.Name,
                 p.Enabled,
+                p.Priority,
                 HasCredentials = !string.IsNullOrEmpty(p.BaseUrl) && !string.IsNullOrEmpty(p.Username),
             })
             .ToList();
 
         return Ok(providers);
+    }
+
+    /// <summary>
+    /// Get a single provider by ID.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>Provider details (credentials redacted).</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Providers/{providerId}")]
+    public ActionResult<object> GetProviderDetails(string providerId)
+    {
+        var provider = Plugin.Instance.Configuration.GetProvider(providerId);
+        if (provider == null)
+        {
+            return NotFound(new { success = false, message = "Provider not found" });
+        }
+
+        return Ok(
+            new
+            {
+                provider.Id,
+                provider.Name,
+                provider.BaseUrl,
+                provider.Username,
+                provider.Enabled,
+                provider.Priority,
+                LiveTvCategories = provider.LiveTv.Count,
+                VodCategories = provider.Vod.Count,
+                SeriesCategories = provider.Series.Count,
+                OverrideCount = provider.LiveTvOverrides.Count,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Create a new provider.
+    /// </summary>
+    /// <param name="request">Provider details.</param>
+    /// <returns>The created provider ID.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("Providers")]
+    public ActionResult<object> CreateProvider([FromBody] ProviderRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.BaseUrl) || string.IsNullOrWhiteSpace(request.Username))
+        {
+            return BadRequest(new { success = false, message = "BaseUrl and Username are required" });
+        }
+
+        var config = Plugin.Instance.Configuration;
+
+        var newProvider = new Configuration.XtreamProvider
+        {
+            Name = request.Name,
+            BaseUrl = request.BaseUrl.TrimEnd('/'),
+            Username = request.Username,
+            Password = request.Password,
+            Enabled = request.Enabled,
+            Priority = Math.Clamp(request.Priority, 0, 100),
+        };
+
+        config.Providers.Add(newProvider);
+        Plugin.Instance.SaveConfiguration();
+
+        _logger.PluginLogInformation("Created provider: {Name} ({Id})", newProvider.Name, newProvider.Id);
+
+        return Ok(
+            new
+            {
+                success = true,
+                message = "Provider created",
+                providerId = newProvider.Id,
+                providerName = newProvider.Name,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update an existing provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="request">Updated provider details.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Providers/{providerId}")]
+    public ActionResult<object> UpdateProvider(string providerId, [FromBody] ProviderRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        var provider = config.GetProvider(providerId);
+
+        if (provider == null)
+        {
+            return NotFound(new { success = false, message = "Provider not found" });
+        }
+
+        provider.Name = request.Name;
+        provider.Enabled = request.Enabled;
+        provider.Priority = Math.Clamp(request.Priority, 0, 100);
+
+        if (!string.IsNullOrWhiteSpace(request.BaseUrl))
+        {
+            provider.BaseUrl = request.BaseUrl.TrimEnd('/');
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Username))
+        {
+            provider.Username = request.Username;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Password))
+        {
+            provider.Password = request.Password;
+        }
+
+        Plugin.Instance.SaveConfiguration();
+
+        _logger.PluginLogInformation("Updated provider: {Name} ({Id})", provider.Name, provider.Id);
+
+        return Ok(
+            new
+            {
+                success = true,
+                message = "Provider updated",
+                providerId = provider.Id,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Delete a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID to delete.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpDelete("Providers/{providerId}")]
+    public ActionResult<object> DeleteProvider(string providerId)
+    {
+        var config = Plugin.Instance.Configuration;
+        var provider = config.GetProvider(providerId);
+
+        if (provider == null)
+        {
+            return NotFound(new { success = false, message = "Provider not found" });
+        }
+
+        var enabledCount = config.Providers.Count(p => p.Enabled);
+        if (provider.Enabled && enabledCount <= 1)
+        {
+            return BadRequest(new { success = false, message = "Cannot delete the last enabled provider" });
+        }
+
+        config.Providers.Remove(provider);
+        Plugin.Instance.SaveConfiguration();
+
+        _logger.PluginLogWarning("Deleted provider: {Name} ({Id})", provider.Name, providerId);
+
+        return Ok(new { success = true, message = "Provider deleted" });
     }
 
     /// <summary>
@@ -1613,5 +1770,352 @@ public class XtreamController(
         logService.Clear();
         _logger.PluginLogInformation("Log buffer cleared by user");
         return Ok(new { success = true, message = "Log buffer cleared" });
+    }
+
+    // =========================================================================
+    // Channel Override CRUD
+    // =========================================================================
+
+    /// <summary>
+    /// Get a channel override for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>The channel override or 404.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Providers/{providerId}/Channels/{streamId}/Override")]
+    public ActionResult<object> GetChannelOverride(string providerId, int streamId)
+    {
+        var provider = Plugin.Instance.Configuration.GetProvider(providerId);
+        if (provider == null)
+        {
+            return NotFound(new { success = false, message = "Provider not found" });
+        }
+
+        if (!provider.LiveTvOverrides.TryGetValue(streamId, out var channelOverride))
+        {
+            return NotFound(new { success = false, message = "No override for this channel" });
+        }
+
+        return Ok(
+            new
+            {
+                streamId,
+                channelOverride.Number,
+                channelOverride.Name,
+                channelOverride.LogoUrl,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Set or update a channel override.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="streamId">The stream ID.</param>
+    /// <param name="request">The override values.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Providers/{providerId}/Channels/{streamId}/Override")]
+    public ActionResult<object> SetChannelOverride(
+        string providerId,
+        int streamId,
+        [FromBody] ChannelOverrideRequest request
+    )
+    {
+        var provider = Plugin.Instance.Configuration.GetProvider(providerId);
+        if (provider == null)
+        {
+            return NotFound(new { success = false, message = "Provider not found" });
+        }
+
+        provider.LiveTvOverrides[streamId] = new Configuration.ChannelOverrides
+        {
+            Number = request.Number,
+            Name = request.Name,
+            LogoUrl = request.LogoUrl,
+        };
+
+        Plugin.Instance.SaveConfiguration();
+
+        _logger.PluginLogInformation(
+            "Set channel override for stream {StreamId} on provider {ProviderId}",
+            streamId,
+            providerId
+        );
+
+        return Ok(new { success = true, message = "Channel override set" });
+    }
+
+    /// <summary>
+    /// Delete a channel override.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="streamId">The stream ID.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpDelete("Providers/{providerId}/Channels/{streamId}/Override")]
+    public ActionResult<object> DeleteChannelOverride(string providerId, int streamId)
+    {
+        var provider = Plugin.Instance.Configuration.GetProvider(providerId);
+        if (provider == null)
+        {
+            return NotFound(new { success = false, message = "Provider not found" });
+        }
+
+        if (!provider.LiveTvOverrides.Remove(streamId))
+        {
+            return NotFound(new { success = false, message = "No override for this channel" });
+        }
+
+        Plugin.Instance.SaveConfiguration();
+
+        _logger.PluginLogInformation(
+            "Deleted channel override for stream {StreamId} on provider {ProviderId}",
+            streamId,
+            providerId
+        );
+
+        return Ok(new { success = true, message = "Channel override removed" });
+    }
+
+    // =========================================================================
+    // Provider Health
+    // =========================================================================
+
+    /// <summary>
+    /// Get health state for all providers in active streams.
+    /// </summary>
+    /// <returns>Health snapshots from native streamers.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("ProviderHealth")]
+    public ActionResult<object> GetProviderHealth()
+    {
+        var snapshots = Restream.GetActiveStreamSnapshots();
+        var healthData = new List<object>();
+
+        foreach (var snapshot in snapshots)
+        {
+            healthData.Add(
+                new
+                {
+                    snapshot.StreamId,
+                    snapshot.ChannelName,
+                    snapshot.Status,
+                    snapshot.ReconnectionCount,
+                    snapshot.TotalBytesWritten,
+                    snapshot.OverflowCount,
+                    snapshot.GapPercentage,
+                    snapshot.HasQualityIssues,
+                    snapshot.QualityLevel,
+                    snapshot.AvDriftMs,
+                    snapshot.SyncStatus,
+                }
+            );
+        }
+
+        return Ok(
+            new
+            {
+                success = true,
+                activeStreams = snapshots.Count,
+                providers = healthData,
+            }
+        );
+    }
+
+    // =========================================================================
+    // Configuration Section Endpoints
+    // =========================================================================
+
+    /// <summary>
+    /// Get proxy configuration.
+    /// </summary>
+    /// <returns>Current proxy settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Proxy")]
+    public ActionResult<object> GetProxyConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                enabled = config.EnableProxy,
+                type = config.ProxyType.ToString(),
+                address = config.ProxyAddress,
+                port = config.ProxyPort,
+                username = config.ProxyUsername,
+                bypassLocal = config.ProxyBypassLocal,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update proxy configuration.
+    /// </summary>
+    /// <param name="request">Proxy settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Proxy")]
+    public ActionResult<object> UpdateProxyConfig([FromBody] ProxyConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.EnableProxy = request.Enabled;
+        config.ProxyAddress = request.Address;
+        config.ProxyPort = request.Port;
+        config.ProxyUsername = request.Username;
+        config.ProxyPassword = request.Password;
+        config.ProxyBypassLocal = request.BypassLocal;
+
+        if (Enum.TryParse<Configuration.ProxyType>(request.Type, ignoreCase: true, out var proxyType))
+        {
+            config.ProxyType = proxyType;
+        }
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Proxy configuration updated via API");
+        return Ok(new { success = true, message = "Proxy configuration updated" });
+    }
+
+    /// <summary>
+    /// Get EPG configuration.
+    /// </summary>
+    /// <returns>Current EPG settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Epg")]
+    public ActionResult<object> GetEpgConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                enableExternalEpg = config.EnableExternalEpg,
+                externalEpgUrl = config.ExternalEpgUrl,
+                externalEpgLogoBaseUrl = config.ExternalEpgLogoBaseUrl,
+                useExternalLogoFallback = config.UseExternalLogoFallback,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update EPG configuration.
+    /// </summary>
+    /// <param name="request">EPG settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Epg")]
+    public ActionResult<object> UpdateEpgConfig([FromBody] EpgConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.EnableExternalEpg = request.EnableExternalEpg;
+        config.ExternalEpgUrl = request.ExternalEpgUrl;
+        config.ExternalEpgLogoBaseUrl = request.ExternalEpgLogoBaseUrl;
+        config.UseExternalLogoFallback = request.UseExternalLogoFallback;
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("EPG configuration updated via API");
+        return Ok(new { success = true, message = "EPG configuration updated" });
+    }
+
+    /// <summary>
+    /// Get Discord notification configuration.
+    /// </summary>
+    /// <returns>Current Discord settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Discord")]
+    public ActionResult<object> GetDiscordConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                enabled = config.EnableDiscordNotifications,
+                webhookUrl = config.DiscordWebhookUrl,
+                notifyOnBufferOverflow = config.NotifyOnBufferOverflow,
+                notifyOnStreamStart = config.NotifyOnStreamStart,
+                notifyOnStreamError = config.NotifyOnStreamError,
+                notifyOnStreamKilled = config.NotifyOnStreamKilled,
+                notifyOnStreamQualityViolation = config.NotifyOnStreamQualityViolation,
+                notifyOnAVDrift = config.NotifyOnAVDrift,
+                notifyOnAudioSyncCorrection = config.NotifyOnAudioSyncCorrection,
+                notifyOnEpgRefresh = config.NotifyOnEpgRefresh,
+                notifyOnConnectionLimitChange = config.NotifyOnConnectionLimitChange,
+                notifyOnProviderBlacklist = config.NotifyOnProviderBlacklist,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update Discord notification configuration.
+    /// </summary>
+    /// <param name="request">Discord settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Discord")]
+    public ActionResult<object> UpdateDiscordConfig([FromBody] DiscordConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.EnableDiscordNotifications = request.Enabled;
+        config.DiscordWebhookUrl = request.WebhookUrl;
+        config.NotifyOnBufferOverflow = request.NotifyOnBufferOverflow;
+        config.NotifyOnStreamStart = request.NotifyOnStreamStart;
+        config.NotifyOnStreamError = request.NotifyOnStreamError;
+        config.NotifyOnStreamKilled = request.NotifyOnStreamKilled;
+        config.NotifyOnStreamQualityViolation = request.NotifyOnStreamQualityViolation;
+        config.NotifyOnAVDrift = request.NotifyOnAVDrift;
+        config.NotifyOnAudioSyncCorrection = request.NotifyOnAudioSyncCorrection;
+        config.NotifyOnEpgRefresh = request.NotifyOnEpgRefresh;
+        config.NotifyOnConnectionLimitChange = request.NotifyOnConnectionLimitChange;
+        config.NotifyOnProviderBlacklist = request.NotifyOnProviderBlacklist;
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Discord configuration updated via API");
+        return Ok(new { success = true, message = "Discord configuration updated" });
+    }
+
+    /// <summary>
+    /// Get streaming timeout configuration.
+    /// </summary>
+    /// <returns>Current timeout settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Timeouts")]
+    public ActionResult<object> GetTimeoutConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                connectTimeoutSeconds = config.StreamConnectTimeoutSeconds,
+                firstByteTimeoutSeconds = config.StreamFirstByteTimeoutSeconds,
+                responseHeadersTimeoutSeconds = config.StreamResponseHeadersTimeoutSeconds,
+                dataStallTimeoutSeconds = config.StreamDataStallTimeoutSeconds,
+                failoverBudgetSeconds = config.FailoverBudgetSeconds,
+                providerBlacklistSeconds = config.ProviderBlacklistSeconds,
+                maxFailoverAttempts = config.MaxFailoverAttempts,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update streaming timeout configuration.
+    /// </summary>
+    /// <param name="request">Timeout settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Timeouts")]
+    public ActionResult<object> UpdateTimeoutConfig([FromBody] TimeoutConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.StreamConnectTimeoutSeconds = Math.Clamp(request.ConnectTimeoutSeconds, 1, 30);
+        config.StreamFirstByteTimeoutSeconds = Math.Clamp(request.FirstByteTimeoutSeconds, 1, 30);
+        config.StreamResponseHeadersTimeoutSeconds = Math.Clamp(request.ResponseHeadersTimeoutSeconds, 5, 30);
+        config.StreamDataStallTimeoutSeconds = Math.Clamp(request.DataStallTimeoutSeconds, 5, 60);
+        config.FailoverBudgetSeconds = Math.Clamp(request.FailoverBudgetSeconds, 5, 30);
+        config.ProviderBlacklistSeconds = Math.Clamp(request.ProviderBlacklistSeconds, 10, 300);
+        config.MaxFailoverAttempts = Math.Clamp(request.MaxFailoverAttempts, 1, 10);
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Timeout configuration updated via API");
+        return Ok(new { success = true, message = "Timeout configuration updated" });
     }
 }
