@@ -142,6 +142,30 @@ public class XtreamController(
         };
     }
 
+    private static ErrorResponse CreateError(
+        string errorCode,
+        string message,
+        string? suggestedAction = null,
+        Dictionary<string, string>? context = null
+    )
+    {
+        return new ErrorResponse
+        {
+            ErrorCode = errorCode,
+            Message = message,
+            SuggestedAction = suggestedAction,
+            Context = context,
+        };
+    }
+
+    private static void PublishConfigChanged(string section)
+    {
+        Service.Events.PluginEventBus.Instance.Publish(
+            "config.changed",
+            data: new Dictionary<string, object>(StringComparer.Ordinal) { ["section"] = section }
+        );
+    }
+
     /// <summary>
     /// Get all Live TV categories for a provider.
     /// </summary>
@@ -158,7 +182,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return BadRequest(new { message = "No provider configured" });
+            return BadRequest(
+                CreateError(
+                    ErrorCodes.ProviderNotConfigured,
+                    "No provider configured",
+                    "Configure at least one provider via PUT /Xtream/Providers"
+                )
+            );
         }
 
         var cacheKey = "xtream-api-live-categories-" + provider.Id;
@@ -197,7 +227,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return BadRequest(new { message = "No provider configured" });
+            return BadRequest(
+                CreateError(
+                    ErrorCodes.ProviderNotConfigured,
+                    "No provider configured",
+                    "Configure at least one provider via PUT /Xtream/Providers"
+                )
+            );
         }
 
         var cacheKey = $"xtream-api-live-streams-{provider.Id}-{categoryId}";
@@ -236,7 +272,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return BadRequest(new { message = "No provider configured" });
+            return BadRequest(
+                CreateError(
+                    ErrorCodes.ProviderNotConfigured,
+                    "No provider configured",
+                    "Configure at least one provider via PUT /Xtream/Providers"
+                )
+            );
         }
 
         var cacheKey = "xtream-api-vod-categories-" + provider.Id;
@@ -275,7 +317,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return BadRequest(new { message = "No provider configured" });
+            return BadRequest(
+                CreateError(
+                    ErrorCodes.ProviderNotConfigured,
+                    "No provider configured",
+                    "Configure at least one provider via PUT /Xtream/Providers"
+                )
+            );
         }
 
         var cacheKey = $"xtream-api-vod-streams-{provider.Id}-{categoryId}";
@@ -314,7 +362,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return BadRequest(new { message = "No provider configured" });
+            return BadRequest(
+                CreateError(
+                    ErrorCodes.ProviderNotConfigured,
+                    "No provider configured",
+                    "Configure at least one provider via PUT /Xtream/Providers"
+                )
+            );
         }
 
         var cacheKey = "xtream-api-series-categories-" + provider.Id;
@@ -355,7 +409,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return BadRequest(new { message = "No provider configured" });
+            return BadRequest(
+                CreateError(
+                    ErrorCodes.ProviderNotConfigured,
+                    "No provider configured",
+                    "Configure at least one provider via PUT /Xtream/Providers"
+                )
+            );
         }
 
         var cacheKey = $"xtream-api-series-streams-{provider.Id}-{categoryId}";
@@ -394,7 +454,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return BadRequest(new { message = "No provider configured" });
+            return BadRequest(
+                CreateError(
+                    ErrorCodes.ProviderNotConfigured,
+                    "No provider configured",
+                    "Configure at least one provider via PUT /Xtream/Providers"
+                )
+            );
         }
 
         List<ChannelResponse> channels =
@@ -422,7 +488,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return NotFound(new { success = false, message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         try
@@ -497,7 +569,13 @@ public class XtreamController(
         var provider = Plugin.Instance.Configuration.GetProvider(providerId);
         if (provider == null)
         {
-            return NotFound(new { success = false, message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         return Ok(
@@ -528,7 +606,7 @@ public class XtreamController(
     {
         if (string.IsNullOrWhiteSpace(request.BaseUrl) || string.IsNullOrWhiteSpace(request.Username))
         {
-            return BadRequest(new { success = false, message = "BaseUrl and Username are required" });
+            return BadRequest(CreateError(ErrorCodes.ValidationFailed, "BaseUrl and Username are required"));
         }
 
         var config = Plugin.Instance.Configuration;
@@ -574,7 +652,13 @@ public class XtreamController(
 
         if (provider == null)
         {
-            return NotFound(new { success = false, message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         provider.Name = request.Name;
@@ -624,13 +708,25 @@ public class XtreamController(
 
         if (provider == null)
         {
-            return NotFound(new { success = false, message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         var enabledCount = config.Providers.Count(p => p.Enabled);
         if (provider.Enabled && enabledCount <= 1)
         {
-            return BadRequest(new { success = false, message = "Cannot delete the last enabled provider" });
+            return BadRequest(
+                CreateError(
+                    ErrorCodes.LastProviderDeletion,
+                    "Cannot delete the last enabled provider",
+                    "Disable the provider instead, or add another provider first"
+                )
+            );
         }
 
         config.Providers.Remove(provider);
@@ -752,7 +848,9 @@ public class XtreamController(
     {
         if (string.IsNullOrWhiteSpace(webhookUrl))
         {
-            return BadRequest(new { success = false, message = "Webhook URL is required" });
+            return BadRequest(
+                CreateError(ErrorCodes.ValidationFailed, "Webhook URL is required when notifications are enabled")
+            );
         }
 
         var success = await discordService.TestWebhookAsync(webhookUrl, cancellationToken).ConfigureAwait(false);
@@ -943,15 +1041,92 @@ public class XtreamController(
 
     /// <summary>
     /// Get all active streams with their health statistics.
+    /// Supports filtering, sorting, and pagination via query parameters.
     /// </summary>
-    /// <returns>List of active streams with statistics.</returns>
+    /// <param name="status">Filter by health status (Healthy, OK, Lagging).</param>
+    /// <param name="hasQualityIssues">Filter by quality issue presence.</param>
+    /// <param name="minGapPercent">Filter streams with gap percentage above this value.</param>
+    /// <param name="maxGapPercent">Filter streams with gap percentage below this value.</param>
+    /// <param name="sortBy">Sort field: startTime, gapPercent, overflowCount, bytesReceived (default: startTime).</param>
+    /// <param name="sortDesc">Sort descending when true (default: false).</param>
+    /// <param name="offset">Number of results to skip (default: 0).</param>
+    /// <param name="limit">Maximum results to return, 0 for all (default: 0).</param>
+    /// <returns>Filtered and sorted list of active streams with statistics.</returns>
     [Authorize(Policy = "RequiresElevation")]
     [HttpGet("ActiveStreams")]
-    public ActionResult<IReadOnlyList<StreamInfoSnapshot>> GetActiveStreams()
+    public ActionResult<object> GetActiveStreams(
+        [FromQuery] string? status = null,
+        [FromQuery] bool? hasQualityIssues = null,
+        [FromQuery] double? minGapPercent = null,
+        [FromQuery] double? maxGapPercent = null,
+        [FromQuery] string sortBy = "startTime",
+        [FromQuery] bool sortDesc = false,
+        [FromQuery] int offset = 0,
+        [FromQuery] int limit = 0
+    )
     {
         var streams = Restream.GetActiveStreamSnapshots();
-        _logger.PluginLogInformation("Retrieved {Count} active stream(s)", streams.Count);
-        return Ok(streams);
+        IEnumerable<StreamInfoSnapshot> filtered = streams;
+
+        if (!string.IsNullOrEmpty(status))
+        {
+            filtered = filtered.Where(s => string.Equals(s.Status, status, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (hasQualityIssues.HasValue)
+        {
+            filtered = filtered.Where(s => s.HasQualityIssues == hasQualityIssues.Value);
+        }
+
+        if (minGapPercent.HasValue)
+        {
+            filtered = filtered.Where(s => s.GapPercentage >= minGapPercent.Value);
+        }
+
+        if (maxGapPercent.HasValue)
+        {
+            filtered = filtered.Where(s => s.GapPercentage <= maxGapPercent.Value);
+        }
+
+        filtered = sortBy.ToLowerInvariant() switch
+        {
+            "gappercent" => sortDesc
+                ? filtered.OrderByDescending(s => s.GapPercentage)
+                : filtered.OrderBy(s => s.GapPercentage),
+            "overflowcount" => sortDesc
+                ? filtered.OrderByDescending(s => s.OverflowCount)
+                : filtered.OrderBy(s => s.OverflowCount),
+            "bytesreceived" => sortDesc
+                ? filtered.OrderByDescending(s => s.BytesReceived)
+                : filtered.OrderBy(s => s.BytesReceived),
+            _ => sortDesc ? filtered.OrderByDescending(s => s.StartTime) : filtered.OrderBy(s => s.StartTime),
+        };
+
+        var totalCount = streams.Count;
+        var result = filtered.AsEnumerable();
+
+        if (offset > 0)
+        {
+            result = result.Skip(offset);
+        }
+
+        if (limit > 0)
+        {
+            result = result.Take(limit);
+        }
+
+        var items = result.ToList();
+        _logger.PluginLogInformation("Retrieved {Count}/{Total} active stream(s)", items.Count, totalCount);
+        return Ok(
+            new
+            {
+                totalCount,
+                offset,
+                limit,
+                count = items.Count,
+                items,
+            }
+        );
     }
 
     /// <summary>
@@ -972,7 +1147,13 @@ public class XtreamController(
         }
 
         _logger.PluginLogWarning("Stream {StreamId} not found", streamId);
-        return NotFound(new { success = false, message = "Stream " + streamId + " not found" });
+        return NotFound(
+            CreateError(
+                ErrorCodes.StreamNotFound,
+                "Stream " + streamId + " not found",
+                "List active streams via GET /Xtream/ActiveStreams"
+            )
+        );
     }
 
     /// <summary>
@@ -1012,7 +1193,13 @@ public class XtreamController(
         var providers = Restream.GetAllProviderHealth(streamId);
         if (providers == null)
         {
-            return NotFound(new { message = "Stream " + streamId + " not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.StreamNotFound,
+                    "Stream " + streamId + " not found",
+                    "List active streams via GET /Xtream/ActiveStreams"
+                )
+            );
         }
 
         return Ok(
@@ -1044,7 +1231,7 @@ public class XtreamController(
         var health = Restream.GetProviderHealth(streamId, providerIndex);
         if (health == null)
         {
-            return NotFound(new { message = "Stream or provider not found" });
+            return NotFound(CreateError(ErrorCodes.StreamNotFound, "Stream or provider not found"));
         }
 
         var h = health.Value;
@@ -1081,7 +1268,13 @@ public class XtreamController(
             return Ok(new { success = true, message = "URL switch requested for stream " + streamId });
         }
 
-        return NotFound(new { message = "Stream " + streamId + " not found" });
+        return NotFound(
+            CreateError(
+                ErrorCodes.StreamNotFound,
+                "Stream " + streamId + " not found",
+                "List active streams via GET /Xtream/ActiveStreams"
+            )
+        );
     }
 
     /// <summary>
@@ -1107,7 +1300,13 @@ public class XtreamController(
             return Ok(new { success = true, message = $"Provider {providerIndex} ejected for {durationMs}ms" });
         }
 
-        return NotFound(new { message = "Stream " + streamId + " not found" });
+        return NotFound(
+            CreateError(
+                ErrorCodes.StreamNotFound,
+                "Stream " + streamId + " not found",
+                "List active streams via GET /Xtream/ActiveStreams"
+            )
+        );
     }
 
     /// <summary>
@@ -1124,7 +1323,13 @@ public class XtreamController(
             return Ok(new { success = true, message = "All providers reset to Active" });
         }
 
-        return NotFound(new { message = "Stream " + streamId + " not found" });
+        return NotFound(
+            CreateError(
+                ErrorCodes.StreamNotFound,
+                "Stream " + streamId + " not found",
+                "List active streams via GET /Xtream/ActiveStreams"
+            )
+        );
     }
 
     /// <summary>
@@ -1139,7 +1344,12 @@ public class XtreamController(
         var metrics = Restream.GetStreamMetrics(streamId);
         if (metrics == null)
         {
-            return NotFound(new { message = "Stream " + streamId + " not found or no metrics available" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.HealthDataUnavailable,
+                    "Stream " + streamId + " not found or no metrics available"
+                )
+            );
         }
 
         var m = metrics;
@@ -1772,7 +1982,7 @@ public class XtreamController(
     {
         if (string.IsNullOrEmpty(provider.Server) || string.IsNullOrEmpty(provider.Username))
         {
-            return BadRequest(new { success = false, message = "Server and username are required" });
+            return BadRequest(CreateError(ErrorCodes.ValidationFailed, "Server and username are required"));
         }
 
         var config = Plugin.Instance.Configuration;
@@ -2109,12 +2319,18 @@ public class XtreamController(
         var provider = Plugin.Instance.Configuration.GetProvider(providerId);
         if (provider == null)
         {
-            return NotFound(new { success = false, message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         if (!provider.LiveTvOverrides.TryGetValue(streamId, out var channelOverride))
         {
-            return NotFound(new { success = false, message = "No override for this channel" });
+            return NotFound(CreateError(ErrorCodes.OverrideNotFound, "No override for this channel"));
         }
 
         return Ok(
@@ -2146,7 +2362,13 @@ public class XtreamController(
         var provider = Plugin.Instance.Configuration.GetProvider(providerId);
         if (provider == null)
         {
-            return NotFound(new { success = false, message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         provider.LiveTvOverrides[streamId] = new Configuration.ChannelOverrides
@@ -2180,12 +2402,18 @@ public class XtreamController(
         var provider = Plugin.Instance.Configuration.GetProvider(providerId);
         if (provider == null)
         {
-            return NotFound(new { success = false, message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         if (!provider.LiveTvOverrides.Remove(streamId))
         {
-            return NotFound(new { success = false, message = "No override for this channel" });
+            return NotFound(CreateError(ErrorCodes.OverrideNotFound, "No override for this channel"));
         }
 
         Plugin.Instance.SaveConfiguration();
@@ -2294,6 +2522,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Proxy configuration updated via API");
+        PublishConfigChanged("Proxy");
         return Ok(new { success = true, message = "Proxy configuration updated" });
     }
 
@@ -2334,6 +2563,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("EPG configuration updated via API");
+        PublishConfigChanged("Epg");
         return Ok(new { success = true, message = "EPG configuration updated" });
     }
 
@@ -2390,6 +2620,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Discord configuration updated via API");
+        PublishConfigChanged("Discord");
         return Ok(new { success = true, message = "Discord configuration updated" });
     }
 
@@ -2438,6 +2669,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Timeout configuration updated via API");
+        PublishConfigChanged("Timeouts");
         return Ok(new { success = true, message = "Timeout configuration updated" });
     }
 
@@ -2478,6 +2710,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Health configuration updated via API");
+        PublishConfigChanged("Health");
         return Ok(new { success = true, message = "Health configuration updated" });
     }
 
@@ -2520,6 +2753,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("User-Agent configuration updated via API");
+        PublishConfigChanged("UserAgent");
         return Ok(new { success = true, message = "User-Agent configuration updated" });
     }
 
@@ -2562,6 +2796,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Rate limiting configuration updated via API");
+        PublishConfigChanged("RateLimiting");
         return Ok(new { success = true, message = "Rate limiting configuration updated" });
     }
 
@@ -2606,6 +2841,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Visibility configuration updated via API");
+        PublishConfigChanged("Visibility");
         return Ok(new { success = true, message = "Visibility configuration updated" });
     }
 
@@ -2650,6 +2886,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Failover configuration updated via API");
+        PublishConfigChanged("Failover");
         return Ok(new { success = true, message = "Failover configuration updated" });
     }
 
@@ -2694,6 +2931,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Connection limit configuration updated via API");
+        PublishConfigChanged("ConnectionLimits");
         return Ok(new { success = true, message = "Connection limit configuration updated" });
     }
 
@@ -2736,6 +2974,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Hedging configuration updated via API");
+        PublishConfigChanged("Hedging");
         return Ok(new { success = true, message = "Hedging configuration updated" });
     }
 
@@ -2780,6 +3019,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Buffer configuration updated via API");
+        PublishConfigChanged("Buffer");
         return Ok(new { success = true, message = "Buffer configuration updated" });
     }
 
@@ -2824,6 +3064,7 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Logging configuration updated via API");
+        PublishConfigChanged("Logging");
         return Ok(new { success = true, message = "Logging configuration updated" });
     }
 
@@ -2857,7 +3098,469 @@ public class XtreamController(
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Stream processing configuration updated via API");
+        PublishConfigChanged("StreamProcessing");
         return Ok(new { success = true, message = "Stream processing configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration Dry-Run / Preview
+    // =========================================================================
+
+    /// <summary>
+    /// Preview configuration changes without applying them.
+    /// Returns a diff of what would change, validation errors, warnings, and impact assessment.
+    /// </summary>
+    /// <param name="section">Configuration section name (Proxy, Epg, Discord, Timeouts, Health, UserAgent, RateLimiting, Visibility, Failover, ConnectionLimits, Hedging, Buffer, Logging, StreamProcessing).</param>
+    /// <param name="body">The configuration payload (same format as the corresponding PUT endpoint).</param>
+    /// <returns>Preview of changes, validation results, and impact assessment.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("Configuration/{section}/Preview")]
+    public ActionResult<ConfigPreviewResponse> PreviewConfigChange(
+        string section,
+        [FromBody] System.Text.Json.JsonElement body
+    )
+    {
+        var config = Plugin.Instance.Configuration;
+        var response = new ConfigPreviewResponse { Section = section };
+        var activeStreams = Restream.GetActiveStreamSnapshots().Count;
+
+        switch (section.ToLowerInvariant())
+        {
+            case "timeouts":
+                PreviewTimeouts(body, config, response, activeStreams);
+                break;
+            case "health":
+                PreviewHealth(body, config, response, activeStreams);
+                break;
+            case "buffer":
+                PreviewBuffer(body, config, response, activeStreams);
+                break;
+            case "ratelimiting":
+                PreviewRateLimiting(body, config, response);
+                break;
+            case "connectionlimits":
+                PreviewConnectionLimits(body, config, response, activeStreams);
+                break;
+            case "hedging":
+                PreviewHedging(body, config, response, activeStreams);
+                break;
+            case "proxy":
+                PreviewProxy(body, config, response, activeStreams);
+                break;
+            case "discord":
+                PreviewDiscord(body, config, response);
+                break;
+            case "epg":
+                PreviewEpg(body, config, response);
+                break;
+            case "useragent":
+                PreviewUserAgent(body, config, response);
+                break;
+            case "visibility":
+                PreviewVisibility(body, config, response);
+                break;
+            case "failover":
+                PreviewFailover(body, config, response, activeStreams);
+                break;
+            case "logging":
+                PreviewLogging(body, config, response);
+                break;
+            case "streamprocessing":
+                PreviewStreamProcessing(body, config, response, activeStreams);
+                break;
+            default:
+                response.Errors.Add("Unknown configuration section: " + section);
+                break;
+        }
+
+        response.IsValid = response.Errors.Count == 0;
+        return Ok(response);
+    }
+
+    private static void AddChange(ConfigPreviewResponse r, string field, object? oldVal, object? newVal)
+    {
+        var oldStr = oldVal?.ToString() ?? string.Empty;
+        var newStr = newVal?.ToString() ?? string.Empty;
+        r.Changes.Add(
+            new ConfigFieldChange
+            {
+                Field = field,
+                OldValue = oldStr,
+                NewValue = newStr,
+                Changed = !string.Equals(oldStr, newStr, StringComparison.Ordinal),
+            }
+        );
+    }
+
+    private static int JsonInt(System.Text.Json.JsonElement body, string prop, int fallback)
+    {
+        return body.TryGetProperty(prop, out var v) && v.TryGetInt32(out var i) ? i : fallback;
+    }
+
+    private static double JsonDouble(System.Text.Json.JsonElement body, string prop, double fallback)
+    {
+        return body.TryGetProperty(prop, out var v) && v.TryGetDouble(out var d) ? d : fallback;
+    }
+
+    private static bool JsonBool(System.Text.Json.JsonElement body, string prop, bool fallback)
+    {
+        return
+            body.TryGetProperty(prop, out var v)
+            && v.ValueKind is System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False
+            ? v.GetBoolean()
+            : fallback;
+    }
+
+    private static string JsonString(System.Text.Json.JsonElement body, string prop, string fallback)
+    {
+        return body.TryGetProperty(prop, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String
+            ? v.GetString() ?? fallback
+            : fallback;
+    }
+
+    private static void PreviewTimeouts(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r,
+        int activeStreams
+    )
+    {
+        var connect = Math.Clamp(JsonInt(body, "connectTimeoutSeconds", config.StreamConnectTimeoutSeconds), 1, 30);
+        var firstByte = Math.Clamp(
+            JsonInt(body, "firstByteTimeoutSeconds", config.StreamFirstByteTimeoutSeconds),
+            1,
+            30
+        );
+        var headers = Math.Clamp(
+            JsonInt(body, "responseHeadersTimeoutSeconds", config.StreamResponseHeadersTimeoutSeconds),
+            5,
+            30
+        );
+        var stall = Math.Clamp(JsonInt(body, "dataStallTimeoutSeconds", config.StreamDataStallTimeoutSeconds), 5, 60);
+        var budget = Math.Clamp(JsonInt(body, "failoverBudgetSeconds", config.FailoverBudgetSeconds), 5, 30);
+        var blacklist = Math.Clamp(JsonInt(body, "providerBlacklistSeconds", config.ProviderBlacklistSeconds), 10, 300);
+        var maxAttempts = Math.Clamp(JsonInt(body, "maxFailoverAttempts", config.MaxFailoverAttempts), 1, 10);
+        var dns = Math.Clamp(JsonInt(body, "dnsTimeoutSeconds", config.DnsTimeoutSeconds), 1, 30);
+        var keepalive = JsonBool(body, "tcpKeepaliveEnabled", config.TcpKeepaliveEnabled);
+
+        AddChange(r, "ConnectTimeoutSeconds", config.StreamConnectTimeoutSeconds, connect);
+        AddChange(r, "FirstByteTimeoutSeconds", config.StreamFirstByteTimeoutSeconds, firstByte);
+        AddChange(r, "ResponseHeadersTimeoutSeconds", config.StreamResponseHeadersTimeoutSeconds, headers);
+        AddChange(r, "DataStallTimeoutSeconds", config.StreamDataStallTimeoutSeconds, stall);
+        AddChange(r, "FailoverBudgetSeconds", config.FailoverBudgetSeconds, budget);
+        AddChange(r, "ProviderBlacklistSeconds", config.ProviderBlacklistSeconds, blacklist);
+        AddChange(r, "MaxFailoverAttempts", config.MaxFailoverAttempts, maxAttempts);
+        AddChange(r, "DnsTimeoutSeconds", config.DnsTimeoutSeconds, dns);
+        AddChange(r, "TcpKeepaliveEnabled", config.TcpKeepaliveEnabled, keepalive);
+
+        if (connect > firstByte)
+        {
+            r.Warnings.Add(
+                "ConnectTimeout exceeds FirstByteTimeout — connections may time out before data is expected"
+            );
+        }
+
+        r.ImpactedStreams = activeStreams;
+        r.RequiresRestart = true;
+    }
+
+    private static void PreviewHealth(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r,
+        int activeStreams
+    )
+    {
+        var p2c = JsonBool(body, "enableP2C", config.EnableP2CLoadBalancing);
+        var outlier = JsonBool(body, "enableOutlierDetection", config.EnableOutlierDetection);
+        var stddev = Math.Clamp(JsonDouble(body, "outlierStddevFactor", config.OutlierStddevFactor), 0.5, 5.0);
+        var probation = Math.Clamp(JsonInt(body, "probationSuccessThreshold", config.ProbationSuccessThreshold), 1, 10);
+
+        AddChange(r, "EnableP2C", config.EnableP2CLoadBalancing, p2c);
+        AddChange(r, "EnableOutlierDetection", config.EnableOutlierDetection, outlier);
+        AddChange(r, "OutlierStddevFactor", config.OutlierStddevFactor, stddev);
+        AddChange(r, "ProbationSuccessThreshold", config.ProbationSuccessThreshold, probation);
+
+        if (!p2c && outlier)
+        {
+            r.Warnings.Add("Outlier detection has limited effect without P2C load balancing");
+        }
+
+        r.ImpactedStreams = activeStreams;
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewBuffer(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r,
+        int activeStreams
+    )
+    {
+        var underrun = Math.Clamp(
+            JsonDouble(body, "underrunThresholdPercent", config.BufferUnderrunThresholdPercent),
+            1,
+            50
+        );
+        var nearFull = Math.Clamp(
+            JsonDouble(body, "nearFullThresholdPercent", config.BufferNearFullThresholdPercent),
+            50,
+            99
+        );
+        var notifThreshold = Math.Clamp(
+            JsonInt(body, "underrunNotificationThreshold", config.BufferUnderrunNotificationThreshold),
+            1,
+            50
+        );
+        var grace = Math.Clamp(
+            JsonInt(body, "consumerDisconnectGraceSeconds", config.ConsumerDisconnectGraceSeconds),
+            1,
+            60
+        );
+
+        AddChange(r, "UnderrunThresholdPercent", config.BufferUnderrunThresholdPercent, underrun);
+        AddChange(r, "NearFullThresholdPercent", config.BufferNearFullThresholdPercent, nearFull);
+        AddChange(r, "UnderrunNotificationThreshold", config.BufferUnderrunNotificationThreshold, notifThreshold);
+        AddChange(r, "ConsumerDisconnectGraceSeconds", config.ConsumerDisconnectGraceSeconds, grace);
+
+        if (underrun >= nearFull)
+        {
+            r.Errors.Add("UnderrunThreshold must be less than NearFullThreshold");
+        }
+
+        r.ImpactedStreams = activeStreams;
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewRateLimiting(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r
+    )
+    {
+        var enabled = JsonBool(body, "enabled", config.EnableRateLimiting);
+        var rps = Math.Clamp(JsonInt(body, "requestsPerSecond", config.RequestsPerSecond), 1, 50);
+        var burst = Math.Clamp(JsonInt(body, "burstSize", config.BurstSize), 1, 100);
+
+        AddChange(r, "Enabled", config.EnableRateLimiting, enabled);
+        AddChange(r, "RequestsPerSecond", config.RequestsPerSecond, rps);
+        AddChange(r, "BurstSize", config.BurstSize, burst);
+
+        if (burst < rps)
+        {
+            r.Warnings.Add("BurstSize is less than RequestsPerSecond — burst may be ineffective");
+        }
+
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewConnectionLimits(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r,
+        int activeStreams
+    )
+    {
+        var enforce = JsonBool(body, "enforceConnectionLimit", config.EnforceConnectionLimit);
+        var maxStreams = Math.Max(0, JsonInt(body, "maxConcurrentStreams", config.MaxConcurrentStreams));
+        var autoKill = JsonBool(body, "autoKillOldestStream", config.AutoKillOldestStream);
+        var filter = JsonBool(body, "filterChannelsByCapacity", config.FilterChannelsByCapacity);
+
+        AddChange(r, "EnforceConnectionLimit", config.EnforceConnectionLimit, enforce);
+        AddChange(r, "MaxConcurrentStreams", config.MaxConcurrentStreams, maxStreams);
+        AddChange(r, "AutoKillOldestStream", config.AutoKillOldestStream, autoKill);
+        AddChange(r, "FilterChannelsByCapacity", config.FilterChannelsByCapacity, filter);
+
+        if (enforce && maxStreams > 0 && activeStreams > maxStreams)
+        {
+            r.Warnings.Add($"Currently {activeStreams} active stream(s) exceed the proposed limit of {maxStreams}");
+        }
+
+        r.ImpactedStreams = enforce && maxStreams > 0 ? Math.Max(0, activeStreams - maxStreams) : 0;
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewHedging(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r,
+        int activeStreams
+    )
+    {
+        var enabled = JsonBool(body, "enabled", config.EnableHedging);
+        var delay = Math.Clamp(JsonInt(body, "delayMs", config.HedgingDelayMs), 50, 2000);
+        var max = Math.Clamp(JsonInt(body, "maxAttempts", config.MaxHedgedAttempts), 1, 5);
+
+        AddChange(r, "Enabled", config.EnableHedging, enabled);
+        AddChange(r, "DelayMs", config.HedgingDelayMs, delay);
+        AddChange(r, "MaxAttempts", config.MaxHedgedAttempts, max);
+
+        if (enabled && delay < 100)
+        {
+            r.Warnings.Add("Very low hedging delay may cause excess bandwidth usage");
+        }
+
+        r.ImpactedStreams = activeStreams;
+        r.RequiresRestart = true;
+    }
+
+    private static void PreviewProxy(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r,
+        int activeStreams
+    )
+    {
+        var enabled = JsonBool(body, "enabled", config.EnableProxy);
+        var address = JsonString(body, "address", config.ProxyAddress);
+        var port = Math.Clamp(JsonInt(body, "port", config.ProxyPort), 1, 65535);
+
+        AddChange(r, "Enabled", config.EnableProxy, enabled);
+        AddChange(r, "Address", config.ProxyAddress, address);
+        AddChange(r, "Port", config.ProxyPort, port);
+
+        if (enabled && string.IsNullOrWhiteSpace(address))
+        {
+            r.Errors.Add("Proxy address is required when proxy is enabled");
+        }
+
+        r.ImpactedStreams = activeStreams;
+        r.RequiresRestart = true;
+    }
+
+    private static void PreviewDiscord(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r
+    )
+    {
+        var enabled = JsonBool(body, "enabled", config.EnableDiscordNotifications);
+        var url = JsonString(body, "webhookUrl", config.DiscordWebhookUrl);
+
+        AddChange(r, "Enabled", config.EnableDiscordNotifications, enabled);
+        AddChange(r, "WebhookUrl", config.DiscordWebhookUrl, url);
+
+        if (enabled && string.IsNullOrWhiteSpace(url))
+        {
+            r.Errors.Add("Webhook URL is required when Discord notifications are enabled");
+        }
+
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewEpg(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r
+    )
+    {
+        var enabled = JsonBool(body, "enableExternalEpg", config.EnableExternalEpg);
+        var url = JsonString(body, "externalEpgUrl", config.ExternalEpgUrl);
+
+        AddChange(r, "EnableExternalEpg", config.EnableExternalEpg, enabled);
+        AddChange(r, "ExternalEpgUrl", config.ExternalEpgUrl, url);
+
+        if (enabled && string.IsNullOrWhiteSpace(url))
+        {
+            r.Errors.Add("External EPG URL is required when external EPG is enabled");
+        }
+
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewUserAgent(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r
+    )
+    {
+        var rotation = JsonBool(body, "enableRotation", config.EnableUserAgentRotation);
+
+        AddChange(r, "EnableRotation", config.EnableUserAgentRotation, rotation);
+
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewVisibility(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r
+    )
+    {
+        var catchup = JsonBool(body, "isCatchupVisible", config.IsCatchupVisible);
+        var series = JsonBool(body, "isSeriesVisible", config.IsSeriesVisible);
+        var vod = JsonBool(body, "isVodVisible", config.IsVodVisible);
+
+        AddChange(r, "IsCatchupVisible", config.IsCatchupVisible, catchup);
+        AddChange(r, "IsSeriesVisible", config.IsSeriesVisible, series);
+        AddChange(r, "IsVodVisible", config.IsVodVisible, vod);
+
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewFailover(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r,
+        int activeStreams
+    )
+    {
+        var merge = JsonBool(body, "mergeDuplicateChannels", config.MergeDuplicateChannels);
+        var failover = JsonBool(body, "enableProviderFailover", config.EnableProviderFailover);
+        var skip = JsonBool(body, "skipUnavailableProviders", config.SkipUnavailableProviders);
+        var interval = Math.Clamp(
+            JsonInt(body, "providerCheckIntervalSeconds", config.ProviderCheckIntervalSeconds),
+            15,
+            300
+        );
+
+        AddChange(r, "MergeDuplicateChannels", config.MergeDuplicateChannels, merge);
+        AddChange(r, "EnableProviderFailover", config.EnableProviderFailover, failover);
+        AddChange(r, "SkipUnavailableProviders", config.SkipUnavailableProviders, skip);
+        AddChange(r, "ProviderCheckIntervalSeconds", config.ProviderCheckIntervalSeconds, interval);
+
+        if (!failover && skip)
+        {
+            r.Warnings.Add("SkipUnavailableProviders has no effect when failover is disabled");
+        }
+
+        r.ImpactedStreams = activeStreams;
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewLogging(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r
+    )
+    {
+        var debug = JsonBool(body, "enableDebugLogging", config.EnableDebugLogging);
+        var maxEntries = Math.Clamp(JsonInt(body, "logViewerMaxEntries", config.LogViewerMaxEntries), 100, 50000);
+
+        AddChange(r, "EnableDebugLogging", config.EnableDebugLogging, debug);
+        AddChange(r, "LogViewerMaxEntries", config.LogViewerMaxEntries, maxEntries);
+
+        if (debug)
+        {
+            r.Warnings.Add("Debug logging increases disk I/O and may impact performance");
+        }
+
+        r.RequiresRestart = false;
+    }
+
+    private static void PreviewStreamProcessing(
+        System.Text.Json.JsonElement body,
+        Configuration.PluginConfiguration config,
+        ConfigPreviewResponse r,
+        int activeStreams
+    )
+    {
+        var remux = JsonBool(body, "forceRemux", config.ForceRemux);
+
+        AddChange(r, "ForceRemux", config.ForceRemux, remux);
+
+        r.ImpactedStreams = activeStreams;
+        r.RequiresRestart = true;
     }
 
     // =========================================================================
@@ -2876,7 +3579,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return NotFound(new { message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         var overrides = provider.LiveTvOverrides.Select(kvp => new
@@ -2913,7 +3622,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return NotFound(new { message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         var applied = 0;
@@ -2956,7 +3671,13 @@ public class XtreamController(
         var provider = GetProvider(providerId);
         if (provider == null)
         {
-            return NotFound(new { message = "Provider not found" });
+            return NotFound(
+                CreateError(
+                    ErrorCodes.ProviderNotFound,
+                    "Provider not found",
+                    "List providers via GET /Xtream/Providers"
+                )
+            );
         }
 
         var count = provider.LiveTvOverrides.Count;
@@ -3011,7 +3732,7 @@ public class XtreamController(
                         supportsSharedMemory = true,
                         supportsHealthTracking = true,
                     },
-                    notifications = new { discord = true, sse = false },
+                    notifications = new { discord = true, sse = true },
                 },
                 configurationSections = ConfigurationSections,
                 streamOperations = StreamOperations,
@@ -3074,6 +3795,100 @@ public class XtreamController(
                     qualityTriggeredSwitches = streams.Sum(s => s.QualitySwitches),
                     totalProviders = streams.Sum(s => s.ProviderCount),
                 },
+            }
+        );
+    }
+
+    // =========================================================================
+    // Server-Sent Events
+    // =========================================================================
+
+    /// <summary>
+    /// Subscribe to real-time plugin events via Server-Sent Events (SSE).
+    /// Supports optional filtering by event type prefix and stream ID.
+    /// Supports Last-Event-ID header for automatic reconnection and replay.
+    /// </summary>
+    /// <param name="typeFilter">Optional event type prefix filter (e.g. "stream", "buffer", "provider").</param>
+    /// <param name="streamId">Optional stream ID to filter events for a specific stream.</param>
+    /// <returns>SSE event stream.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Events/Stream")]
+    [Produces("text/event-stream")]
+    public async Task GetEventStream([FromQuery] string? typeFilter = null, [FromQuery] string? streamId = null)
+    {
+        Response.Headers.Append("Cache-Control", "no-cache");
+        Response.Headers.Append("Connection", "keep-alive");
+        Response.ContentType = "text/event-stream";
+
+        long lastEventId = 0;
+        if (
+            Request.Headers.TryGetValue("Last-Event-ID", out var lastIdHeader)
+            && long.TryParse(lastIdHeader.ToString(), out var parsedId)
+        )
+        {
+            lastEventId = parsedId;
+        }
+
+        var ct = HttpContext.RequestAborted;
+        await foreach (
+            var evt in Service.Events.PluginEventBus.Instance.SubscribeAsync(lastEventId, ct).ConfigureAwait(false)
+        )
+        {
+            if (
+                !string.IsNullOrEmpty(typeFilter)
+                && !evt.Type.StartsWith(typeFilter, StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(streamId) && evt.StreamId != streamId)
+            {
+                continue;
+            }
+
+            var json = System.Text.Json.JsonSerializer.Serialize(
+                new
+                {
+                    evt.Id,
+                    evt.Type,
+                    evt.Timestamp,
+                    evt.StreamId,
+                    evt.Data,
+                }
+            );
+
+            await Response.WriteAsync($"id: {evt.Id}\nevent: {evt.Type}\ndata: {json}\n\n", ct).ConfigureAwait(false);
+            await Response.Body.FlushAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Get recent events from the replay buffer (for agents that don't support SSE).
+    /// </summary>
+    /// <param name="count">Maximum number of events to return (default 50, max 200).</param>
+    /// <param name="typeFilter">Optional event type prefix filter.</param>
+    /// <returns>Recent events, newest last.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Events/Recent")]
+    public ActionResult<object> GetRecentEvents([FromQuery] int count = 50, [FromQuery] string? typeFilter = null)
+    {
+        count = Math.Clamp(count, 1, 200);
+        var events = Service.Events.PluginEventBus.Instance.GetRecentEvents(count);
+
+        IEnumerable<Service.Events.PluginEvent> filtered = events;
+        if (!string.IsNullOrEmpty(typeFilter))
+        {
+            filtered = filtered.Where(e => e.Type.StartsWith(typeFilter, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var items = filtered.ToList();
+        return Ok(
+            new
+            {
+                count = items.Count,
+                subscribers = Service.Events.PluginEventBus.Instance.GetSubscriberCount(),
+                events = items,
             }
         );
     }

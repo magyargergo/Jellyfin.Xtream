@@ -729,6 +729,18 @@ public sealed class CircularBufferReadStream : Stream
                 // Ignore notification failures
             }
         });
+
+        Events.PluginEventBus.Instance.Publish(
+            "buffer.overflow",
+            _streamId,
+            new System.Collections.Generic.Dictionary<string, object>(System.StringComparer.Ordinal)
+            {
+                ["channelName"] = _channelName,
+                ["overflowCount"] = Volatile.Read(ref _overflowCount.Value),
+                ["lostMB"] = lostMB,
+                ["totalLostMB"] = totalLostMB,
+            }
+        );
     }
 
     /// <summary>

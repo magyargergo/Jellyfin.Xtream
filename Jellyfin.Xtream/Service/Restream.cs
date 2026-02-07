@@ -367,6 +367,15 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             _discordService.SendFireAndForget(svc =>
                 svc.NotifyStreamStartAsync(MediaSource.Id, MediaSource.Name ?? "Unknown Channel")
             );
+
+            Events.PluginEventBus.Instance.Publish(
+                "stream.started",
+                MediaSource.Id,
+                new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    ["channelName"] = MediaSource.Name ?? "Unknown Channel",
+                }
+            );
         }
         catch (OperationCanceledException) when (!openCancellationToken.IsCancellationRequested)
         {
@@ -992,6 +1001,18 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     bytesTransferred
                 )
             );
+
+            Events.PluginEventBus.Instance.Publish(
+                "stream.stopped",
+                MediaSource.Id,
+                new Dictionary<string, object>(StringComparer.Ordinal)
+                {
+                    ["channelName"] = MediaSource.Name ?? "Unknown",
+                    ["reason"] = reason,
+                    ["durationSeconds"] = duration.TotalSeconds,
+                    ["bytesTransferred"] = bytesTransferred,
+                }
+            );
         }
         else if (_discordService != null && !streamActuallyStarted)
         {
@@ -1272,8 +1293,16 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     {
         if (_activeStreams.TryGetValue(streamId, out var stream))
         {
-            stream._killReason = reason ?? "Manual termination";
+            var killReason = reason ?? "Manual termination";
+            stream._killReason = killReason;
             stream.Dispose();
+
+            Events.PluginEventBus.Instance.Publish(
+                "stream.killed",
+                streamId,
+                new Dictionary<string, object>(StringComparer.Ordinal) { ["reason"] = killReason }
+            );
+
             return true;
         }
 
