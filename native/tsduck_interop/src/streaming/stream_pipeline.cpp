@@ -282,6 +282,22 @@ void StreamPipeline::init_common(const TsDuckConfigNative* analyzer_config) {
         health_cfg.dns_ejection_duration_ms = config_.dns_ejection_duration_ms;
     }
 
+    // Apply load balancer settings from config
+    health_cfg.load_balancer.enable_p2c = (config_.enable_p2c != 0);
+    health_cfg.load_balancer.enable_outlier_detection = (config_.enable_outlier_detection != 0);
+    if (config_.ewma_decay_seconds > 0) {
+        health_cfg.load_balancer.ewma_decay_ns = static_cast<double>(config_.ewma_decay_seconds) * 1'000'000'000.0;
+    }
+    if (config_.probation_success_threshold > 0) {
+        health_cfg.load_balancer.probation_success_threshold = config_.probation_success_threshold;
+    }
+    if (config_.min_samples_for_outlier > 0) {
+        health_cfg.load_balancer.min_samples_for_outlier = config_.min_samples_for_outlier;
+    }
+    if (config_.outlier_stddev_factor > 0.0) {
+        health_cfg.load_balancer.outlier_stddev_factor = config_.outlier_stddev_factor;
+    }
+
     health_manager_ = std::make_unique<UnifiedProviderHealthManager>(health_cfg);
     source_.set_health_manager(health_manager_.get());
 

@@ -187,4 +187,40 @@ public sealed class TimeoutConfigRequest
     /// Gets or sets the maximum number of failover attempts.
     /// </summary>
     public int MaxFailoverAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// Gets or sets the DNS query timeout in seconds (1-30).
+    /// </summary>
+    public int DnsTimeoutSeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether TCP keepalive is enabled.
+    /// </summary>
+    public bool TcpKeepaliveEnabled { get; set; } = true;
+}
+
+/// <summary>
+/// Request model for health and load balancer configuration.
+/// </summary>
+public sealed class HealthConfigRequest
+{
+    /// <summary>
+    /// Gets or sets a value indicating whether P2C load balancing is enabled.
+    /// </summary>
+    public bool EnableP2C { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether outlier detection is enabled.
+    /// </summary>
+    public bool EnableOutlierDetection { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the outlier detection standard deviation factor (0.5-5.0).
+    /// </summary>
+    public double OutlierStddevFactor { get; set; } = 1.9;
+
+    /// <summary>
+    /// Gets or sets the probation success threshold (1-10).
+    /// </summary>
+    public int ProbationSuccessThreshold { get; set; } = 3;
 }

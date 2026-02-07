@@ -703,6 +703,22 @@ TSDUCK_API TsDuckStreamerHandle tsduck_streamer_create(
             if (config->dns_ejection_duration_ms > 0) {
                 cfg.dns_ejection_duration_ms = config->dns_ejection_duration_ms;
             }
+
+            // Load balancer settings
+            cfg.enable_p2c = config->enable_p2c;
+            cfg.enable_outlier_detection = config->enable_outlier_detection;
+            if (config->ewma_decay_seconds > 0) {
+                cfg.ewma_decay_seconds = config->ewma_decay_seconds;
+            }
+            if (config->probation_success_threshold > 0) {
+                cfg.probation_success_threshold = config->probation_success_threshold;
+            }
+            if (config->min_samples_for_outlier > 0) {
+                cfg.min_samples_for_outlier = config->min_samples_for_outlier;
+            }
+            if (config->outlier_stddev_factor > 0.0) {
+                cfg.outlier_stddev_factor = config->outlier_stddev_factor;
+            }
         }
 
         LOG_DEBUG(kStreamer, "config: enable_quality_switch=%d, stalls_before_switch=%d, dns_retry_count=%d, dns_ejection_duration_ms=%lld",

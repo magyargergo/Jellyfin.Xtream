@@ -898,6 +898,15 @@ typedef struct {
     // DNS failure settings
     int32_t dns_retry_count;            // DNS failures before ejection (default: 3)
     int64_t dns_ejection_duration_ms;   // Duration of DNS-based ejection (default: 300000 = 5 minutes)
+
+    // Load balancer settings (P2C, EWMA, outlier detection)
+    int32_t enable_p2c;                 // 1 = P2C selection, 0 = round-robin (default: 1)
+    int32_t enable_outlier_detection;   // 1 = statistical outlier ejection (default: 1)
+    int32_t ewma_decay_seconds;         // EWMA latency decay time in seconds (default: 10)
+    int32_t probation_success_threshold; // Successes before leaving probation (default: 3)
+    int32_t min_samples_for_outlier;    // Minimum samples before outlier detection (default: 10)
+    int32_t reserved_lb;                // Padding for alignment
+    double outlier_stddev_factor;       // Std deviation factor for outlier ejection (default: 1.9)
 } TsDuckStreamerConfigNative;
 
 // Streamer status snapshot (blittable)

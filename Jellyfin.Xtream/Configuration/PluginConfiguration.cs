@@ -515,6 +515,71 @@ public class PluginConfiguration : BasePluginConfiguration
     public int MaxHedgedAttempts { get; set; } = 2;
 
     // ============================================================================
+    // Advanced Health / Load Balancer Configuration
+    // ============================================================================
+
+    /// <summary>
+    /// Gets or sets a value indicating whether P2C (Power of Two Choices) load balancing is enabled.
+    /// </summary>
+    /// <remarks>
+    /// When enabled, the native streamer picks two random providers and selects the one
+    /// with lower cost (latency * active requests). When disabled, falls back to round-robin.
+    /// Default: true.
+    /// </remarks>
+    public bool EnableP2CLoadBalancing { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether statistical outlier detection is enabled.
+    /// </summary>
+    /// <remarks>
+    /// When enabled, providers with success rates significantly below the group mean
+    /// (using standard deviation analysis) are temporarily ejected. Based on Envoy's
+    /// outlier detection algorithm.
+    /// Default: true.
+    /// </remarks>
+    public bool EnableOutlierDetection { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the outlier detection standard deviation factor (0.5-5.0).
+    /// </summary>
+    /// <remarks>
+    /// Controls how aggressively outlier detection ejects underperforming providers.
+    /// Lower values are more aggressive (eject sooner). The Envoy default is 1.9.
+    /// Default: 1.9.
+    /// </remarks>
+    public double OutlierStddevFactor { get; set; } = 1.9;
+
+    /// <summary>
+    /// Gets or sets the number of successful requests required before a provider
+    /// transitions from Probation to Active state (1-10).
+    /// </summary>
+    /// <remarks>
+    /// After a provider recovers from ejection, it enters probation. This many
+    /// consecutive successful requests must complete before full recovery.
+    /// Default: 3.
+    /// </remarks>
+    public int ProbationSuccessThreshold { get; set; } = 3;
+
+    /// <summary>
+    /// Gets or sets the DNS query timeout in seconds (1-30).
+    /// </summary>
+    /// <remarks>
+    /// Maximum time to wait for DNS resolution. This is separate from the TCP connection timeout.
+    /// Default: 5 seconds.
+    /// </remarks>
+    public int DnsTimeoutSeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether TCP keepalive is enabled for streaming connections.
+    /// </summary>
+    /// <remarks>
+    /// TCP keepalive probes detect silently dropped connections at the OS level.
+    /// Recommended for IPTV streaming over NAT or firewalled networks.
+    /// Default: true.
+    /// </remarks>
+    public bool TcpKeepaliveEnabled { get; set; } = true;
+
+    // ============================================================================
     // Stream Processing Configuration
     // ============================================================================
 

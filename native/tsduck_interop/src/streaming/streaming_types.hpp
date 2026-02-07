@@ -132,6 +132,15 @@ struct StreamerConfig {
     // which uses provider-indexed tracking. This field is kept for backward compatibility.
     int32_t dns_retry_count = 3;          // Retries before force ejection (deprecated, use health manager config)
     int64_t dns_ejection_duration_ms = 300000;  // Duration of DNS-based ejection (default: 5 minutes)
+
+    // Load balancer settings (P2C, EWMA, outlier detection)
+    int32_t enable_p2c = 1;                     // 1 = P2C selection, 0 = round-robin
+    int32_t enable_outlier_detection = 1;       // 1 = statistical outlier ejection
+    int32_t ewma_decay_seconds = 10;            // EWMA latency decay time (seconds)
+    int32_t probation_success_threshold = 3;    // Successes before leaving probation
+    int32_t min_samples_for_outlier = 10;       // Minimum samples for outlier detection
+    int32_t reserved_lb = 0;                    // Padding for alignment
+    double outlier_stddev_factor = 1.9;         // Std deviation factor for outlier ejection (Envoy default)
 };
 
 // ============================================================================

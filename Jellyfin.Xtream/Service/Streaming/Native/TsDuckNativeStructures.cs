@@ -459,6 +459,15 @@ internal struct TsDuckStreamerConfigNative
     public int DnsRetryCount;
     public long DnsEjectionDurationMs;
 
+    // Load balancer settings (P2C, EWMA, outlier detection)
+    public int EnableP2C;
+    public int EnableOutlierDetection;
+    public int EwmaDecaySeconds;
+    public int ProbationSuccessThreshold;
+    public int MinSamplesForOutlier;
+    public int ReservedLb;
+    public double OutlierStddevFactor;
+
     /// <summary>
     /// Creates a default configuration with industry-standard timeout values.
     /// </summary>
@@ -506,6 +515,13 @@ internal struct TsDuckStreamerConfigNative
             CircuitBreakerLongWindowErrorPercent = 5,
             DnsRetryCount = 3,
             DnsEjectionDurationMs = 300000, // 5 minutes
+            EnableP2C = 1,
+            EnableOutlierDetection = 1,
+            EwmaDecaySeconds = 10,
+            ProbationSuccessThreshold = 3,
+            MinSamplesForOutlier = 10,
+            ReservedLb = 0,
+            OutlierStddevFactor = 1.9,
         };
 }
 

@@ -465,6 +465,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 _nativeStreamer.AddUrlWithScore(url, healthScore);
             }
 
+            // Apply network configuration (DNS, TCP keepalive, timeouts) from plugin settings
+            var networkConfig = BuildNetworkConfig();
+            if (networkConfig != null)
+            {
+                _nativeStreamer.SetNetworkConfig(networkConfig);
+            }
+
             // Configure shared memory output (replaces callback-based data transfer)
             // Slot count 2048 for ~2.5MB buffer, slot size 1316 (7 TS packets)
             _nativeStreamer.SetSharedMemoryOutput(_sharedMemoryName, slotCount: 2048, slotSize: 1316);
@@ -528,7 +535,37 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         streamerConfig.MaxRetries = pluginConfig.MaxFailoverAttempts;
         streamerConfig.QuarantineDurationMs = pluginConfig.ProviderBlacklistSeconds * 1000;
 
+        // Map load balancer settings
+        streamerConfig.EnableP2C = pluginConfig.EnableP2CLoadBalancing ? 1 : 0;
+        streamerConfig.EnableOutlierDetection = pluginConfig.EnableOutlierDetection ? 1 : 0;
+        streamerConfig.OutlierStddevFactor = pluginConfig.OutlierStddevFactor;
+        streamerConfig.ProbationSuccessThreshold = pluginConfig.ProbationSuccessThreshold;
+
         return streamerConfig;
+    }
+
+    /// <summary>
+    /// Builds a <see cref="NetworkConfig"/> from the plugin configuration,
+    /// mapping user-configured network and timeout settings to the native network layer.
+    /// </summary>
+    /// <returns>A configured network configuration, or null if plugin is unavailable.</returns>
+    private static NetworkConfig? BuildNetworkConfig()
+    {
+        var pluginConfig = GetPluginConfiguration();
+        if (pluginConfig == null)
+        {
+            return null;
+        }
+
+        var networkConfig = new NetworkConfig
+        {
+            TcpConnectTimeoutMs = pluginConfig.StreamConnectTimeoutSeconds * 1000,
+            FirstByteTimeoutMs = pluginConfig.StreamFirstByteTimeoutSeconds * 1000,
+            DnsTimeoutMs = pluginConfig.DnsTimeoutSeconds * 1000,
+            TcpKeepaliveEnabled = pluginConfig.TcpKeepaliveEnabled,
+        };
+
+        return networkConfig;
     }
 
     /// <summary>

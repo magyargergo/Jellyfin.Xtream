@@ -2113,9 +2113,51 @@ public class XtreamController(
         config.FailoverBudgetSeconds = Math.Clamp(request.FailoverBudgetSeconds, 5, 30);
         config.ProviderBlacklistSeconds = Math.Clamp(request.ProviderBlacklistSeconds, 10, 300);
         config.MaxFailoverAttempts = Math.Clamp(request.MaxFailoverAttempts, 1, 10);
+        config.DnsTimeoutSeconds = Math.Clamp(request.DnsTimeoutSeconds, 1, 30);
+        config.TcpKeepaliveEnabled = request.TcpKeepaliveEnabled;
 
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Timeout configuration updated via API");
         return Ok(new { success = true, message = "Timeout configuration updated" });
+    }
+
+    /// <summary>
+    /// Get health and load balancer configuration.
+    /// </summary>
+    /// <returns>The current health configuration.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Health")]
+    public ActionResult<object> GetHealthConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                enableP2C = config.EnableP2CLoadBalancing,
+                enableOutlierDetection = config.EnableOutlierDetection,
+                outlierStddevFactor = config.OutlierStddevFactor,
+                probationSuccessThreshold = config.ProbationSuccessThreshold,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update health and load balancer configuration.
+    /// </summary>
+    /// <param name="request">Health settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Health")]
+    public ActionResult<object> UpdateHealthConfig([FromBody] HealthConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.EnableP2CLoadBalancing = request.EnableP2C;
+        config.EnableOutlierDetection = request.EnableOutlierDetection;
+        config.OutlierStddevFactor = Math.Clamp(request.OutlierStddevFactor, 0.5, 5.0);
+        config.ProbationSuccessThreshold = Math.Clamp(request.ProbationSuccessThreshold, 1, 10);
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Health configuration updated via API");
+        return Ok(new { success = true, message = "Health configuration updated" });
     }
 }
