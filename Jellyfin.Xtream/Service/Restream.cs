@@ -212,6 +212,75 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
     private readonly IReadOnlyList<double>? _initialScores;
 
+    // Registry-based streaming (Phase 4: single source of truth)
+    private readonly NativeChannelRegistry? _registry;
+    private readonly Guid _channelGuid;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="Restream"/> class using a native channel registry.
+    /// The registry provides URL lookup, health-based provider selection, and failover.
+    /// </summary>
+    /// <param name="appHost">Instance of the <see cref="IServerApplicationHost"/> interface.</param>
+    /// <param name="logger">Instance of the <see cref="ILogger{Restream}"/> interface.</param>
+    /// <param name="loggerFactory">Instance of the <see cref="ILoggerFactory"/> interface.</param>
+    /// <param name="mediaSource">The media which must be restreamed.</param>
+    /// <param name="registry">The native channel registry (must be built).</param>
+    /// <param name="channelGuid">The channel GUID to stream.</param>
+    /// <param name="discordService">Optional Discord notification service.</param>
+    /// <param name="streamOpenTimeoutMs">Maximum time for stream connection (default 15000ms).</param>
+    /// <param name="firstByteTimeoutMs">Maximum time to wait for first data (default 15000ms).</param>
+    public Restream(
+        IServerApplicationHost appHost,
+        ILogger<Restream> logger,
+        ILoggerFactory loggerFactory,
+        MediaSourceInfo mediaSource,
+        NativeChannelRegistry registry,
+        Guid channelGuid,
+        IDiscordNotificationService? discordService = null,
+        int streamOpenTimeoutMs = DefaultStreamOpenTimeoutMs,
+        int firstByteTimeoutMs = DefaultFirstByteTimeoutMs
+    )
+    {
+        _logger = logger;
+        _loggerFactory = loggerFactory;
+        _discordService = discordService;
+        _registry = registry;
+        _channelGuid = channelGuid;
+        _urls = [];
+        MediaSource = mediaSource;
+        _streamOpenTimeoutMs = streamOpenTimeoutMs;
+        _firstByteTimeoutMs = firstByteTimeoutMs;
+        _tokenSource = new CancellationTokenSource();
+        _streamQuality = DetectStreamQuality(mediaSource);
+        var bufferSize = GetBufferSize(_streamQuality);
+
+        _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory);
+
+        var pluginConfig = GetPluginConfiguration();
+        _bufferUnderrunThresholdPercent = pluginConfig?.BufferUnderrunThresholdPercent ?? 10.0;
+        _bufferNearFullThresholdPercent = pluginConfig?.BufferNearFullThresholdPercent ?? 90.0;
+        _bufferUnderrunNotificationThreshold = pluginConfig?.BufferUnderrunNotificationThreshold ?? 5;
+        _consumerDisconnectGraceSeconds = pluginConfig?.ConsumerDisconnectGraceSeconds ?? 5;
+
+        _logger.PluginLogInformation(
+            "Initialized registry-based stream for {StreamId} ({Quality}, GUID: {Guid}) with {BufferSizeMB}MB buffer",
+            mediaSource.Id,
+            _streamQuality,
+            channelGuid,
+            (double)bufferSize / 1048576.0
+        );
+        OriginalStreamId = MediaSource.Id;
+        UniqueId = Guid.NewGuid().ToString();
+        _sharedMemoryName = $"jellyfin_stream_{UniqueId.Replace("-", string.Empty, StringComparison.Ordinal)}";
+        _sourceUrl = $"registry:{channelGuid}";
+        var path = "/LiveTv/LiveStreamFiles/" + UniqueId + "/stream.ts";
+        MediaSource.Path = appHost.GetSmartApiUrl(IPAddress.Any) + path;
+        MediaSource.EncoderPath = appHost.GetApiUrlForLocalAccess() + path;
+        MediaSource.Protocol = MediaProtocol.Http;
+        _readerPool = new RefCountedResourcePool<CircularBufferReadStream>(CreateReaderStream, OnConsumerCountChanged);
+        _ = _activeStreams.TryAdd(MediaSource.Id, this);
+    }
+
     /// <summary>
     /// Finalizes an instance of the <see cref="Restream"/> class.
     /// Ensures cleanup of static dictionary entry if Dispose() is not called.
@@ -464,14 +533,23 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         try
         {
-            // Add all URLs with initial health scores
-            // C++ handles ongoing health tracking and URL selection
-            for (int i = 0; i < _urls.Count; i++)
+            // Registry-based path: C++ uses registry for URL lookup + health-based provider selection
+            if (_registry != null)
             {
-                var url = _urls[i];
-                var healthScore = _initialScores != null && i < _initialScores.Count ? _initialScores[i] : 50.0; // Neutral score for unknown providers
+                _nativeStreamer.SetRegistry(_registry);
+                _nativeStreamer.SetChannelGuid(_channelGuid);
+            }
+            else
+            {
+                // Legacy path: Add all URLs with initial health scores
+                // C++ handles ongoing health tracking and URL selection
+                for (int i = 0; i < _urls.Count; i++)
+                {
+                    var url = _urls[i];
+                    var healthScore = _initialScores != null && i < _initialScores.Count ? _initialScores[i] : 50.0; // Neutral score for unknown providers
 
-                _nativeStreamer.AddUrlWithScore(url, healthScore);
+                    _nativeStreamer.AddUrlWithScore(url, healthScore);
+                }
             }
 
             // Apply network configuration (DNS, TCP keepalive, timeouts) from plugin settings

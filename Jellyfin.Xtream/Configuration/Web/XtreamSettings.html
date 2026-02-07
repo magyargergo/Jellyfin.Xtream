@@ -1,0 +1,591 @@
+<div id="XtreamSettingsPage" data-role="page" class="page type-interior pluginConfigurationPage withTabs"
+  data-require="emby-input,emby-button,emby-select,emby-checkbox" data-controller="__plugin/XtreamSettings.js">
+  <div data-role="content">
+    <div class="content-primary">
+      <form id="XtreamSettingsForm">
+
+        <!-- ===== TIER 1: Essential (always visible) ===== -->
+        <div class="settings-tier">
+          <div class="settings-tier-label">Essential</div>
+
+          <!-- Stream Processing -->
+          <div class="settings-section">
+            <div class="settings-section-header" data-section="processing">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons" style="color: #9c27b0;">video_settings</span>
+                <h3 class="settings-section-title">Stream Processing</h3>
+              </div>
+              <span class="material-icons">expand_more</span>
+            </div>
+            <div class="settings-section-content" data-section="processing">
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="ForceRemux" />
+                  <span>Force FFmpeg Remuxing</span>
+                </label>
+                <div class="fieldDescription">
+                  <strong>Recommended: ON</strong>. Remux live streams through FFmpeg (codec copy, minimal CPU).
+                  Fixes audio desync, H.264 decoder errors, and discontinuity handling after provider switching.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Content Visibility -->
+          <div class="settings-section">
+            <div class="settings-section-header" data-section="visibility">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons" style="color: #607d8b;">visibility</span>
+                <h3 class="settings-section-title">Content Visibility</h3>
+              </div>
+              <span class="material-icons">expand_more</span>
+            </div>
+            <div class="settings-section-content" data-section="visibility">
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="IsCatchupVisible" />
+                  <span>Show Catch-up Content</span>
+                </label>
+              </div>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="IsSeriesVisible" />
+                  <span>Show Series</span>
+                </label>
+              </div>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="IsVodVisible" />
+                  <span>Show Video On-Demand</span>
+                </label>
+              </div>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="IsTmdbVodOverride" />
+                  <span>Use TMDB Metadata for VOD</span>
+                </label>
+                <div class="fieldDescription">
+                  Override VOD metadata with data from The Movie Database (TMDB).
+                </div>
+              </div>
+              <div style="margin-top: 12px;">
+                <button is="emby-button" type="button" class="raised emby-button preview-btn" data-section="Visibility">
+                  <span class="material-icons" style="margin-right: 6px;">preview</span>
+                  <span>Preview Changes</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== TIER 2: Common (collapsed, visually prominent) ===== -->
+        <div class="settings-tier">
+          <div class="settings-tier-label">Common</div>
+
+          <!-- External EPG -->
+          <div class="settings-section">
+            <div class="settings-section-header" data-section="epg">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons" style="color: #4caf50;">event_note</span>
+                <h3 class="settings-section-title">External EPG</h3>
+              </div>
+              <span class="material-icons">expand_more</span>
+            </div>
+            <div class="settings-section-content" data-section="epg" style="display: none;">
+              <p class="fieldDescription" style="margin-top: 0;">
+                Use external XMLTV sources for EPG data and channel logos.
+                For Polish channels, <a href="https://epg.ovh" target="_blank">epg.ovh</a> provides free EPG and logos.
+              </p>
+
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableExternalEpg" />
+                  <span>Enable External EPG</span>
+                </label>
+                <div class="fieldDescription">
+                  Fetch EPG data from external XMLTV sources as fallback.
+                </div>
+              </div>
+
+              <div id="ExternalEpgSettings" class="toggle-content">
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="ExternalEpgUrl">External XMLTV URL</label>
+                  <input id="ExternalEpgUrl" type="text" is="emby-input" placeholder="https://epg.ovh/pl.xml" />
+                  <div class="fieldDescription">
+                    Examples: <strong>PL:</strong> epg.ovh/pl.xml | <strong>UK:</strong> epg.ovh/uk.xml | <strong>DE:</strong> epg.ovh/de.xml
+                  </div>
+                </div>
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="ExternalEpgLogoBaseUrl">Logo Base URL (Optional)</label>
+                  <input id="ExternalEpgLogoBaseUrl" type="text" is="emby-input" placeholder="https://epg.ovh/logo/" />
+                </div>
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                  <label>
+                    <input is="emby-checkbox" type="checkbox" id="UseExternalLogoFallback" />
+                    <span>Use External Logos as Fallback</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Embedded EPG Test Tool -->
+              <div class="settings-section" style="margin-top: 16px;">
+                <div class="settings-section-header" data-section="epgtest">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="material-icons" style="color: #00a4dc;">science</span>
+                    <h3 class="settings-section-title" style="font-size: 14px;">EPG Test Tool</h3>
+                  </div>
+                  <span class="material-icons">expand_more</span>
+                </div>
+                <div class="settings-section-content" data-section="epgtest" style="display: none;">
+                  <!-- Provider Status -->
+                  <div class="info-card" id="ProviderStatusCard" style="background: rgba(0, 164, 220, 0.08); border-left: 3px solid #00a4dc; margin-bottom: 16px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="material-icons" style="color: #00a4dc;">dvr</span>
+                        <span id="EpgProviderName" style="font-weight: 500;">Loading...</span>
+                      </div>
+                      <span id="EpgProviderStatus" class="status-badge loading">
+                        <span class="material-icons" style="font-size: 14px;">sync</span>
+                        <span>Checking...</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="selectContainer" style="margin-bottom: 12px;">
+                    <label class="inputLabel inputLabelUnfocused" for="EpgChannelSelect">Select Channel</label>
+                    <select is="emby-select" id="EpgChannelSelect">
+                      <option value="">-- Select a channel --</option>
+                    </select>
+                  </div>
+
+                  <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;">
+                    <button is="emby-button" id="LoadEpgBtn" type="button" class="raised button-submit emby-button" disabled>
+                      <span class="material-icons" style="margin-right: 8px;">event_note</span>
+                      <span>Load EPG Data</span>
+                    </button>
+                    <button is="emby-button" id="RefreshAllEpgBtn" type="button" class="raised emby-button">
+                      <span class="material-icons" style="margin-right: 8px;">refresh</span>
+                      <span>Refresh All EPG</span>
+                    </button>
+                  </div>
+
+                  <div id="EpgRefreshStatus" class="copy-result-message hide"></div>
+
+                  <div id="EpgResults" class="hide">
+                    <div id="EpgSummary" class="epg-summary-card">
+                      <div class="summary-title" id="EpgResultsTitle">Program Schedule</div>
+                      <div class="summary-stats">
+                        <div class="summary-stat">
+                          <span class="material-icons">event</span>
+                          <span id="EpgProgramCount">0 programs</span>
+                        </div>
+                        <div class="summary-stat">
+                          <span class="material-icons">tv</span>
+                          <span id="EpgProviderInfo">-</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div id="EpgTimeline" style="max-height: 500px; overflow-y: auto;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== TIER 3: Advanced (collapsed) ===== -->
+        <div class="settings-tier">
+          <div class="settings-tier-label">Advanced <span class="settings-tier-hint">Most users can skip this</span></div>
+
+          <!-- Streaming Timeouts -->
+          <div class="settings-section">
+            <div class="settings-section-header" data-section="timeouts">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons" style="color: #ff5722;">timer</span>
+                <h3 class="settings-section-title">Streaming Timeouts</h3>
+              </div>
+              <span class="material-icons">expand_more</span>
+            </div>
+            <div class="settings-section-content" data-section="timeouts" style="display: none;">
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="StreamConnectTimeoutSeconds">Connection Timeout (seconds)</label>
+                <input id="StreamConnectTimeoutSeconds" type="number" min="1" max="30" is="emby-input" placeholder="5" />
+                <div class="fieldDescription">Time to establish TCP connection. <strong>Default: 5</strong></div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="StreamFirstByteTimeoutSeconds">First Byte Timeout (seconds)</label>
+                <input id="StreamFirstByteTimeoutSeconds" type="number" min="1" max="30" is="emby-input" placeholder="5" />
+                <div class="fieldDescription">Time to receive first data after connection. <strong>Default: 5</strong></div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="StreamDataStallTimeoutSeconds">Data Stall Timeout (seconds)</label>
+                <input id="StreamDataStallTimeoutSeconds" type="number" min="5" max="60" is="emby-input" placeholder="10" />
+                <div class="fieldDescription">Time without data before reconnecting. <strong>Default: 10</strong></div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="FailoverBudgetSeconds">Failover Budget (seconds)</label>
+                <input id="FailoverBudgetSeconds" type="number" min="3" max="30" is="emby-input" placeholder="15" />
+                <div class="fieldDescription">Total time to try all providers before showing error. <strong>Default: 15</strong></div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="ProviderBlacklistSeconds">Provider Blacklist Duration (seconds)</label>
+                <input id="ProviderBlacklistSeconds" type="number" min="10" max="300" is="emby-input" placeholder="30" />
+                <div class="fieldDescription">Time a failing provider is skipped. <strong>Default: 30</strong></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Failover & Resilience -->
+          <div class="settings-section">
+            <div class="settings-section-header" data-section="failover">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons" style="color: #e91e63;">swap_horiz</span>
+                <h3 class="settings-section-title">Failover &amp; Resilience</h3>
+              </div>
+              <span class="material-icons">expand_more</span>
+            </div>
+            <div class="settings-section-content" data-section="failover" style="display: none;">
+              <!-- Provider Failover -->
+              <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Provider Failover</h4>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableProviderFailover" />
+                  <span>Enable Provider Failover</span>
+                </label>
+                <div class="fieldDescription">Automatically switch to another provider when the current one fails.</div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="MaxFailoverAttempts">Max Failover Attempts</label>
+                <input id="MaxFailoverAttempts" type="number" min="1" max="10" is="emby-input" placeholder="3" />
+                <div class="fieldDescription">Maximum providers to try before giving up. <strong>Default: 3</strong></div>
+              </div>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="MergeDuplicateChannels" />
+                  <span>Merge Duplicate Channels</span>
+                </label>
+                <div class="fieldDescription">Combine identical channels from different providers for redundancy.</div>
+              </div>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="SkipUnavailableProviders" />
+                  <span>Skip Unavailable Providers</span>
+                </label>
+                <div class="fieldDescription">Skip offline or blacklisted providers during failover.</div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="ProviderCheckIntervalSeconds">Provider Check Interval (seconds)</label>
+                <input id="ProviderCheckIntervalSeconds" type="number" min="10" max="600" is="emby-input" placeholder="60" />
+                <div class="fieldDescription">How often to check provider availability. <strong>Default: 60</strong></div>
+              </div>
+
+              <!-- Health & Load Balancing -->
+              <h4 style="margin: 16px 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Health &amp; Load Balancing</h4>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableP2CLoadBalancing" />
+                  <span>Enable P2C Load Balancing</span>
+                </label>
+                <div class="fieldDescription">Power-of-Two-Choices algorithm for healthiest provider selection.</div>
+              </div>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableOutlierDetection" />
+                  <span>Enable Outlier Detection</span>
+                </label>
+                <div class="fieldDescription">Deprioritize providers performing significantly worse than peers.</div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="OutlierStddevFactor">Outlier Std Dev Factor</label>
+                <input id="OutlierStddevFactor" type="number" min="0.5" max="5" step="0.1" is="emby-input" placeholder="1.9" />
+                <div class="fieldDescription">Standard deviations before outlier classification. <strong>Default: 1.9</strong></div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="ProbationSuccessThreshold">Probation Success Threshold</label>
+                <input id="ProbationSuccessThreshold" type="number" min="1" max="10" is="emby-input" placeholder="3" />
+                <div class="fieldDescription">Consecutive successes to exit probation. <strong>Default: 3</strong></div>
+              </div>
+
+              <!-- Hedging -->
+              <h4 style="margin: 16px 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Request Hedging</h4>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableHedging" />
+                  <span>Enable Request Hedging</span>
+                </label>
+                <div class="fieldDescription">Send backup requests to additional providers if primary is slow.</div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="HedgingDelayMs">Hedge Delay (ms)</label>
+                <input id="HedgingDelayMs" type="number" min="50" max="5000" is="emby-input" placeholder="200" />
+                <div class="fieldDescription">Milliseconds before sending hedge request. <strong>Default: 200</strong></div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="MaxHedgedAttempts">Max Hedged Attempts</label>
+                <input id="MaxHedgedAttempts" type="number" min="1" max="5" is="emby-input" placeholder="2" />
+                <div class="fieldDescription">Maximum concurrent hedge requests. <strong>Default: 2</strong></div>
+              </div>
+
+              <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+                <button is="emby-button" type="button" class="raised emby-button preview-btn" data-section="Failover">
+                  <span class="material-icons" style="margin-right: 6px;">preview</span>
+                  <span>Preview Failover</span>
+                </button>
+                <button is="emby-button" type="button" class="raised emby-button preview-btn" data-section="Health">
+                  <span class="material-icons" style="margin-right: 6px;">preview</span>
+                  <span>Preview Health</span>
+                </button>
+                <button is="emby-button" type="button" class="raised emby-button preview-btn" data-section="Hedging">
+                  <span class="material-icons" style="margin-right: 6px;">preview</span>
+                  <span>Preview Hedging</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Network -->
+          <div class="settings-section">
+            <div class="settings-section-header" data-section="network">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons" style="color: #00a4dc;">network_check</span>
+                <h3 class="settings-section-title">Network</h3>
+              </div>
+              <span class="material-icons">expand_more</span>
+            </div>
+            <div class="settings-section-content" data-section="network" style="display: none;">
+              <!-- Proxy -->
+              <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Proxy</h4>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableProxy" />
+                  <span>Enable Proxy</span>
+                </label>
+                <div class="fieldDescription">Supports HTTP, SOCKS4, SOCKS4a, and SOCKS5.</div>
+              </div>
+              <div id="ProxySettings" class="toggle-content">
+                <div class="selectContainer">
+                  <label class="selectLabel" for="ProxyType">Proxy Type</label>
+                  <select is="emby-select" id="ProxyType">
+                    <option value="0">HTTP</option>
+                    <option value="1">SOCKS4</option>
+                    <option value="2">SOCKS4a</option>
+                    <option value="3">SOCKS5</option>
+                  </select>
+                </div>
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="ProxyAddress">Proxy Address</label>
+                  <input id="ProxyAddress" type="text" is="emby-input" placeholder="proxy.example.com" />
+                  <div class="fieldDescription">Hostname or IP. <strong>No protocol or port.</strong></div>
+                </div>
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="ProxyPort">Proxy Port</label>
+                  <input id="ProxyPort" type="number" min="1" max="65535" is="emby-input" placeholder="8080" />
+                </div>
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="ProxyUsername">Proxy Username (Optional)</label>
+                  <input id="ProxyUsername" type="text" is="emby-input" />
+                </div>
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="ProxyPassword">Proxy Password (Optional)</label>
+                  <input id="ProxyPassword" type="password" is="emby-input" />
+                </div>
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                  <label>
+                    <input is="emby-checkbox" type="checkbox" id="ProxyBypassLocal" />
+                    <span>Bypass Proxy for Local Addresses</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- User-Agent -->
+              <h4 style="margin: 16px 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">User-Agent</h4>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableUserAgentRotation" />
+                  <span>Enable User-Agent Rotation</span>
+                </label>
+                <div class="fieldDescription">Rotate through browser User-Agents to avoid WAF blocking.</div>
+              </div>
+              <div id="UserAgentRotationSettings" class="toggle-content">
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                  <label>
+                    <input is="emby-checkbox" type="checkbox" id="UseRandomUserAgent" />
+                    <span>Random Selection (vs Sequential)</span>
+                  </label>
+                </div>
+              </div>
+              <div class="inputContainer" style="margin-top: 12px;">
+                <label class="inputLabel inputLabelUnfocused" for="CustomUserAgent">Custom User-Agent (Optional)</label>
+                <input id="CustomUserAgent" type="text" is="emby-input" placeholder="Mozilla/5.0..." />
+                <div class="fieldDescription"><strong>Overrides rotation if set.</strong></div>
+              </div>
+
+              <!-- Rate Limiting -->
+              <h4 style="margin: 16px 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Rate Limiting</h4>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableRateLimiting" />
+                  <span>Enable Request Throttling</span>
+                </label>
+                <div class="fieldDescription">Limit requests per second to avoid WAF/DDoS protection.</div>
+              </div>
+              <div id="RateLimitingSettings" class="toggle-content">
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="RequestsPerSecond">Max Requests Per Second</label>
+                  <input id="RequestsPerSecond" type="number" min="1" max="100" is="emby-input" />
+                  <div class="fieldDescription">Recommended: 3-5 for aggressive WAFs, 10-20 for normal providers.</div>
+                </div>
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="BurstSize">Burst Size</label>
+                  <input id="BurstSize" type="number" min="1" max="1000" is="emby-input" />
+                </div>
+              </div>
+
+              <!-- Connection Limits -->
+              <h4 style="margin: 16px 0 12px 0; font-size: 14px; font-weight: 500; color: #aaa;">Connection Limits</h4>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnforceConnectionLimit" />
+                  <span>Enforce Connection Limit</span>
+                </label>
+                <div class="fieldDescription">Manage concurrent streams to avoid exceeding provider limits.</div>
+              </div>
+              <div id="ConnectionLimitSettings" class="toggle-content">
+                <div class="inputContainer">
+                  <label class="inputLabel inputLabelUnfocused" for="MaxConcurrentStreams">Max Concurrent Streams</label>
+                  <input id="MaxConcurrentStreams" type="number" min="0" max="10" is="emby-input" />
+                  <div class="fieldDescription"><strong>0 = auto-detect from provider.</strong></div>
+                </div>
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                  <label>
+                    <input is="emby-checkbox" type="checkbox" id="AutoKillOldestStream" />
+                    <span>Auto-Kill Oldest Stream</span>
+                  </label>
+                </div>
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                  <label>
+                    <input is="emby-checkbox" type="checkbox" id="FilterChannelsByCapacity" />
+                    <span>Filter Channels by Capacity</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== TIER 4: Integrations (collapsed) ===== -->
+        <div class="settings-tier">
+          <div class="settings-tier-label">Integrations</div>
+
+          <!-- Discord Notifications -->
+          <div class="settings-section">
+            <div class="settings-section-header" data-section="discord">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons" style="color: #5865F2;">forum</span>
+                <h3 class="settings-section-title">Discord Notifications</h3>
+              </div>
+              <span class="material-icons">expand_more</span>
+            </div>
+            <div class="settings-section-content" data-section="discord" style="display: none;">
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableDiscordNotifications" />
+                  <span>Enable Discord Notifications</span>
+                </label>
+              </div>
+
+              <div class="inputContainer" style="margin-top: 12px;">
+                <label class="inputLabel inputLabelUnfocused" for="DiscordWebhookUrl">Discord Webhook URL</label>
+                <input id="DiscordWebhookUrl" type="text" is="emby-input" placeholder="https://discord.com/api/webhooks/..." />
+                <div class="fieldDescription">
+                  <a href="https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks" target="_blank">How to create a Discord webhook</a>
+                </div>
+              </div>
+
+              <button is="emby-button" type="button" class="raised emby-button" id="testWebhookButton" style="margin-top: 8px;">
+                <span class="material-icons" style="margin-right: 8px;">send</span>
+                <span>Test Webhook</span>
+              </button>
+
+              <div class="notification-grid" style="margin-top: 16px;">
+                <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="NotifyOnBufferOverflow" /><span>Buffer Overflow</span></label></div>
+                <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="NotifyOnStreamStart" /><span>Stream Start</span></label></div>
+                <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="NotifyOnStreamError" /><span>Stream Error</span></label></div>
+                <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="NotifyOnStreamKilled" /><span>Stream Killed</span></label></div>
+                <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="NotifyOnStreamQualityViolation" /><span>Quality Violations</span></label></div>
+                <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="NotifyOnEpgRefresh" /><span>EPG Refresh</span></label></div>
+                <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="NotifyOnConnectionLimitChange" /><span>Connection Limit Changes</span></label></div>
+                <div class="checkboxContainer"><label><input is="emby-checkbox" type="checkbox" id="NotifyOnProviderBlacklist" /><span>Provider Blacklist</span></label></div>
+              </div>
+
+              <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top: 16px;">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnablePeriodicHealthReports" />
+                  <span>Enable Periodic Health Reports</span>
+                </label>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="HealthReportIntervalMinutes">Health Report Interval (minutes)</label>
+                <input id="HealthReportIntervalMinutes" type="number" min="5" max="1440" is="emby-input" placeholder="60" />
+                <div class="fieldDescription"><strong>Default: 60</strong></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Logging & Diagnostics -->
+          <div class="settings-section">
+            <div class="settings-section-header" data-section="logging">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="material-icons" style="color: #ff5722;">text_snippet</span>
+                <h3 class="settings-section-title">Logging &amp; Diagnostics</h3>
+              </div>
+              <span class="material-icons">expand_more</span>
+            </div>
+            <div class="settings-section-content" data-section="logging" style="display: none;">
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" type="checkbox" id="EnableDebugLogging" />
+                  <span>Enable Debug Logging</span>
+                </label>
+                <div class="fieldDescription">Verbose logging for troubleshooting. Produces significant log volume.</div>
+              </div>
+              <div class="inputContainer">
+                <label class="inputLabel inputLabelUnfocused" for="LogViewerMaxEntries">Log Viewer Max Entries</label>
+                <input id="LogViewerMaxEntries" type="number" min="100" max="50000" is="emby-input" placeholder="5000" />
+                <div class="fieldDescription"><strong>Default: 5000</strong></div>
+              </div>
+
+              <!-- Buffer Diagnostics -->
+              <div style="margin-top: 16px;">
+                <div class="info-card" style="background: rgba(102, 126, 234, 0.1); border-left: 3px solid #667eea; margin-bottom: 12px;">
+                  <p style="margin: 0;">Streams use automatic quality-based buffering (SD: 32MB, HD: 64MB, FHD: 64MB, 4K: 128MB).</p>
+                </div>
+                <button is="emby-button" type="button" class="raised emby-button" id="sendBufferDiagnosticsButton">
+                  <span class="material-icons" style="margin-right: 8px;">analytics</span>
+                  <span>Send Buffer Diagnostics to Discord</span>
+                </button>
+                <div class="fieldDescription" style="margin-top: 8px;">
+                  Requires Discord webhook. Sends real-time diagnostics for all active streams.
+                </div>
+              </div>
+
+              <div style="margin-top: 12px;">
+                <button is="emby-button" type="button" class="raised emby-button preview-btn" data-section="Logging">
+                  <span class="material-icons" style="margin-right: 6px;">preview</span>
+                  <span>Preview Changes</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Save Button -->
+        <div style="margin-top: 24px;">
+          <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+            <span>Save</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

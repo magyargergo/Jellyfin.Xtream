@@ -1,0 +1,227 @@
+<div id="XtreamDashboardPage" data-role="page" class="page type-interior pluginConfigurationPage withTabs"
+  data-require="emby-input,emby-button,emby-select" data-controller="__plugin/XtreamDashboard.js">
+  <div data-role="content">
+    <div class="content-primary">
+      <!-- Header -->
+      <div class="sectionTitleContainer flex align-items-center">
+        <h2 class="sectionTitle">Dashboard</h2>
+        <button is="emby-button" id="RefreshBtn" type="button" class="fab mini autoSize" title="Refresh" style="margin-left: 1em;">
+          <span class="material-icons refresh"></span>
+        </button>
+        <label class="auto-refresh-toggle" style="margin-left: 1em; display: flex; align-items: center; gap: 0.5em;">
+          <input type="checkbox" id="AutoRefreshToggle" checked>
+          <span style="font-size: 0.9em; color: #888;">Auto-refresh</span>
+        </label>
+        <span class="help-toggle" id="HelpToggle" title="Show/hide metric explanations" style="margin-left: 0.5em;">
+          <span class="material-icons">help_outline</span>
+        </span>
+      </div>
+      <p class="fieldDescription">
+        Real-time monitoring of stream health, provider status, and quality metrics.
+      </p>
+
+      <!-- Help Section -->
+      <div id="HelpSection" class="help-section hide">
+        <div class="help-card">
+          <h4><span class="material-icons">info</span> Understanding the Dashboard</h4>
+          <div class="help-grid">
+            <div class="help-item">
+              <span class="help-color" style="background: #00a4dc;"></span>
+              <div>
+                <strong>Active Streams</strong>
+                <p>Number of currently playing streams. High utilization may affect quality.</p>
+              </div>
+            </div>
+            <div class="help-item">
+              <span class="help-color" style="background: #f44336;"></span>
+              <div>
+                <strong>Errors</strong>
+                <p>Total transmission errors. Types: <em>Packet</em> (data loss), <em>Continuity</em> (frame drops), <em>Sync</em> (timing issues).</p>
+              </div>
+            </div>
+            <div class="help-item">
+              <span class="help-color" style="background: #ff9800;"></span>
+              <div>
+                <strong>A/V Drift (ms)</strong>
+                <p>Audio/Video synchronization offset. &lt;40ms is ideal, &gt;100ms may cause visible desync.</p>
+              </div>
+            </div>
+            <div class="help-item">
+              <span class="help-color" style="background: #4caf50;"></span>
+              <div>
+                <strong>Throughput (MB/s)</strong>
+                <p>Data transfer rate. Higher values indicate better stream quality and bitrate.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary Cards -->
+      <div class="monitor-summary">
+        <div class="monitor-card" id="StreamCountCard">
+          <div class="monitor-value">-</div>
+          <div class="monitor-label">Active Streams</div>
+          <div class="monitor-sublabel" id="StreamLimit"></div>
+        </div>
+        <div class="monitor-card" id="UtilizationCard">
+          <div class="monitor-value">-</div>
+          <div class="monitor-label">Utilization</div>
+          <div class="monitor-gauge">
+            <div class="gauge-fill" id="UtilizationGauge"></div>
+          </div>
+        </div>
+        <div class="monitor-card" id="QualityCard">
+          <div class="monitor-value">-</div>
+          <div class="monitor-label">Stream Quality</div>
+          <div class="monitor-sublabel" id="ErrorCount"></div>
+        </div>
+        <div class="monitor-card" id="ThroughputCard">
+          <div class="monitor-value">-</div>
+          <div class="monitor-label">Throughput</div>
+          <div class="monitor-sublabel">MB/s</div>
+        </div>
+      </div>
+
+      <!-- Provider Health -->
+      <div class="section-header">
+        <h3>Provider Health</h3>
+      </div>
+      <div id="ProviderGrid" class="provider-grid">
+        <div class="no-providers" id="NoProvidersMessage">
+          <span class="material-icons" style="font-size: 32px; opacity: 0.5;">dns</span>
+          <p>No providers configured</p>
+        </div>
+      </div>
+
+      <!-- Health Metrics Section -->
+      <div class="section-header" style="margin-top: 2em;">
+        <h3>Provider Performance Metrics</h3>
+        <div id="HealthSummaryCard" class="health-summary-card"></div>
+      </div>
+      <div id="HealthMetricsGrid" class="health-metrics-grid">
+        <div class="no-health-metrics" id="NoHealthMetricsMessage">
+          <span class="material-icons" style="font-size: 32px; opacity: 0.5;">analytics</span>
+          <p>No performance data available yet</p>
+        </div>
+      </div>
+
+      <!-- Active Streams (with filters from Streams page) -->
+      <div class="section-header" style="margin-top: 2em;">
+        <h3>Active Streams</h3>
+        <span id="StreamDetailCount" class="stream-detail-count"></span>
+      </div>
+
+      <div id="StreamStatus" class="stream-status" style="display: none;"></div>
+
+      <!-- Stream Toolbar -->
+      <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px;">
+        <div class="selectContainer" style="margin: 0; min-width: 120px;">
+          <label class="selectLabel" for="StatusFilter" style="font-size: 0.75em;">Status</label>
+          <select is="emby-select" id="StatusFilter">
+            <option value="">All</option>
+            <option value="Healthy">Healthy</option>
+            <option value="Ok">Ok</option>
+            <option value="Lagging">Lagging</option>
+          </select>
+        </div>
+        <div class="checkboxContainer" style="margin: 0;">
+          <label style="display: flex; align-items: center; gap: 4px;">
+            <input type="checkbox" id="QualityFilter" />
+            <span style="font-size: 0.85em;">Quality issues only</span>
+          </label>
+        </div>
+        <div class="selectContainer" style="margin: 0; min-width: 140px;">
+          <label class="selectLabel" for="SortBy" style="font-size: 0.75em;">Sort by</label>
+          <select is="emby-select" id="SortBy">
+            <option value="startTime">Start Time</option>
+            <option value="gapPercent">Buffer Gap</option>
+            <option value="overflowCount">Overflow Count</option>
+            <option value="bytesReceived">Bytes Received</option>
+          </select>
+        </div>
+        <button is="emby-button" type="button" id="SortDirBtn" class="fab mini autoSize" title="Toggle sort direction" style="margin: 0;">
+          <span class="material-icons" id="SortDirIcon">arrow_upward</span>
+        </button>
+        <button is="emby-button" id="KillAllBtn" type="button" class="raised button-cancel emby-button" style="margin-left: auto;">
+          <span class="material-icons close"></span>
+          <span>Kill All</span>
+        </button>
+      </div>
+
+      <div id="StreamsContainer" class="streams-container">
+        <div class="no-streams" id="NoStreamsMessage">
+          <span class="material-icons" style="font-size: 48px; opacity: 0.5;">live_tv</span>
+          <p>No active streams</p>
+        </div>
+      </div>
+
+      <!-- Time-Series Charts -->
+      <div class="section-header" style="margin-top: 2em;">
+        <h3>Metrics Over Time</h3>
+        <div class="time-range-buttons" id="TimeRangeButtons">
+          <button is="emby-button" type="button" class="time-range-btn active" data-range="5">5m</button>
+          <button is="emby-button" type="button" class="time-range-btn" data-range="15">15m</button>
+          <button is="emby-button" type="button" class="time-range-btn" data-range="30">30m</button>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <div class="chart-title"><span class="material-icons">show_chart</span> Stream Activity</div>
+        <div class="chart-container chart-container-half"><canvas id="StreamChart"></canvas></div>
+        <div class="chart-legend">
+          <span class="legend-item"><span class="legend-color" style="background: #00a4dc;"></span> Active Streams</span>
+          <span class="legend-item"><span class="legend-color" style="background: #4caf50;"></span> Throughput (MB/s)</span>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <div class="chart-title"><span class="material-icons">warning</span> Quality &amp; Errors</div>
+        <div class="chart-container chart-container-half"><canvas id="QualityChart"></canvas></div>
+        <div class="chart-legend">
+          <span class="legend-item"><span class="legend-color" style="background: #f44336;"></span> Errors</span>
+          <span class="legend-item"><span class="legend-color" style="background: #ff9800;"></span> A/V Drift (ms)</span>
+          <span class="legend-item"><span class="legend-color" style="background: #9c27b0;"></span> Reconnections</span>
+        </div>
+      </div>
+
+      <!-- Diagnostics -->
+      <div class="section-header" style="margin-top: 2em;">
+        <h3>Diagnostics</h3>
+        <button is="emby-button" type="button" id="DownloadDiagnosticsBtn" class="raised emby-button" style="margin-left: auto;">
+          <span class="material-icons" style="margin-right: 6px;">download</span>
+          <span>Download Diagnostics Bundle</span>
+        </button>
+      </div>
+
+      <style>
+        .stream-status { padding: 15px; margin: 15px 0; border-radius: 4px; font-weight: bold; }
+        .stream-status.success { background: rgba(76, 175, 80, 0.1); border-left: 4px solid #4caf50; color: #4caf50; }
+        .stream-status.error { background: rgba(244, 67, 54, 0.1); border-left: 4px solid #f44336; color: #f44336; }
+        .streams-container { display: flex; flex-direction: column; gap: 12px; }
+        .no-streams { text-align: center; padding: 40px; color: #888; }
+        .stream-card { background: rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 16px; border-left: 4px solid #00a4dc; }
+        .stream-card.healthy { border-left-color: #4caf50; }
+        .stream-card.ok { border-left-color: #ff9800; }
+        .stream-card.lagging { border-left-color: #f44336; }
+        .stream-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .stream-title { font-weight: bold; font-size: 1.1em; }
+        .stream-status-badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
+        .stream-status-badge.healthy { background: #4caf50; color: white; }
+        .stream-status-badge.ok { background: #ff9800; color: white; }
+        .stream-status-badge.lagging { background: #f44336; color: white; }
+        .stream-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 12px; }
+        .stat-item { background: rgba(0, 0, 0, 0.2); padding: 8px 12px; border-radius: 4px; }
+        .stat-label { font-size: 0.75em; color: #888; text-transform: uppercase; }
+        .stat-value { font-size: 1.1em; font-weight: bold; }
+        .stream-id { font-size: 0.75em; color: #666; font-family: monospace; word-break: break-all; }
+        .stream-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
+        .progress-bar { height: 6px; background: rgba(0, 0, 0, 0.3); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+        .progress-fill { height: 100%; transition: width 0.3s ease; }
+        .progress-fill.healthy { background: #4caf50; }
+        .progress-fill.ok { background: #ff9800; }
+        .progress-fill.lagging { background: #f44336; }
+      </style>
+    </div>
+  </div>
+</div>

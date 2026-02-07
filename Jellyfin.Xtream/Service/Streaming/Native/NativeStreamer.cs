@@ -304,7 +304,7 @@ public sealed class NativeStreamer : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // Convert GUID to two int64 values (big-endian byte order)
+        // Convert GUID to two int64 values (mixed-endian per .NET Guid layout)
         var bytes = channelGuid.ToByteArray();
         var guidHigh = BitConverter.ToInt64(bytes, 0);
         var guidLow = BitConverter.ToInt64(bytes, 8);

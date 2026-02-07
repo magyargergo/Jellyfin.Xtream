@@ -21,6 +21,7 @@ using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Discovery;
 using Jellyfin.Xtream.Service.Epg;
 using Jellyfin.Xtream.Service.Logging;
+using Jellyfin.Xtream.Service.Streaming.Native;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
@@ -85,6 +86,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Register provider discovery services
         _ = serviceCollection.AddSingleton<ICredentialParser, CredentialParser>();
         _ = serviceCollection.AddSingleton<IProviderDiscoveryService, ProviderDiscoveryService>();
+
+        // Native channel registry service (singleton, owns long-lived C++ registry)
+        _ = serviceCollection.AddSingleton<ChannelRegistryService>();
 
         // Note: Provider health tracking is now handled by C++ native code
         // C++ manages health scores internally and persists them to SQLite

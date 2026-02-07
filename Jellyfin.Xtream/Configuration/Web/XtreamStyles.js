@@ -18,7 +18,7 @@ const CSS_LINK_ID = 'xtream-plugin-styles';
  * Gets the URL for the CSS file through Jellyfin's configuration page API
  */
 const getCssUrl = () => {
-  return window.ApiClient
+  return ApiClient
     ? ApiClient.getUrl('web/ConfigurationPage', { name: 'Xtream.css' })
     : '/web/ConfigurationPage?name=Xtream.css';
 };

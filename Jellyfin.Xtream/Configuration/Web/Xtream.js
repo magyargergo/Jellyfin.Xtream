@@ -186,6 +186,39 @@ const fetchJson = (url, options = {}) => ApiClient.fetch({
   type: options.method || 'GET',
   url: ApiClient.getUrl(url),
   ...options,
+}).then(result => {
+  // Detect structured error responses from backend (ErrorCode is PascalCase from C#)
+  const code = result && (result.ErrorCode || result.code);
+  const message = result && (result.Message || result.message);
+  if (code && message && !result.items) {
+    const err = new Error(message);
+    err.detail = result.SuggestedAction || result.detail;
+    err.code = code;
+    throw err;
+  }
+  return result;
+}).catch(response => {
+  // ApiClient.fetch() rejects with the Response object on non-2xx status
+  if (response && typeof response.json === 'function') {
+    return response.json().then(body => {
+      const code = body.ErrorCode || body.code;
+      const message = body.Message || body.message || 'Request failed';
+      const err = new Error(message);
+      err.detail = body.SuggestedAction || body.detail;
+      err.code = code;
+      err.status = response.status;
+      throw err;
+    }).catch(parseErr => {
+      // If we already constructed an Error with a code, rethrow it
+      if (parseErr.code) throw parseErr;
+      // Otherwise, the JSON parse failed — throw a generic error
+      const err = new Error(`Request failed (${response.status || 'unknown'})`);
+      err.status = response.status;
+      throw err;
+    });
+  }
+  // Not a Response object — rethrow as-is
+  throw response;
 });
 
 const filter = (obj, predicate) => Object.keys(obj)
@@ -194,44 +227,20 @@ const filter = (obj, predicate) => Object.keys(obj)
 
 const tabs = [
   {
-    href: tab('XtreamMigration'),
-    name: 'Setup'
-  },
-  {
     href: tab('XtreamProviders'),
     name: 'Providers'
   },
   {
-    href: tab('XtreamAdvanced'),
-    name: 'Advanced Settings'
+    href: tab('XtreamChannels'),
+    name: 'Channels'
   },
   {
-    href: tab('XtreamLive'),
-    name: 'Live TV'
+    href: tab('XtreamSettings'),
+    name: 'Settings'
   },
   {
-    href: tab('XtreamLiveOverrides'),
-    name: 'TV overrides'
-  },
-  {
-    href: tab('XtreamVod'),
-    name: 'Video On-Demand',
-  },
-  {
-    href: tab('XtreamSeries'),
-    name: 'Series',
-  },
-  {
-    href: tab('XtreamEpgTest'),
-    name: 'EPG Test',
-  },
-  {
-    href: tab('XtreamStreams'),
-    name: 'Active Streams',
-  },
-  {
-    href: tab('XtreamMonitor'),
-    name: 'Monitor',
+    href: tab('XtreamDashboard'),
+    name: 'Dashboard'
   },
   {
     href: tab('XtreamLogs'),
@@ -673,7 +682,8 @@ const createCategoryCard = (category, config, loadItems, onSelectionChange, icon
     } catch (err) {
       console.error('Failed to load items:', err);
       grid.innerHTML = '';
-      grid.appendChild(XtreamStyles.createErrorState('Failed to load items'));
+      const msg = err.code ? err.message : 'Failed to load items';
+      grid.appendChild(XtreamStyles.createErrorState(msg));
     }
   };
 
@@ -892,10 +902,23 @@ const createSearchableCategories = async (container, config, loadCategories, loa
   } catch (err) {
     console.error('Failed to load categories:', err);
     categoriesContainer.innerHTML = '';
-    categoriesContainer.appendChild(XtreamStyles.createErrorState('Failed to load categories. Check provider credentials.'));
+    const detail = err.detail ? `: ${err.detail}` : '';
+    categoriesContainer.appendChild(XtreamStyles.createErrorState(
+      err.code ? `${err.message}${detail}` : 'Failed to load categories. Check provider credentials.'
+    ));
   }
 
   return { config, updateStats, categoryCards };
+};
+
+// Create a Server-Sent Events connection to the plugin event stream
+const createPluginEventSource = (typeFilter, streamId) => {
+  const params = new URLSearchParams();
+  if (typeFilter) params.set('typeFilter', typeFilter);
+  if (streamId) params.set('streamId', streamId);
+  params.set('api_key', ApiClient.accessToken());
+  const url = ApiClient.getUrl('Xtream/Events/Stream') + '?' + params;
+  return new EventSource(url);
 };
 
 export default {
@@ -903,6 +926,7 @@ export default {
   apiRequest,
   createElement,
   createFormSubmitHandler,
+  createPluginEventSource,
   createToggleFn,
   fetchJson,
   filter,

@@ -30,6 +30,7 @@ using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Discovery;
 using Jellyfin.Xtream.Service.Epg;
 using Jellyfin.Xtream.Service.Logging;
+using Jellyfin.Xtream.Service.Streaming.Native;
 using Jellyfin.Xtream.Utility;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -91,6 +92,17 @@ public class XtreamController(
         "GET ActiveStreams/{id}/Metrics",
         "GET Diagnostics/Bundle",
         "GET Metrics/Aggregate",
+    ];
+
+    private static readonly string[] RegistryOperations =
+    [
+        "GET Providers/Status",
+        "GET Channels/Count",
+        "GET Channels/List",
+        "GET ConnectionStatus",
+        "GET ConnectionInfo",
+        "GET Events/Stream",
+        "GET Events/Recent",
     ];
 
     private readonly ILogger<XtreamController> _logger = logger;
@@ -197,16 +209,29 @@ public class XtreamController(
             return Ok(cached);
         }
 
-        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<CategoryResponse> result =
-        [
-            .. (
-                await client.GetLiveCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
-            ).Select(CreateCategoryResponse),
-        ];
+        try
+        {
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            List<CategoryResponse> result =
+            [
+                .. (
+                    await client
+                        .GetLiveCategoryAsync(provider.ToConnectionInfo(), cancellationToken)
+                        .ConfigureAwait(false)
+                ).Select(CreateCategoryResponse),
+            ];
 
-        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
-        return Ok(result);
+            _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(ex, "Failed to get live categories from provider {ProviderId}", provider.Id);
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                CreateError(ErrorCodes.ConnectionFailed, "Failed to load categories from provider", ex.Message)
+            );
+        }
     }
 
     /// <summary>
@@ -242,18 +267,34 @@ public class XtreamController(
             return Ok(cached);
         }
 
-        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<ItemResponse> result =
-        [
-            .. (
-                await client
-                    .GetLiveStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
-                    .ConfigureAwait(false)
-            ).Select(CreateItemResponse),
-        ];
+        try
+        {
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            List<ItemResponse> result =
+            [
+                .. (
+                    await client
+                        .GetLiveStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
+                        .ConfigureAwait(false)
+                ).Select(CreateItemResponse),
+            ];
 
-        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
-        return Ok(result);
+            _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(
+                ex,
+                "Failed to get live streams for category {CategoryId} from provider {ProviderId}",
+                categoryId,
+                provider.Id
+            );
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                CreateError(ErrorCodes.ConnectionFailed, "Failed to load streams from provider", ex.Message)
+            );
+        }
     }
 
     /// <summary>
@@ -287,16 +328,29 @@ public class XtreamController(
             return Ok(cached);
         }
 
-        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<CategoryResponse> result =
-        [
-            .. (
-                await client.GetVodCategoryAsync(provider.ToConnectionInfo(), cancellationToken).ConfigureAwait(false)
-            ).Select(CreateCategoryResponse),
-        ];
+        try
+        {
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            List<CategoryResponse> result =
+            [
+                .. (
+                    await client
+                        .GetVodCategoryAsync(provider.ToConnectionInfo(), cancellationToken)
+                        .ConfigureAwait(false)
+                ).Select(CreateCategoryResponse),
+            ];
 
-        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
-        return Ok(result);
+            _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(ex, "Failed to get VOD categories from provider {ProviderId}", provider.Id);
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                CreateError(ErrorCodes.ConnectionFailed, "Failed to load VOD categories from provider", ex.Message)
+            );
+        }
     }
 
     /// <summary>
@@ -332,18 +386,34 @@ public class XtreamController(
             return Ok(cached);
         }
 
-        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<ItemResponse> result =
-        [
-            .. (
-                await client
-                    .GetVodStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
-                    .ConfigureAwait(false)
-            ).Select(CreateItemResponse),
-        ];
+        try
+        {
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            List<ItemResponse> result =
+            [
+                .. (
+                    await client
+                        .GetVodStreamsByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
+                        .ConfigureAwait(false)
+                ).Select(CreateItemResponse),
+            ];
 
-        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
-        return Ok(result);
+            _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(
+                ex,
+                "Failed to get VOD streams for category {CategoryId} from provider {ProviderId}",
+                categoryId,
+                provider.Id
+            );
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                CreateError(ErrorCodes.ConnectionFailed, "Failed to load VOD streams from provider", ex.Message)
+            );
+        }
     }
 
     /// <summary>
@@ -377,18 +447,29 @@ public class XtreamController(
             return Ok(cached);
         }
 
-        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<CategoryResponse> result =
-        [
-            .. (
-                await client
-                    .GetSeriesCategoryAsync(provider.ToConnectionInfo(), cancellationToken)
-                    .ConfigureAwait(false)
-            ).Select(CreateCategoryResponse),
-        ];
+        try
+        {
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            List<CategoryResponse> result =
+            [
+                .. (
+                    await client
+                        .GetSeriesCategoryAsync(provider.ToConnectionInfo(), cancellationToken)
+                        .ConfigureAwait(false)
+                ).Select(CreateCategoryResponse),
+            ];
 
-        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
-        return Ok(result);
+            _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(ex, "Failed to get series categories from provider {ProviderId}", provider.Id);
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                CreateError(ErrorCodes.ConnectionFailed, "Failed to load series categories from provider", ex.Message)
+            );
+        }
     }
 
     /// <summary>
@@ -424,18 +505,34 @@ public class XtreamController(
             return Ok(cached);
         }
 
-        using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-        List<ItemResponse> result =
-        [
-            .. (
-                await client
-                    .GetSeriesByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
-                    .ConfigureAwait(false)
-            ).Select(CreateItemResponse),
-        ];
+        try
+        {
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            List<ItemResponse> result =
+            [
+                .. (
+                    await client
+                        .GetSeriesByCategoryAsync(provider.ToConnectionInfo(), categoryId, cancellationToken)
+                        .ConfigureAwait(false)
+                ).Select(CreateItemResponse),
+            ];
 
-        _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
-        return Ok(result);
+            _ = _cache.Set(cacheKey, result, TimeSpan.FromMinutes(CacheMinutes));
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(
+                ex,
+                "Failed to get series for category {CategoryId} from provider {ProviderId}",
+                categoryId,
+                provider.Id
+            );
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                CreateError(ErrorCodes.ConnectionFailed, "Failed to load series from provider", ex.Message)
+            );
+        }
     }
 
     /// <summary>
@@ -463,16 +560,27 @@ public class XtreamController(
             );
         }
 
-        List<ChannelResponse> channels =
-        [
-            .. (
-                await StreamService
-                    .GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
-                    .ConfigureAwait(false)
-            ).Select(CreateChannelResponse),
-        ];
+        try
+        {
+            List<ChannelResponse> channels =
+            [
+                .. (
+                    await StreamService
+                        .GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
+                        .ConfigureAwait(false)
+                ).Select(CreateChannelResponse),
+            ];
 
-        return Ok(channels);
+            return Ok(channels);
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(ex, "Failed to get live TV channels from provider {ProviderId}", provider.Id);
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                CreateError(ErrorCodes.ConnectionFailed, "Failed to load live TV channels from provider", ex.Message)
+            );
+        }
     }
 
     /// <summary>
@@ -531,7 +639,9 @@ public class XtreamController(
         catch (Exception ex)
         {
             _logger.PluginLogError(ex, "Unexpected error testing provider {ProviderId}", providerId);
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(
+                new { success = false, message = "An unexpected error occurred. Check server logs for details." }
+            );
         }
     }
 
@@ -898,7 +1008,7 @@ public class XtreamController(
                 {
                     success = false,
                     count = 0,
-                    message = "Failed to send diagnostics: " + ex.Message,
+                    message = "Failed to send diagnostics. Check server logs for details.",
                 }
             );
         }
@@ -956,7 +1066,7 @@ public class XtreamController(
         {
             _logger.PluginLogError(ex, "EPG test failed for stream {StreamId}", streamId);
             response.Success = false;
-            response.ErrorMessage = ex.Message;
+            response.ErrorMessage = "EPG test failed. Check server logs for details.";
         }
 
         return Ok(response);
@@ -1033,7 +1143,7 @@ public class XtreamController(
                     success = false,
                     successCount = 0,
                     totalCount = 0,
-                    message = "EPG refresh failed: " + ex.Message,
+                    message = "EPG refresh failed. Check server logs for details.",
                 }
             );
         }
@@ -1547,8 +1657,133 @@ public class XtreamController(
         catch (Exception ex)
         {
             _logger.PluginLogError(ex, "Failed to get connection info from provider");
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(
+                new { success = false, message = "Failed to get connection info. Check server logs for details." }
+            );
         }
+    }
+
+    /// <summary>
+    /// Get aggregated connection status across all enabled providers.
+    /// Returns capacity, utilization, warnings, and per-provider breakdown.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Aggregated connection status for all providers.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("ConnectionStatus")]
+    public async Task<ActionResult<object>> GetConnectionStatus(CancellationToken cancellationToken)
+    {
+        var config = Plugin.Instance.Configuration;
+        var enabledProviders = config.GetEnabledProviders().ToList();
+        var pluginActiveStreams = Restream.GetActiveStreamCount();
+        var configuredMaxStreams = config.MaxConcurrentStreams;
+
+        int totalCapacity = 0;
+        int totalActiveConnections = 0;
+        var providerDetails = new List<object>();
+
+        foreach (var provider in enabledProviders)
+        {
+            try
+            {
+                using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+                var playerApi = await client
+                    .GetUserAndServerInfoAsync(provider.ToConnectionInfo(), cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (playerApi?.UserInfo != null)
+                {
+                    var userInfo = playerApi.UserInfo;
+                    var maxConn = userInfo.MaxConnections;
+                    var activeConn = userInfo.ActiveCons;
+                    totalCapacity += maxConn;
+                    totalActiveConnections += activeConn;
+
+                    providerDetails.Add(
+                        new
+                        {
+                            ProviderId = provider.Id,
+                            ProviderName = provider.Name,
+                            IsOnline = true,
+                            MaxConnections = maxConn,
+                            ProviderActiveConnections = activeConn,
+                            IsTrial = userInfo.IsTrial,
+                            ExpirationDate = userInfo.ExpDate,
+                            ErrorMessage = (string?)null,
+                        }
+                    );
+                }
+                else
+                {
+                    providerDetails.Add(
+                        new
+                        {
+                            ProviderId = provider.Id,
+                            ProviderName = provider.Name,
+                            IsOnline = false,
+                            MaxConnections = 0,
+                            ProviderActiveConnections = 0,
+                            IsTrial = false,
+                            ExpirationDate = (string?)null,
+                            ErrorMessage = "Failed to get user info",
+                        }
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.PluginLogError(ex, "Failed to get connection status for provider {ProviderId}", provider.Id);
+                providerDetails.Add(
+                    new
+                    {
+                        ProviderId = provider.Id,
+                        ProviderName = provider.Name,
+                        IsOnline = false,
+                        MaxConnections = 0,
+                        ProviderActiveConnections = 0,
+                        IsTrial = false,
+                        ExpirationDate = (string?)null,
+                        ErrorMessage = "Failed to connect to provider",
+                    }
+                );
+            }
+        }
+
+        // Compute effective max and available slots
+        var effectiveMax = configuredMaxStreams > 0 ? Math.Min(configuredMaxStreams, totalCapacity) : totalCapacity;
+        var availableSlots = Math.Max(0, effectiveMax - totalActiveConnections);
+
+        // Compute warning level
+        string? warningLevel = null;
+        string? warningMessage = null;
+        if (totalCapacity > 0)
+        {
+            var utilPct = (double)totalActiveConnections / totalCapacity * 100;
+            if (totalActiveConnections >= totalCapacity)
+            {
+                warningLevel = "Critical";
+                warningMessage = "All provider connections are in use. New streams will fail.";
+            }
+            else if (utilPct >= 80)
+            {
+                warningLevel = "Warning";
+                warningMessage = $"Provider capacity is {utilPct:F0}% utilized. Consider reducing active streams.";
+            }
+        }
+
+        return Ok(
+            new
+            {
+                TotalProviderCapacity = totalCapacity,
+                TotalProviderActiveConnections = totalActiveConnections,
+                PluginActiveStreams = pluginActiveStreams,
+                ConfiguredMaxStreams = configuredMaxStreams,
+                AvailableSlots = availableSlots,
+                WarningLevel = warningLevel,
+                WarningMessage = warningMessage,
+                Providers = providerDetails,
+            }
+        );
     }
 
     /// <summary>
@@ -2211,7 +2446,7 @@ public class XtreamController(
                 sourceProvider.Name,
                 targetProvider.Name
             );
-            response.Message = $"Failed to copy channels: {ex.Message}";
+            response.Message = "Failed to copy channels. Check server logs for details.";
             return StatusCode(500, response);
         }
 
@@ -3736,6 +3971,7 @@ public class XtreamController(
                 },
                 configurationSections = ConfigurationSections,
                 streamOperations = StreamOperations,
+                registryOperations = RegistryOperations,
                 limits = new
                 {
                     maxProviders = 10,
@@ -3889,6 +4125,150 @@ public class XtreamController(
                 count = items.Count,
                 subscribers = Service.Events.PluginEventBus.Instance.GetSubscriberCount(),
                 events = items,
+            }
+        );
+    }
+
+    // =========================================================================
+    // Registry-based Provider Health & Channel Endpoints
+    // =========================================================================
+
+    /// <summary>
+    /// Get health status for all providers from the native channel registry.
+    /// Returns circuit breaker state, EWMA latency, success rate, and quarantine info.
+    /// </summary>
+    /// <param name="registryService">The channel registry service.</param>
+    /// <returns>Provider health status from the native registry.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Providers/Status")]
+    public ActionResult<object> GetProviderStatus([FromServices] ChannelRegistryService registryService)
+    {
+        var registry = registryService.Registry;
+        if (registry == null || !registry.IsBuilt)
+        {
+            return Ok(
+                new
+                {
+                    success = false,
+                    message = "Channel registry not yet built",
+                    providers = Array.Empty<object>(),
+                }
+            );
+        }
+
+        var statuses = registry.GetProviderStatus();
+        return Ok(
+            new
+            {
+                success = true,
+                providerCount = statuses.Count,
+                providers = statuses.Select(s => new
+                {
+                    id = s.Id,
+                    name = s.Name,
+                    healthScore = s.HealthScore,
+                    state = s.State.ToString(),
+                    circuitBreaker = s.CircuitBreaker.ToString(),
+                    quarantineUntil = s.QuarantineUntil,
+                    channelCount = s.ChannelCount,
+                    consecutiveFailures = s.ConsecutiveFailures,
+                    latencyEwmaMs = s.LatencyEwmaMs,
+                    successRate = s.SuccessRate,
+                    isEjected = s.IsEjected,
+                    isInProbation = s.IsInProbation,
+                    isHealthy = s.IsHealthy,
+                }),
+            }
+        );
+    }
+
+    /// <summary>
+    /// Get the number of deduplicated channels from the native registry.
+    /// </summary>
+    /// <param name="registryService">The channel registry service.</param>
+    /// <returns>Channel count.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Channels/Count")]
+    public ActionResult<object> GetChannelCount([FromServices] ChannelRegistryService registryService)
+    {
+        var registry = registryService.Registry;
+        if (registry == null || !registry.IsBuilt)
+        {
+            return Ok(
+                new
+                {
+                    success = false,
+                    message = "Channel registry not yet built",
+                    count = 0,
+                }
+            );
+        }
+
+        var stats = registry.GetStats();
+        return Ok(
+            new
+            {
+                success = true,
+                count = stats.ChannelCount,
+                streamCount = stats.StreamCount,
+                providerCount = stats.ProviderCount,
+                deduplicationRatio = stats.DeduplicationRatio,
+                skippedCount = stats.SkippedCount,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Get a paginated list of channels from the native registry.
+    /// </summary>
+    /// <param name="registryService">The channel registry service.</param>
+    /// <param name="offset">Number of channels to skip (default 0).</param>
+    /// <param name="limit">Maximum channels to return (default 50, max 200).</param>
+    /// <returns>Paginated channel list.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Channels/List")]
+    public ActionResult<object> GetChannelList(
+        [FromServices] ChannelRegistryService registryService,
+        [FromQuery] int offset = 0,
+        [FromQuery] int limit = 50
+    )
+    {
+        var registry = registryService.Registry;
+        if (registry == null || !registry.IsBuilt)
+        {
+            return Ok(
+                new
+                {
+                    success = false,
+                    message = "Channel registry not yet built",
+                    channels = Array.Empty<object>(),
+                    total = 0,
+                }
+            );
+        }
+
+        limit = Math.Clamp(limit, 1, 200);
+        offset = Math.Max(0, offset);
+
+        var total = registry.GetChannelCount();
+        var channels = registry.EnumerateChannels(offset, limit);
+
+        return Ok(
+            new
+            {
+                success = true,
+                total,
+                offset,
+                limit,
+                count = channels.Count,
+                channels = channels.Select(c => new
+                {
+                    guid = c.Guid,
+                    displayName = c.DisplayName,
+                    iconUrl = c.IconUrl,
+                    providerCount = c.ProviderCount,
+                    bestQualityScore = c.BestQualityScore,
+                }),
             }
         );
     }

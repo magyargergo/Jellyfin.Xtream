@@ -1472,6 +1472,209 @@ TSDUCK_API bool tsduck_registry_get_stats(
 }
 
 // ============================================================================
+// Registry: Rebuild
+// ============================================================================
+
+TSDUCK_API void tsduck_registry_begin_rebuild(ChannelRegistryHandle registry) {
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        LOG_WARNING(kRegistry, "tsduck_registry_begin_rebuild: null handle");
+        return;
+    }
+
+    impl->begin_rebuild();
+    LOG_INFO(kRegistry, "tsduck_registry_begin_rebuild: channels cleared, health preserved");
+}
+
+TSDUCK_API bool tsduck_registry_rebuild(ChannelRegistryHandle registry) {
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return false;
+    }
+
+    try {
+        bool result = impl->rebuild();
+        if (result) {
+            registry::RegistryStatsNative stats;
+            if (impl->get_stats(&stats)) {
+                LOG_INFO(kRegistry, "tsduck_registry_rebuild: %d channels, %d streams, %d GUIDs",
+                         stats.channel_count, stats.stream_count, stats.guid_count);
+            }
+        }
+        return result;
+    } catch (const std::exception& e) {
+        LOG_ERROR(kRegistry, "tsduck_registry_rebuild exception: %s", e.what());
+        return false;
+    } catch (...) {
+        LOG_ERROR(kRegistry, "tsduck_registry_rebuild unknown exception");
+        return false;
+    }
+}
+
+// ============================================================================
+// Registry: Channel Enumeration
+// ============================================================================
+
+TSDUCK_API int32_t tsduck_registry_get_channel_count(ChannelRegistryHandle registry) {
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return 0;
+    }
+
+    return impl->get_channel_count();
+}
+
+TSDUCK_API int32_t tsduck_registry_enumerate_channels(
+    ChannelRegistryHandle registry,
+    RegistryChannelListEntryNative* out_entries,
+    int32_t max_count,
+    int32_t offset)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr || out_entries == nullptr) {
+        return 0;
+    }
+
+    // Map between C API struct and internal struct (same layout)
+    static_assert(sizeof(RegistryChannelListEntryNative) == sizeof(registry::ChannelListEntryNative),
+                  "C API and internal channel list entry structs must have same size");
+
+    return impl->enumerate_channels(
+        reinterpret_cast<registry::ChannelListEntryNative*>(out_entries),
+        max_count, offset);
+}
+
+TSDUCK_API bool tsduck_registry_get_channel_info(
+    ChannelRegistryHandle registry,
+    int64_t guid_high,
+    int64_t guid_low,
+    RegistryChannelListEntryNative* out_entry)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr || out_entry == nullptr) {
+        return false;
+    }
+
+    registry::ChannelRegistry::ChannelInfo info{};
+    if (!impl->get_channel_info(guid_high, guid_low, &info)) {
+        return false;
+    }
+
+    // Map ChannelInfo to ChannelListEntry
+    out_entry->guid_high = info.guid_high;
+    out_entry->guid_low = info.guid_low;
+    std::strncpy(out_entry->display_name, info.display_name, 127);
+    out_entry->display_name[127] = '\0';
+    std::strncpy(out_entry->icon_url, info.icon_url, 511);
+    out_entry->icon_url[511] = '\0';
+    out_entry->provider_count = info.provider_count;
+    out_entry->best_quality_score = info.best_quality_score;
+
+    return true;
+}
+
+TSDUCK_API bool tsduck_registry_add_guid_alias(
+    ChannelRegistryHandle registry,
+    int64_t alias_high,
+    int64_t alias_low,
+    int32_t provider_index,
+    int32_t stream_id)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return false;
+    }
+    return impl->add_guid_alias(alias_high, alias_low, provider_index, stream_id);
+}
+
+// ============================================================================
+// Registry: API Health Reporting
+// ============================================================================
+
+TSDUCK_API void tsduck_registry_report_api_success(
+    ChannelRegistryHandle registry,
+    int32_t provider_index,
+    int32_t latency_ms)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return;
+    }
+
+    impl->report_api_success(provider_index, latency_ms);
+}
+
+TSDUCK_API void tsduck_registry_report_api_failure(
+    ChannelRegistryHandle registry,
+    int32_t provider_index,
+    int32_t error_type)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return;
+    }
+
+    impl->report_api_failure(provider_index,
+        static_cast<registry::ApiErrorType>(error_type));
+
+    LOG_INFO(kRegistry, "tsduck_registry_report_api_failure: provider %d, error_type=%d",
+             provider_index, error_type);
+}
+
+// ============================================================================
+// Registry: Provider Status Query
+// ============================================================================
+
+TSDUCK_API int32_t tsduck_registry_get_provider_status(
+    ChannelRegistryHandle registry,
+    RegistryProviderStatusNative* out_status,
+    int32_t max_count)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr || out_status == nullptr) {
+        return 0;
+    }
+
+    // Map between C API struct and internal struct (same layout)
+    static_assert(sizeof(RegistryProviderStatusNative) == sizeof(registry::ProviderStatusNative),
+                  "C API and internal provider status structs must have same size");
+
+    return impl->get_provider_status(
+        reinterpret_cast<registry::ProviderStatusNative*>(out_status),
+        max_count);
+}
+
+// ============================================================================
+// Registry: Health Event Callback
+// ============================================================================
+
+TSDUCK_API void tsduck_registry_set_health_callback(
+    ChannelRegistryHandle registry,
+    TsDuckRegistryHealthCallback callback,
+    void* user_data)
+{
+    auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return;
+    }
+
+    if (callback == nullptr) {
+        impl->set_health_callback(nullptr);
+    } else {
+        // Wrap the C callback in a std::function, capturing user_data
+        impl->set_health_callback(
+            [callback, user_data](int32_t provider_index,
+                                   const char* event_type,
+                                   const char* details) {
+                callback(provider_index, event_type, details, user_data);
+            });
+    }
+
+    LOG_DEBUG(kRegistry, "tsduck_registry_set_health_callback: %s",
+              callback ? "set" : "cleared");
+}
+
+// ============================================================================
 // Streamer Registry Integration
 // ============================================================================
 

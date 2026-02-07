@@ -238,10 +238,7 @@
 
 /* Force styles with highest specificity */
 div.category-card,
-.pluginConfigurationPage div.category-card,
-#XtreamLivePage div.category-card,
-#XtreamVodPage div.category-card,
-#XtreamSeriesPage div.category-card {
+.pluginConfigurationPage div.category-card {
   display: block !important;
   background: rgba(255, 255, 255, 0.04) !important;
   border-radius: 10px !important;
@@ -2270,4 +2267,85 @@ div.categories-container {
 
 .pluginConfigurationPage .health-summary-trends .imminent-failure .material-icons {
   animation: pulseWarning 1.5s ease-in-out infinite;
+}
+
+/* ============================================
+   Channel Sub-Tabs (Channels page)
+   ============================================ */
+.pluginConfigurationPage .channel-type-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 2px solid var(--xt-border);
+  margin-bottom: 20px;
+}
+
+.pluginConfigurationPage .channel-type-tab {
+  padding: 10px 16px;
+  border: none;
+  border-bottom: 3px solid transparent;
+  background: none;
+  color: var(--xt-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: -2px;
+  font-size: 0.95em;
+  transition: color var(--xt-transition-fast), border-color var(--xt-transition-fast);
+}
+
+.pluginConfigurationPage .channel-type-tab:hover {
+  color: var(--xt-text-secondary);
+}
+
+.pluginConfigurationPage .channel-type-tab.active {
+  color: var(--xt-primary);
+  border-bottom-color: var(--xt-primary);
+}
+
+.pluginConfigurationPage .channel-type-tab .material-icons {
+  font-size: 18px;
+}
+
+/* ============================================
+   Settings Tiers (Settings page)
+   ============================================ */
+.pluginConfigurationPage .settings-tier {
+  margin-bottom: 24px;
+}
+
+.pluginConfigurationPage .settings-tier-label {
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--xt-text-muted);
+  margin-bottom: 8px;
+}
+
+.pluginConfigurationPage .settings-tier-hint {
+  font-size: 0.8em;
+  color: var(--xt-text-dim);
+  font-style: italic;
+  margin-left: 8px;
+}
+
+/* ============================================
+   Content Tab Panels
+   ============================================ */
+.pluginConfigurationPage .tab-panel {
+  display: none;
+}
+
+.pluginConfigurationPage .tab-panel.active {
+  display: block;
+}
+
+/* ============================================
+   Content-specific options bar
+   ============================================ */
+.pluginConfigurationPage .content-options {
+  padding: 12px 16px;
+  background: var(--xt-card-bg);
+  border-radius: var(--xt-radius-lg);
+  margin-bottom: 16px;
 }

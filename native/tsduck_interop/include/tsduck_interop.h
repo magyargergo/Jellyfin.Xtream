@@ -1336,6 +1336,175 @@ TSDUCK_API bool tsduck_registry_get_stats(
 );
 
 // =============================================================================
+// Registry: Rebuild (health-preserving)
+// =============================================================================
+
+/// Begin rebuild: clears channels/GUIDs but preserves health data and providers.
+/// After calling, add new streams with tsduck_registry_add_stream(), then
+/// call tsduck_registry_rebuild() to finalize.
+/// @param registry The registry handle.
+TSDUCK_API void tsduck_registry_begin_rebuild(ChannelRegistryHandle registry);
+
+/// Finalize rebuild after begin_rebuild() + add_stream() calls.
+/// Re-processes streams, regenerates GUIDs. Health scores are preserved.
+/// @param registry The registry handle.
+/// @return true on success.
+TSDUCK_API bool tsduck_registry_rebuild(ChannelRegistryHandle registry);
+
+// =============================================================================
+// Registry: Channel Enumeration
+// =============================================================================
+
+// Channel list entry (blittable, for paginated enumeration)
+typedef struct {
+    int64_t guid_high;            // High 64 bits of channel GUID
+    int64_t guid_low;             // Low 64 bits of channel GUID
+    char display_name[128];       // Channel display name
+    char icon_url[512];           // Channel icon URL
+    int32_t provider_count;       // Number of providers for this channel
+    int32_t best_quality_score;   // Highest quality score among entries
+} RegistryChannelListEntryNative;
+
+/// Get the number of deduplicated channels.
+/// @param registry The registry handle.
+/// @return Channel count, or 0 if not built.
+TSDUCK_API int32_t tsduck_registry_get_channel_count(ChannelRegistryHandle registry);
+
+/// Enumerate channels with pagination.
+/// @param registry The registry handle.
+/// @param out_entries Output buffer for channel entries.
+/// @param max_count Maximum entries to write (buffer size).
+/// @param offset Skip this many channels (for pagination).
+/// @return Number of entries written.
+TSDUCK_API int32_t tsduck_registry_enumerate_channels(
+    ChannelRegistryHandle registry,
+    RegistryChannelListEntryNative* out_entries,
+    int32_t max_count,
+    int32_t offset
+);
+
+/// Get channel info by GUID.
+/// @param registry The registry handle.
+/// @param guid_high High 64 bits of the GUID.
+/// @param guid_low Low 64 bits of the GUID.
+/// @param out_entry Pointer to receive channel info.
+/// @return true if found.
+TSDUCK_API bool tsduck_registry_get_channel_info(
+    ChannelRegistryHandle registry,
+    int64_t guid_high,
+    int64_t guid_low,
+    RegistryChannelListEntryNative* out_entry
+);
+
+/// Register an external GUID alias for a stream entry.
+/// Allows C# GUIDs (from ToProviderGuid) to be looked up in the registry.
+/// Must be called after build().
+/// @param registry The registry handle.
+/// @param alias_high High 64 bits of the alias GUID.
+/// @param alias_low Low 64 bits of the alias GUID.
+/// @param provider_index Provider index (from add_provider).
+/// @param stream_id Stream ID that identifies the entry within the provider.
+/// @return true if the alias was registered successfully.
+TSDUCK_API bool tsduck_registry_add_guid_alias(
+    ChannelRegistryHandle registry,
+    int64_t alias_high,
+    int64_t alias_low,
+    int32_t provider_index,
+    int32_t stream_id
+);
+
+// =============================================================================
+// Registry: API Health Reporting (from C# XtreamClient)
+// =============================================================================
+
+/// API error type enumeration
+typedef enum {
+    API_ERROR_DNS_FAILURE = 0,    ///< DNS resolution failed
+    API_ERROR_TIMEOUT = 1,        ///< Request timed out
+    API_ERROR_HTTP_ERROR = 2,     ///< HTTP error (4xx/5xx)
+    API_ERROR_AUTH_FAILURE = 3    ///< Authentication failed (401/403)
+} ApiErrorTypeNative;
+
+/// Report a successful API call to update provider health.
+/// @param registry The registry handle.
+/// @param provider_index Provider index (from add_provider).
+/// @param latency_ms API call latency in milliseconds.
+TSDUCK_API void tsduck_registry_report_api_success(
+    ChannelRegistryHandle registry,
+    int32_t provider_index,
+    int32_t latency_ms
+);
+
+/// Report a failed API call to update provider health.
+/// DNS failures trigger the three-tier DNS policy (switch/eject).
+/// @param registry The registry handle.
+/// @param provider_index Provider index (from add_provider).
+/// @param error_type Type of API error.
+TSDUCK_API void tsduck_registry_report_api_failure(
+    ChannelRegistryHandle registry,
+    int32_t provider_index,
+    int32_t error_type
+);
+
+// =============================================================================
+// Registry: Provider Status Query
+// =============================================================================
+
+// Provider status (blittable, for diagnostics dashboard)
+typedef struct {
+    char id[16];                  // Provider ID
+    char name[64];                // Provider display name
+    double health_score;          // Health score (0-100, derived from success rate)
+    int32_t state;                // ProviderStateNative enum value
+    int32_t circuit_breaker_state; // 0=closed, 1=open, 2=half-open
+    int64_t quarantine_until;     // .NET ticks (0 if not quarantined)
+    int32_t channel_count;        // Number of channels this provider serves
+    int32_t consecutive_failures; // Number of times circuit has opened
+    double latency_ewma_ms;       // EWMA latency in milliseconds
+    double success_rate;          // Success rate (0.0 to 1.0)
+    int32_t reserved;             // Padding
+    int32_t reserved2;            // Padding
+} RegistryProviderStatusNative;
+
+/// Get status for all providers in the registry.
+/// @param registry The registry handle.
+/// @param out_status Output buffer for provider status entries.
+/// @param max_count Maximum entries to write (buffer size).
+/// @return Number of entries written.
+TSDUCK_API int32_t tsduck_registry_get_provider_status(
+    ChannelRegistryHandle registry,
+    RegistryProviderStatusNative* out_status,
+    int32_t max_count
+);
+
+// =============================================================================
+// Registry: Health Event Callback
+// =============================================================================
+
+/// Callback for health state change events (ejected, recovered, probation).
+/// Called from the thread that triggers the state change.
+/// @param provider_index Index of the affected provider.
+/// @param event_type Event type string (e.g. "ejected", "recovered").
+/// @param details Additional details string.
+/// @param user_data User-provided context pointer.
+typedef void (*TsDuckRegistryHealthCallback)(
+    int32_t provider_index,
+    const char* event_type,
+    const char* details,
+    void* user_data
+);
+
+/// Set health event callback on the registry.
+/// @param registry The registry handle.
+/// @param callback The callback function, or NULL to disable.
+/// @param user_data User-provided context passed to callback.
+TSDUCK_API void tsduck_registry_set_health_callback(
+    ChannelRegistryHandle registry,
+    TsDuckRegistryHealthCallback callback,
+    void* user_data
+);
+
+// =============================================================================
 // Streamer Registry Integration
 // =============================================================================
 //

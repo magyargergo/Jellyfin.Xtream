@@ -26,6 +26,7 @@ using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Epg;
+using Jellyfin.Xtream.Service.Streaming.Native;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
@@ -51,6 +52,7 @@ namespace Jellyfin.Xtream;
 /// <param name="epgProvider">Instance of the <see cref="IEpgProvider"/> interface.</param>
 /// <param name="externalEpgProvider">Instance of the <see cref="ExternalXmltvEpgProvider"/> for logo fallback.</param>
 /// <param name="epgRefreshTracker">Instance of the <see cref="EpgRefreshTracker"/> for batch tracking.</param>
+/// <param name="channelRegistryService">Instance of the <see cref="ChannelRegistryService"/> for native registry.</param>
 public class LiveTvService(
     IServerApplicationHost appHost,
     IHttpClientFactory httpClientFactory,
@@ -60,7 +62,8 @@ public class LiveTvService(
     IDiscordNotificationService discordService,
     IEpgProvider epgProvider,
     ExternalXmltvEpgProvider externalEpgProvider,
-    EpgRefreshTracker epgRefreshTracker
+    EpgRefreshTracker epgRefreshTracker,
+    ChannelRegistryService channelRegistryService
 ) : ILiveTvService, ISupportsDirectStreamProvider
 {
     private const int MaxParallelEpgRequests = 10;
@@ -74,6 +77,7 @@ public class LiveTvService(
     private readonly IEpgProvider _epgProvider = epgProvider;
     private readonly ExternalXmltvEpgProvider _externalEpgProvider = externalEpgProvider;
     private readonly EpgRefreshTracker _epgRefreshTracker = epgRefreshTracker;
+    private readonly ChannelRegistryService _channelRegistryService = channelRegistryService;
 
     private volatile ChannelProviderMap? _channelProviderMap;
 
@@ -94,9 +98,18 @@ public class LiveTvService(
 
     private async Task<IEnumerable<ChannelInfo>> GetDeduplicatedChannelsAsync(CancellationToken cancellationToken)
     {
-        var channelMap = _channelProviderMap = await StreamService
-            .GetDeduplicatedChannelMap(cancellationToken)
-            .ConfigureAwait(false);
+        // Wire up static health reporting for StreamService API calls
+        StreamService.SetRegistryService(_channelRegistryService);
+
+        // Fetch all streams from all providers
+        var allStreams = await StreamService.GetAllLiveStreams(cancellationToken).ConfigureAwait(false);
+        var streamsList = allStreams as IList<ProviderStreamInfo> ?? [.. allStreams];
+
+        // Build C# channel map (still needed for EPG provider lookup)
+        var channelMap = _channelProviderMap = ChannelProviderMap.Build(streamsList);
+
+        // Build native C++ registry (single source of truth for health + streaming)
+        BuildNativeRegistry(streamsList);
 
         // Log channel map statistics for debugging failover
         var multiProviderChannels = channelMap.Channels.Where(c => c.ProviderCount > 1).ToList();
@@ -196,6 +209,118 @@ public class LiveTvService(
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// Builds the native C++ channel registry from provider streams.
+    /// The registry becomes the single source of truth for health tracking and streaming decisions.
+    /// GUID aliases are registered atomically inside the build/rebuild lock to prevent
+    /// a window where aliases are unresolvable.
+    /// </summary>
+    private void BuildNativeRegistry(IList<ProviderStreamInfo> streamsList)
+    {
+        try
+        {
+            // Group streams by provider for registration
+            var config = Plugin.Instance.Configuration;
+            var providers = config.GetEnabledProviders().ToList();
+
+            if (_channelRegistryService.IsBuilt)
+            {
+                // Rebuild: preserve health scores, update channel data
+                _channelRegistryService.Rebuild(
+                    addStreams: registry =>
+                    {
+                        foreach (var ps in streamsList)
+                        {
+                            var providerIndex = _channelRegistryService.GetProviderIndex(ps.Provider.Id);
+                            if (providerIndex >= 0)
+                            {
+                                registry.AddStream(
+                                    providerIndex,
+                                    ps.Stream.StreamId,
+                                    ps.Stream.Name,
+                                    ps.Stream.StreamIcon
+                                );
+                            }
+                        }
+                    },
+                    postBuild: (registry, mapping) => RegisterGuidAliasesInternal(streamsList, registry, mapping)
+                );
+            }
+            else
+            {
+                // First build: register providers and streams
+                _channelRegistryService.Build(
+                    setup: (registry, providerMapping) =>
+                    {
+                        // Register providers
+                        for (int i = 0; i < providers.Count; i++)
+                        {
+                            var p = providers[i];
+                            var index = registry.AddProvider(
+                                p.Id,
+                                p.Name,
+                                p.BaseUrl,
+                                p.Username,
+                                p.Password,
+                                p.Priority,
+                                p.GetIdHash()
+                            );
+                            providerMapping[p.Id] = index;
+                        }
+
+                        // Register streams
+                        foreach (var ps in streamsList)
+                        {
+                            if (providerMapping.TryGetValue(ps.Provider.Id, out var providerIndex))
+                            {
+                                registry.AddStream(
+                                    providerIndex,
+                                    ps.Stream.StreamId,
+                                    ps.Stream.Name,
+                                    ps.Stream.StreamIcon
+                                );
+                            }
+                        }
+                    },
+                    postBuild: (registry, mapping) => RegisterGuidAliasesInternal(streamsList, registry, mapping)
+                );
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogWarning(ex, "Failed to build native channel registry: {Message}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Registers C# GUID aliases in the native registry so that Jellyfin's
+    /// provider-specific GUIDs (from ToProviderGuid) can resolve to channels.
+    /// Uses the provider mapping directly to avoid lock reentrancy overhead.
+    /// </summary>
+    private void RegisterGuidAliasesInternal(
+        IList<ProviderStreamInfo> streamsList,
+        NativeChannelRegistry registry,
+        IReadOnlyDictionary<string, int> providerMapping
+    )
+    {
+        int registered = 0;
+        foreach (var ps in streamsList)
+        {
+            if (!providerMapping.TryGetValue(ps.Provider.Id, out var providerIndex))
+            {
+                continue;
+            }
+
+            var csharpGuid = StreamService.ToProviderGuid(StreamService.LiveTvPrefix, ps.Provider, ps.Stream.StreamId);
+            if (registry.AddGuidAlias(csharpGuid, providerIndex, ps.Stream.StreamId))
+            {
+                registered++;
+            }
+        }
+
+        _logger.LogDebugIfEnabled("Registered {Count} C# GUID aliases in native registry", registered);
     }
 
     private static async Task<IEnumerable<ChannelInfo>> GetAllChannelsAsync(CancellationToken cancellationToken)
@@ -904,45 +1029,70 @@ public class LiveTvService(
             }
         }
 
-        // Build URLs for all providers (C++ handles selection and failover)
-        var urls = providers
-            .Select(p =>
-                $"{p.Provider.BaseUrl}/live/{p.Provider.Username}/{p.Provider.Password}/{p.Stream.StreamId}.ts"
-            )
-            .ToList();
+        var config = Plugin.Instance.Configuration;
+        Restream newStream;
 
-        // Initial scores are neutral - C++ will track and update based on streaming outcomes
-        var initialScores = providers.Select(_ => 50.0).ToList();
-
-        if (providers.Count > 1)
+        // Use registry-based streaming when available (single source of truth for health)
+        var registry = _channelRegistryService.Registry;
+        if (registry != null && registry.IsBuilt)
         {
             _logger.PluginLogInformation(
-                "Creating Restream for stream {StreamId} with {UrlCount} providers",
+                "Creating registry-based Restream for stream {StreamId} (GUID: {Guid})",
                 primaryStreamId,
-                urls.Count
+                guid
+            );
+
+            newStream = new Restream(
+                appHost: _appHost,
+                logger: _loggerFactory.CreateLogger<Restream>(),
+                loggerFactory: _loggerFactory,
+                mediaSource: mediaSourceInfo,
+                registry: registry,
+                channelGuid: guid,
+                discordService: _discordService,
+                streamOpenTimeoutMs: config.FailoverBudgetSeconds * 1000,
+                firstByteTimeoutMs: config.StreamFirstByteTimeoutSeconds * 1000
             );
         }
         else
         {
-            _logger.PluginLogInformation(
-                "Creating Restream for stream {StreamId} with single provider",
-                primaryStreamId
+            // Fallback: URL-list based streaming
+            var urls = providers
+                .Select(p =>
+                    $"{p.Provider.BaseUrl}/live/{p.Provider.Username}/{p.Provider.Password}/{p.Stream.StreamId}.ts"
+                )
+                .ToList();
+
+            var initialScores = providers.Select(_ => 50.0).ToList();
+
+            if (providers.Count > 1)
+            {
+                _logger.PluginLogInformation(
+                    "Creating Restream for stream {StreamId} with {UrlCount} providers (fallback)",
+                    primaryStreamId,
+                    urls.Count
+                );
+            }
+            else
+            {
+                _logger.PluginLogInformation(
+                    "Creating Restream for stream {StreamId} with single provider (fallback)",
+                    primaryStreamId
+                );
+            }
+
+            newStream = new Restream(
+                appHost: _appHost,
+                logger: _loggerFactory.CreateLogger<Restream>(),
+                loggerFactory: _loggerFactory,
+                mediaSource: mediaSourceInfo,
+                urls: urls,
+                initialScores: initialScores,
+                discordService: _discordService,
+                streamOpenTimeoutMs: config.FailoverBudgetSeconds * 1000,
+                firstByteTimeoutMs: config.StreamFirstByteTimeoutSeconds * 1000
             );
         }
-
-        var config = Plugin.Instance.Configuration;
-
-        var newStream = new Restream(
-            appHost: _appHost,
-            logger: _loggerFactory.CreateLogger<Restream>(),
-            loggerFactory: _loggerFactory,
-            mediaSource: mediaSourceInfo,
-            urls: urls,
-            initialScores: initialScores,
-            discordService: _discordService,
-            streamOpenTimeoutMs: config.FailoverBudgetSeconds * 1000,
-            firstByteTimeoutMs: config.StreamFirstByteTimeoutSeconds * 1000
-        );
 
         try
         {

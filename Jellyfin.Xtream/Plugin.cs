@@ -90,15 +90,26 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         return
         [
-            CreateStatic("XtreamMigration.html"),
-            CreateStatic("XtreamMigration.js"),
+            // Active pages (XtreamProviders first = default plugin config page)
             CreateStatic("XtreamProviders.html"),
             CreateStatic("XtreamProviders.js"),
-            CreateStatic("XtreamAdvanced.html"),
-            CreateStatic("XtreamAdvanced.js"),
+            CreateStatic("XtreamChannels.html"),
+            CreateStatic("XtreamChannels.js"),
+            CreateStatic("XtreamSettings.html"),
+            CreateStatic("XtreamSettings.js"),
+            CreateStatic("XtreamDashboard.html"),
+            CreateStatic("XtreamDashboard.js"),
+            CreateStatic("XtreamLogs.html"),
+            CreateStatic("XtreamLogs.js"),
+            // Shared assets
             CreateStatic("Xtream.css"),
             CreateStatic("Xtream.js"),
             CreateStatic("XtreamStyles.js"),
+            // Legacy redirects (minimal stubs for old bookmarks)
+            CreateStatic("XtreamMigration.html"),
+            CreateStatic("XtreamMigration.js"),
+            CreateStatic("XtreamAdvanced.html"),
+            CreateStatic("XtreamAdvanced.js"),
             CreateStatic("XtreamLive.html"),
             CreateStatic("XtreamLive.js"),
             CreateStatic("XtreamLiveOverrides.html"),
@@ -113,8 +124,6 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             CreateStatic("XtreamStreams.js"),
             CreateStatic("XtreamMonitor.html"),
             CreateStatic("XtreamMonitor.js"),
-            CreateStatic("XtreamLogs.html"),
-            CreateStatic("XtreamLogs.js"),
         ];
     }
 

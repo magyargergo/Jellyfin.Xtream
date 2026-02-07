@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -14,6 +15,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "../streaming/provider_health.hpp"
 
 namespace tsduck_interop::registry {
 
@@ -39,6 +42,17 @@ enum class DisconnectReason : int32_t {
     ConnectionFailed = 3,
     HttpError = 4,
     Aborted = 5
+};
+
+// ============================================================================
+// API Error Type (for reporting C# API call failures)
+// ============================================================================
+
+enum class ApiErrorType : int32_t {
+    DnsFailure = 0,
+    Timeout = 1,
+    HttpError = 2,
+    AuthFailure = 3
 };
 
 // ============================================================================
@@ -69,6 +83,38 @@ struct RegistryStatsNative {
 };
 
 // ============================================================================
+// Channel List Entry (blittable for C# enumeration)
+// ============================================================================
+
+struct ChannelListEntryNative {
+    int64_t guid_high;
+    int64_t guid_low;
+    char display_name[128];
+    char icon_url[512];
+    int32_t provider_count;
+    int32_t best_quality_score;
+};
+
+// ============================================================================
+// Provider Status (blittable for C# diagnostics)
+// ============================================================================
+
+struct ProviderStatusNative {
+    char id[16];
+    char name[64];
+    double health_score;          // Derived: success_rate * 100
+    int32_t state;                // streaming::ProviderState enum
+    int32_t circuit_breaker_state; // 0=closed, 1=open, 2=half-open
+    int64_t quarantine_until;     // .NET ticks (0 if not quarantined)
+    int32_t channel_count;        // Channels this provider serves
+    int32_t consecutive_failures; // From circuit breaker isolated_times
+    double latency_ewma_ms;
+    double success_rate;
+    int32_t reserved;
+    int32_t reserved2;
+};
+
+// ============================================================================
 // Internal Data Structures
 // ============================================================================
 
@@ -81,16 +127,6 @@ struct Provider {
     std::string password;
     int32_t priority;
     int32_t id_hash;
-};
-
-/// Per-provider health tracking (lock-free atomics)
-struct ProviderHealth {
-    std::atomic<double> score{50.0};
-    std::atomic<int64_t> quarantine_until_ticks{0};
-    std::atomic<int32_t> consecutive_failures{0};
-    std::atomic<int64_t> total_bytes{0};
-    std::atomic<int64_t> total_successes{0};
-    std::atomic<int64_t> total_failures{0};
 };
 
 /// A single stream entry from one provider
@@ -137,6 +173,18 @@ struct GuidKeyHash {
 };
 
 // ============================================================================
+// Health Event Callback
+// ============================================================================
+
+/// Callback type for health state change events.
+/// @param provider_index Index of the affected provider
+/// @param event_type Event type string (e.g. "ejected", "recovered", "probation")
+/// @param details Additional details string
+using HealthEventCallback = std::function<void(int32_t provider_index,
+                                                const char* event_type,
+                                                const char* details)>;
+
+// ============================================================================
 // Channel Registry Class
 // ============================================================================
 
@@ -144,8 +192,9 @@ struct GuidKeyHash {
 ///
 /// Thread safety:
 ///   - Build phase: single-threaded (main thread during init)
-///   - Lookup phase: lock-free reads via const methods
-///   - Health updates: atomic operations (safe from streaming thread)
+///   - Lookup phase: reads under shared_mutex
+///   - Health updates: delegated to UnifiedProviderHealthManager (lock-free atomics)
+///   - Rebuild: takes unique lock, preserves health data
 class ChannelRegistry {
 public:
     ChannelRegistry() = default;
@@ -156,19 +205,13 @@ public:
     ChannelRegistry& operator=(const ChannelRegistry&) = delete;
 
     // ========================================================================
-    // Configuration (for health tracking tuning)
+    // Configuration
     // ========================================================================
 
-    struct Config {
-        double score_boost_on_success = 0.5;
-        double score_penalty_on_failure = 5.0;
-        double score_penalty_on_timeout = 10.0;
-        int32_t quarantine_base_ms = 30000;
-        int32_t quarantine_max_ms = 300000;
-        double quarantine_multiplier = 2.0;
-    };
-
-    void set_config(const Config& config) noexcept { config_ = config; }
+    /// Set health manager configuration. Must be called before build().
+    void set_health_config(const streaming::ProviderHealthConfig& config) noexcept {
+        health_config_ = config;
+    }
 
     // ========================================================================
     // Phase 1: Registration (call from main thread during init)
@@ -192,20 +235,35 @@ public:
     // ========================================================================
 
     /// Build the registry. After this, no more add_* calls allowed.
+    /// Creates the health manager and registers all providers.
     /// @return true on success
     bool build();
 
     /// Check if registry has been built.
-    [[nodiscard]] bool is_built() const noexcept { return built_; }
+    [[nodiscard]] bool is_built() const noexcept { return built_.load(std::memory_order_acquire); }
 
     /// Get build statistics.
     [[nodiscard]] bool get_stats(RegistryStatsNative* out) const noexcept;
+
+    // ========================================================================
+    // Rebuild (preserves health data)
+    // ========================================================================
+
+    /// Begin rebuild: clears channels and GUIDs but preserves health manager
+    /// and provider list. After calling, add new streams and call rebuild().
+    void begin_rebuild() noexcept;
+
+    /// Finalize rebuild: re-processes streams, regenerates GUIDs.
+    /// Health scores are preserved from the existing health manager.
+    /// @return true on success
+    bool rebuild();
 
     // ========================================================================
     // Phase 3: Runtime Queries (thread-safe)
     // ========================================================================
 
     /// Get the best stream URL for a channel GUID.
+    /// Uses UnifiedProviderHealthManager P2C selection.
     /// @param guid_high High 64 bits of the GUID
     /// @param guid_low Low 64 bits of the GUID
     /// @param out_url Buffer for URL (at least 1024 chars)
@@ -228,6 +286,9 @@ public:
         char display_name[128];
         char icon_url[512];
         int32_t provider_count;
+        int32_t best_quality_score;
+        int64_t guid_high;
+        int64_t guid_low;
     };
     [[nodiscard]] bool get_channel_info(int64_t guid_high, int64_t guid_low,
                                         ChannelInfo* out) const noexcept;
@@ -241,24 +302,88 @@ public:
         int32_t* out_stream_ids,  // Stream ID for each
         int32_t max_urls) const noexcept;
 
+    /// Register an external GUID alias for a stream entry.
+    /// The alias GUID (e.g., from C#'s ToProviderGuid) maps to the same channel
+    /// as the provider_index + stream_id combination.
+    /// Must be called after build().
+    /// @return true if the alias was registered
+    bool add_guid_alias(int64_t alias_high, int64_t alias_low,
+                        int32_t provider_index, int32_t stream_id) noexcept;
+
     // ========================================================================
-    // Phase 4: Health Tracking (called from streaming callbacks)
+    // Channel Enumeration
     // ========================================================================
 
-    /// Record successful streaming.
+    /// Get the number of deduplicated channels.
+    [[nodiscard]] int32_t get_channel_count() const noexcept;
+
+    /// Enumerate channels with pagination.
+    /// @param out Output buffer for channel entries
+    /// @param max_count Maximum entries to write
+    /// @param offset Skip this many channels
+    /// @return Number of entries written
+    [[nodiscard]] int32_t enumerate_channels(
+        ChannelListEntryNative* out,
+        int32_t max_count,
+        int32_t offset) const noexcept;
+
+    // ========================================================================
+    // Provider Status Query
+    // ========================================================================
+
+    /// Get status for all providers.
+    /// @param out Output buffer for provider status entries
+    /// @param max_count Maximum entries to write
+    /// @return Number of entries written
+    [[nodiscard]] int32_t get_provider_status(
+        ProviderStatusNative* out,
+        int32_t max_count) const noexcept;
+
+    // ========================================================================
+    // Health Tracking (delegated to UnifiedProviderHealthManager)
+    // ========================================================================
+
+    /// Record successful streaming data reception.
     void record_success(int32_t provider_index, int64_t bytes_received) noexcept;
 
     /// Record streaming failure.
     void record_failure(int32_t provider_index, DisconnectReason reason) noexcept;
 
-    /// Get provider health score.
+    /// Report API call success (from C# XtreamClient).
+    void report_api_success(int32_t provider_index, int32_t latency_ms) noexcept;
+
+    /// Report API call failure (from C# XtreamClient).
+    void report_api_failure(int32_t provider_index, ApiErrorType error_type) noexcept;
+
+    /// Get provider health score (0-100, derived from success rate).
     [[nodiscard]] double get_provider_health(int32_t provider_index) const noexcept;
 
-    /// Check if provider is quarantined.
+    /// Check if provider is quarantined/ejected.
     [[nodiscard]] bool is_provider_quarantined(int32_t provider_index) const noexcept;
 
-    /// Reset all quarantines.
+    /// Reset all quarantines/ejections.
     void reset_all_quarantines() noexcept;
+
+    // ========================================================================
+    // Health Event Callback
+    // ========================================================================
+
+    /// Set callback for health state change events.
+    void set_health_callback(HealthEventCallback cb) noexcept;
+
+    // ========================================================================
+    // Direct access to health manager (for streamer integration)
+    // ========================================================================
+
+    /// Get the health manager (for passing to StreamPipeline).
+    /// Returns nullptr if not built.
+    [[nodiscard]] streaming::UnifiedProviderHealthManager* get_health_manager() noexcept {
+        return health_manager_.get();
+    }
+
+    [[nodiscard]] const streaming::UnifiedProviderHealthManager* get_health_manager() const noexcept {
+        return health_manager_.get();
+    }
 
     // ========================================================================
     // Normalization (static, for testing/external use)
@@ -275,12 +400,19 @@ public:
     static int32_t calculate_quality_score(const char* name, bool has_icon);
 
 private:
-    Config config_;
-    bool built_ = false;
+    streaming::ProviderHealthConfig health_config_;
+    std::atomic<bool> built_{false};
+    mutable std::shared_mutex mutex_;
 
     // Registration phase data
     std::vector<Provider> providers_;
-    std::vector<std::unique_ptr<ProviderHealth>> provider_health_;
+
+    // Unified health manager (replaces per-provider ProviderHealth)
+    std::unique_ptr<streaming::UnifiedProviderHealthManager> health_manager_;
+
+    // Health event callback
+    HealthEventCallback health_callback_;
+    std::mutex callback_mutex_;
 
     // Build phase temporary data
     struct PendingStream {
@@ -291,9 +423,18 @@ private:
     };
     std::vector<PendingStream> pending_streams_;
 
-    // Lookup phase data (immutable after build)
+    // Lookup phase data (immutable after build, guarded by shared_mutex for rebuild)
     std::unordered_map<std::string, Channel> channels_;
     std::unordered_map<GuidKey, std::string, GuidKeyHash> guid_to_channel_;
+
+    // Reverse index: (provider_index, stream_id) -> channel_name for O(1) alias lookup
+    std::unordered_map<int64_t, std::string> stream_to_channel_;
+
+    // Ordered channel keys for stable enumeration
+    std::vector<std::string> channel_keys_;
+
+    // Per-provider channel count cache
+    std::vector<int32_t> provider_channel_counts_;
 
     // Statistics
     int32_t skipped_count_ = 0;
@@ -302,10 +443,17 @@ private:
     void process_pending_streams();
     void sort_channel_entries();
     void generate_guids();
+    void compute_provider_channel_counts();
+    void build_reverse_index();
     std::string build_url(const Provider& provider, int32_t stream_id) const;
     static int64_t get_current_ticks() noexcept;
+    static int64_t make_stream_key(int32_t provider_index, int32_t stream_id) noexcept;
 
-    // Find best entry in a channel considering health
+    // Fire health event callback
+    void fire_health_event(int32_t provider_index, const char* event_type,
+                           const char* details) noexcept;
+
+    // Find best entry in a channel using health manager P2C selection
     const StreamEntry* select_best_entry(
         const Channel& channel,
         const std::unordered_set<int32_t>& excluded) const noexcept;

@@ -1,7 +1,7 @@
 export default function (view) {
   view.addEventListener("viewshow", () => Promise.all([
-    import(window.ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
-    import(window.ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "Xtream.js" })),
+    import(ApiClient.getUrl("web/ConfigurationPage", { name: "XtreamStyles.js" }))
   ]).then(([XtreamModule, StylesModule]) => {
     const Xtream = XtreamModule.default;
     const XtreamStyles = StylesModule.default;

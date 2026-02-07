@@ -16,6 +16,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
@@ -25,6 +26,7 @@ using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
+using Jellyfin.Xtream.Service.Streaming.Native;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
@@ -93,6 +95,94 @@ public static partial class StreamService
     public const int EpgPrefix = 0x5d774c3f;
 
     private static readonly Regex _tagRegex = TagRegex();
+
+    private static volatile ChannelRegistryService? _registryService;
+
+    /// <summary>
+    /// Sets the channel registry service for API health reporting.
+    /// Called during plugin initialization.
+    /// </summary>
+    /// <param name="service">The registry service singleton.</param>
+    internal static void SetRegistryService(ChannelRegistryService? service) => _registryService = service;
+
+    /// <summary>
+    /// Classifies an HTTP exception into an API error type for native health reporting.
+    /// </summary>
+    private static ApiErrorType ClassifyApiError(HttpRequestException ex)
+    {
+        // Check for auth failures first (specific HTTP status codes)
+        if (ex.StatusCode.HasValue)
+        {
+            var code = (int)ex.StatusCode.Value;
+            if (code is 401 or 403)
+            {
+                return ApiErrorType.AuthFailure;
+            }
+
+            return ApiErrorType.HttpError;
+        }
+
+        // No status code means network-level failure
+        var message = ex.Message.ToUpperInvariant();
+
+        if (
+            message.Contains("NO SUCH HOST", StringComparison.Ordinal)
+            || message.Contains("HOST NOT FOUND", StringComparison.Ordinal)
+            || message.Contains("NAME OR SERVICE NOT KNOWN", StringComparison.Ordinal)
+            || message.Contains("NODENAME NOR SERVNAME", StringComparison.Ordinal)
+        )
+        {
+            return ApiErrorType.DnsFailure;
+        }
+
+        if (
+            message.Contains("TIMED OUT", StringComparison.Ordinal)
+            || message.Contains("TIMEOUT", StringComparison.Ordinal)
+        )
+        {
+            return ApiErrorType.Timeout;
+        }
+
+        // Default: treat unknown network errors as generic HTTP errors.
+        // DnsFailure triggers aggressive ejection; only use it for confirmed DNS issues.
+        return ApiErrorType.HttpError;
+    }
+
+    /// <summary>
+    /// Reports an API success to the native health system if the registry is built.
+    /// </summary>
+    private static void ReportApiHealth(XtreamProvider provider, long elapsedMs)
+    {
+        var svc = _registryService;
+        if (svc is null || !svc.IsBuilt)
+        {
+            return;
+        }
+
+        var idx = svc.GetProviderIndex(provider.Id);
+        if (idx >= 0)
+        {
+            svc.ReportApiSuccess(idx, (int)Math.Min(elapsedMs, int.MaxValue));
+        }
+    }
+
+    /// <summary>
+    /// Reports an API failure to the native health system if the registry is built.
+    /// </summary>
+    private static void ReportApiFailure(XtreamProvider provider, ApiErrorType errorType)
+    {
+        var svc = _registryService;
+        if (svc is null || !svc.IsBuilt)
+        {
+            return;
+        }
+
+        var idx = svc.GetProviderIndex(provider.Id);
+        if (idx >= 0)
+        {
+            svc.ReportApiFailure(idx, errorType);
+        }
+    }
 
     /// <summary>
     /// Parses tags in the name of a stream entry.
@@ -250,6 +340,7 @@ public static partial class StreamService
         CancellationToken cancellationToken
     )
     {
+        var sw = Stopwatch.StartNew();
         try
         {
             var streams = await GetLiveStreamsWithOverridesForProvider(provider, cancellationToken)
@@ -262,10 +353,16 @@ public static partial class StreamService
                 result.Add(new ProviderStreamInfo(provider, s));
             }
 
+            sw.Stop();
+            ReportApiHealth(provider, sw.ElapsedMilliseconds);
+
             return result;
         }
         catch (HttpRequestException ex)
         {
+            sw.Stop();
+            ReportApiFailure(provider, ClassifyApiError(ex));
+
             Utility.PluginLogger.DirectLog(
                 Microsoft.Extensions.Logging.LogLevel.Warning,
                 nameof(StreamService),
@@ -275,6 +372,8 @@ public static partial class StreamService
         }
         catch (OperationCanceledException)
         {
+            sw.Stop();
+            ReportApiFailure(provider, ApiErrorType.Timeout);
             return [];
         }
     }
