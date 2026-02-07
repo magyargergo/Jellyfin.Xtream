@@ -68,6 +68,18 @@ public sealed class ProviderBehavior
     /// Gets or sets the corruption rate (0.0 to 1.0) when CorruptPackets is enabled.
     /// </summary>
     public double CorruptionRate { get; set; } = 0.1;
+
+    /// <summary>
+    /// Gets or sets whether to include valid H.264 NAL units (SPS/PPS/IDR) in video packets.
+    /// When true, video packets contain parseable H.264 data for decoder initialization testing.
+    /// </summary>
+    public bool EnableH264Nals { get; set; }
+
+    /// <summary>
+    /// Gets or sets the GOP size (frames between IDR frames) when EnableH264Nals is true.
+    /// Default is 30 frames.
+    /// </summary>
+    public int GopSize { get; set; } = 30;
 }
 
 /// <summary>
@@ -269,6 +281,7 @@ internal sealed class SimpleHttpTestServer : IAsyncDisposable
                     {
                         var chunk = generator.GenerateChunk(chunkPackets);
                         await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
+                        await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
                         totalBytesSent += chunk.Length;
 
                         // Stopwatch-based throttling: calculate how far ahead we are
@@ -414,6 +427,48 @@ internal sealed class SimpleHttpTestServer : IAsyncDisposable
             }
         );
 
+        // GET /stream/h264/{bitrateKbps} - stream with valid H.264 NAL units (SPS/PPS/IDR)
+        _app.MapGet(
+            "/stream/h264/{bitrateKbps:int}",
+            async (int bitrateKbps, HttpContext ctx) =>
+            {
+                Interlocked.Increment(ref _connectionCount);
+                ctx.Response.ContentType = "video/mp2t";
+                ctx.Response.Headers["Connection"] = "close";
+
+                // Enable H.264 NAL generation with 30-frame GOP
+                var generator = new TestStreamGenerator(bitrateKbps, enableH264Nals: true, gopSize: 30);
+                var bytesPerSecond = bitrateKbps * 1000.0 / 8.0;
+                const int chunkPackets = 50;
+                long totalBytesSent = 0;
+                var stopwatch = Stopwatch.StartNew();
+
+                try
+                {
+                    while (!ctx.RequestAborted.IsCancellationRequested)
+                    {
+                        var chunk = generator.GenerateChunk(chunkPackets);
+                        await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
+                        await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
+                        totalBytesSent += chunk.Length;
+
+                        var targetElapsedMs = totalBytesSent / bytesPerSecond * 1000.0;
+                        var actualElapsedMs = stopwatch.Elapsed.TotalMilliseconds;
+                        var sleepMs = (int)(targetElapsedMs - actualElapsedMs);
+
+                        if (sleepMs > 1)
+                        {
+                            await Task.Delay(sleepMs, ctx.RequestAborted);
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Client disconnected
+                }
+            }
+        );
+
         // GET /stream/corrupted/{bitrateKbps} - stream with periodic corrupt packets for TR 101 290 testing
         _app.MapGet(
             "/stream/corrupted/{bitrateKbps:int}",
@@ -449,6 +504,7 @@ internal sealed class SimpleHttpTestServer : IAsyncDisposable
                         }
 
                         await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
+                        await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
                         totalBytesSent += chunk.Length;
                         chunkIndex++;
 
@@ -629,7 +685,7 @@ internal sealed class SimpleHttpTestServer : IAsyncDisposable
         ctx.Response.ContentType = "video/mp2t";
         ctx.Response.Headers["Connection"] = "close";
 
-        var generator = new TestStreamGenerator(behavior.BitrateKbps);
+        var generator = new TestStreamGenerator(behavior.BitrateKbps, 0, behavior.EnableH264Nals, behavior.GopSize);
         var bytesPerSecond = behavior.BitrateKbps * 1000.0 / 8.0;
         var stopwatch = Stopwatch.StartNew();
         long totalBytesSent = 0;
@@ -672,6 +728,7 @@ internal sealed class SimpleHttpTestServer : IAsyncDisposable
                 }
 
                 await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
+                await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
                 totalBytesSent += chunk.Length;
                 stats.AddBytes(chunk.Length);
 

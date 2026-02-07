@@ -460,14 +460,20 @@ internal struct TsDuckStreamerConfigNative
     public long DnsEjectionDurationMs;
 
     /// <summary>
-    /// Creates a default configuration.
+    /// Creates a default configuration with industry-standard timeout values.
     /// </summary>
+    /// <remarks>
+    /// Timeouts based on industry standards research (TR 101 290, TVHeadend, etc.):
+    /// - Connect: 10s for slow IPTV providers
+    /// - Response: 15s for Xtream API variability
+    /// - Stall: 30s industry standard.
+    /// </remarks>
     public static TsDuckStreamerConfigNative Default =>
         new()
         {
-            ConnectTimeoutMs = 5000,
-            ResponseTimeoutMs = 10000,
-            StallTimeoutMs = 20000,
+            ConnectTimeoutMs = 10000,
+            ResponseTimeoutMs = 15000,
+            StallTimeoutMs = 30000,
             MaxRetries = 10,
             InitialBackoffMs = 500,
             MaxBackoffMs = 30000,

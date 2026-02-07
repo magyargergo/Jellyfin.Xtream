@@ -89,7 +89,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// <remarks>
     /// User expectation: When I click a channel, it should start playing within a few seconds.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task Restream_Open_CompletesWithinTimeout()
     {
         // Arrange
@@ -113,7 +113,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// <remarks>
     /// User expectation: The video should start playing with valid content, not garbage.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task Restream_GetStream_ReturnsValidTsData()
     {
         // Arrange
@@ -126,18 +126,19 @@ public sealed class RestreamIntegrationTests : IDisposable
         var buffer = new byte[TsPacketSize * 100]; // Read 100 packets
         int totalRead = 0;
         var readSw = Stopwatch.StartNew();
+        using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
         // Read until we have some data or timeout
-        while (totalRead < buffer.Length && readSw.ElapsedMilliseconds < 5000)
+        while (totalRead < buffer.Length && readSw.ElapsedMilliseconds < 5000 && !readCts.IsCancellationRequested)
         {
-            int read = await stream.ReadAsync(buffer.AsMemory(totalRead, buffer.Length - totalRead));
+            int read = await stream.ReadAsync(buffer.AsMemory(totalRead, buffer.Length - totalRead), readCts.Token);
             if (read > 0)
             {
                 totalRead += read;
             }
             else
             {
-                await Task.Delay(10);
+                await Task.Delay(10, readCts.Token);
             }
         }
 
@@ -182,7 +183,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// <remarks>
     /// User expectation: When everyone stops watching, the stream should stop using resources.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task Restream_AllConsumersDisconnect_CleansUpAfterGracePeriod()
     {
         // Arrange
@@ -213,7 +214,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// <remarks>
     /// User expectation: Brief disconnects (e.g., seeking) shouldn't restart the stream.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task Restream_ReconnectWithinGracePeriod_PreservesStream()
     {
         // Arrange
@@ -255,7 +256,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// User expectation: When multiple people watch the same channel, it shouldn't
     /// use multiple connections to the source (bandwidth efficiency).
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task Restream_MultipleConsumers_ShareSingleConnection()
     {
         // Arrange
@@ -281,16 +282,17 @@ public sealed class RestreamIntegrationTests : IDisposable
                     var buffer = new byte[1316 * 16];
                     long totalRead = 0;
                     var sw = Stopwatch.StartNew();
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-                    while (sw.ElapsedMilliseconds < 2000)
+                    while (sw.ElapsedMilliseconds < 2000 && !cts.IsCancellationRequested)
                     {
-                        int read = await stream.ReadAsync(buffer);
+                        int read = await stream.ReadAsync(buffer, cts.Token);
                         if (read > 0)
                         {
                             totalRead += read;
                         }
 
-                        await Task.Delay(10);
+                        await Task.Delay(10, cts.Token);
                     }
 
                     return totalRead;
@@ -330,7 +332,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// <remarks>
     /// User expectation: I can watch a show for an hour without buffering or dropouts.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 120000)]
     public async Task Restream_SustainedStreaming_NoBufferIssues()
     {
         // Arrange
@@ -385,7 +387,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// User expectation: If the stream source has issues, it should automatically
     /// switch to a backup without me having to do anything.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task Restream_SourceFailure_FailsOverSeamlessly()
     {
         // Arrange - unstable URL (drops after 2s) + stable backup
@@ -438,7 +440,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// User expectation: If the channel is unavailable, I should get a clear error,
     /// not a hang or crash.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task Restream_AllUrlsFail_ThrowsTimeoutException()
     {
         // Arrange - URL that will fail
@@ -466,7 +468,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// <remarks>
     /// User expectation: Jellyfin's probe then playback pattern should work smoothly.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 60000)]
     public async Task Restream_FFprobeToFFmpegHandoff_ContinuesSeamlessly()
     {
         // Arrange
@@ -505,7 +507,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// <remarks>
     /// User expectation: 4K streams should play without buffering on good networks.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 120000)]
     public async Task Restream_HighBitrate_SustainsWithoutOverflow()
     {
         // Arrange - 15 Mbps (typical 4K bitrate)
@@ -552,7 +554,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     /// Data passes through immediately - no warmup delay.
     /// The test verifies that both readers can read independently without blocking.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = 120000)]
     public async Task Restream_SlowReader_DoesNotBlockFastReader()
     {
         // Arrange
@@ -571,20 +573,22 @@ public sealed class RestreamIntegrationTests : IDisposable
         using var slowStream = restream.GetStream();
 
         // Act - fast reader polls every 10ms, slow reader every 500ms
+        using var testCts = new CancellationTokenSource(duration + TimeSpan.FromSeconds(10));
+
         var fastTask = Task.Run(async () =>
         {
             var buffer = new byte[1316 * 16];
             var sw = Stopwatch.StartNew();
-            while (sw.Elapsed < duration)
+            while (sw.Elapsed < duration && !testCts.IsCancellationRequested)
             {
-                int read = await fastStream.ReadAsync(buffer);
+                int read = await fastStream.ReadAsync(buffer, testCts.Token);
                 if (read > 0)
                 {
                     Interlocked.Add(ref fastReaderBytes, read);
                     Interlocked.Increment(ref fastReadCount);
                 }
 
-                await Task.Delay(10);
+                await Task.Delay(10, testCts.Token);
             }
         });
 
@@ -592,20 +596,27 @@ public sealed class RestreamIntegrationTests : IDisposable
         {
             var buffer = new byte[1316 * 16];
             var sw = Stopwatch.StartNew();
-            while (sw.Elapsed < duration)
+            while (sw.Elapsed < duration && !testCts.IsCancellationRequested)
             {
-                int read = await slowStream.ReadAsync(buffer);
+                int read = await slowStream.ReadAsync(buffer, testCts.Token);
                 if (read > 0)
                 {
                     Interlocked.Add(ref slowReaderBytes, read);
                     Interlocked.Increment(ref slowReadCount);
                 }
 
-                await Task.Delay(500); // Slow reader
+                await Task.Delay(500, testCts.Token); // Slow reader
             }
         });
 
-        await Task.WhenAll(fastTask, slowTask);
+        try
+        {
+            await Task.WhenAll(fastTask, slowTask);
+        }
+        catch (OperationCanceledException) when (testCts.IsCancellationRequested)
+        {
+            // Safety timeout reached - check what we have
+        }
 
         // Assert
         _output.WriteLine($"Fast reader: {fastReaderBytes:N0} bytes ({fastReadCount} reads)");

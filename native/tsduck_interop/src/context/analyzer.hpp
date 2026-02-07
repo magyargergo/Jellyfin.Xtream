@@ -334,6 +334,78 @@ public:
         }
     }
 
+    /// Force immediate metrics update (bypasses interval check).
+    /// Used by get_metrics() to provide on-demand metrics.
+    void force_update_metrics() noexcept {
+        // Skip if no data has been received yet
+        if (!first_feed_received.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        std::int64_t current_time = now_ns();
+
+        auto seq = metrics.seqlock.begin_write();
+
+        metrics.data.timestamp_ticks = get_dotnet_ticks();
+
+        // Get PID count from our PidTracker
+        metrics.data.pid_count = pids.active_count.load(std::memory_order_relaxed);
+        metrics.data.service_count = psi.get_program_count();
+
+        // Calculate bitrate from packet count and elapsed time
+        {
+            int64_t start = start_time_ns.load(std::memory_order_relaxed);
+            int64_t total_time_ms = (current_time - start) / 1000000;
+            if (total_time_ms > 0) {
+                int64_t bytes = packets_processed.load(std::memory_order_relaxed) * static_cast<int32_t>(ts::PKT_SIZE);
+                metrics.data.ts_bitrate = (bytes * 8 * 1000) / total_time_ms;
+            }
+        }
+
+        // TR 101 290 metrics (simplified - just get current counters)
+        if (config.enable_tr101290) {
+            Tr101290Priority1Native p1{};
+            Tr101290Priority2Native p2{};
+            tr101290.get_counters(&p1, &p2);
+
+            int64_t total_cc_errors = pids.total_cc_errors.load(std::memory_order_relaxed);
+
+            metrics.data.priority1.sync_byte_error = p1.sync_byte_error;
+            metrics.data.priority1.sync_loss = p1.sync_loss;
+            metrics.data.priority1.pat_error = p1.pat_error;
+            metrics.data.priority1.pat_error_2 = 0;
+            metrics.data.priority1.continuity_count_error = total_cc_errors;
+            metrics.data.priority1.pmt_error = p1.pmt_error;
+            metrics.data.priority1.pmt_error_2 = 0;
+            metrics.data.priority1.pid_error = p1.pid_error;
+
+            metrics.data.priority2.transport_error = p2.transport_error;
+            metrics.data.priority2.crc_error = p2.crc_error + psi.crc_errors.load(std::memory_order_relaxed);
+            metrics.data.priority2.pcr_repetition_error = p2.pcr_repetition_error;
+            metrics.data.priority2.pcr_discontinuity_error = p2.pcr_discontinuity_error;
+            metrics.data.priority2.pcr_accuracy_error = p2.pcr_accuracy_error;
+            metrics.data.priority2.pts_error = p2.pts_error;
+            metrics.data.priority2.cat_error = 0;
+        }
+
+        metrics.seqlock.end_write(seq);
+
+        // Update bitrate analysis
+        int64_t total_packets = total_packet_count.load(std::memory_order_relaxed);
+        int64_t null_packets = null_packet_count.load(std::memory_order_relaxed);
+
+        auto bitrate_seq = bitrate.seqlock.begin_write();
+        bitrate.data.ts_bitrate_nominal = metrics.data.ts_bitrate;
+
+        if (total_packets > 0) {
+            bitrate.data.null_packet_ratio = static_cast<double>(null_packets) / static_cast<double>(total_packets);
+            bitrate.data.null_packet_bitrate =
+                static_cast<int64_t>(metrics.data.ts_bitrate * bitrate.data.null_packet_ratio);
+            bitrate.data.useful_bitrate = metrics.data.ts_bitrate - bitrate.data.null_packet_bitrate;
+        }
+        bitrate.seqlock.end_write(bitrate_seq);
+    }
+
     // ========================================================================
     // Feed Methods
     // ========================================================================
@@ -524,13 +596,18 @@ public:
     // Metrics Retrieval
     // ========================================================================
 
-    /// Get current metrics.
+    /// Get current metrics with on-demand calculation.
+    /// Forces metrics update to ensure returned data reflects current state.
     /// @param out Pointer to receive metrics
     /// @return true if metrics available
-    [[nodiscard]] bool get_metrics(TsDuckMetricsNative* out) const noexcept {
+    [[nodiscard]] bool get_metrics(TsDuckMetricsNative* out) noexcept {
         if (out == nullptr) {
             return false;
         }
+
+        // Force metrics update to ensure on-demand availability
+        // This bypasses the interval check to provide real-time metrics
+        force_update_metrics();
 
         *out = concurrency::seqlock_read(metrics.seqlock, metrics.data);
         has_new_metrics.store(false, std::memory_order_release);
@@ -593,8 +670,9 @@ private:
 
     /// Initialize timing on first data arrival.
     void initialize_timing_on_first_feed() noexcept {
-        if (!first_feed_received.load(std::memory_order_relaxed)) {
-            first_feed_received.store(true, std::memory_order_release);
+        bool expected = false;
+        if (first_feed_received.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            // Only one thread will enter here due to atomic CAS
             std::int64_t now_val = now_ns();
             start_time_ns.store(now_val, std::memory_order_release);
             last_metrics_time_ns.store(now_val, std::memory_order_release);

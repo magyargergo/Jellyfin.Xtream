@@ -15,6 +15,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service.Streaming.Native;
@@ -213,14 +214,21 @@ public sealed class NativeStreamer : IDisposable
 
         if (callback == null)
         {
-            // Clear the callback
+            // Clear native callback FIRST to prevent new invocations
+            // This ensures the native worker thread will no longer call the delegate
+            // before we free the GCHandle that keeps it alive
+            TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), 0, 0);
+
+            // Memory barrier ensures native side sees the cleared callback
+            Thread.MemoryBarrier();
+
+            // Now safe to free the GCHandle since native will no longer call the callback
             if (_eventCallbackHandle.IsAllocated)
             {
                 _eventCallbackHandle.Free();
             }
 
             _nativeEventCallback = null;
-            TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), 0, 0);
             return;
         }
 
@@ -753,9 +761,20 @@ public sealed class NativeStreamer : IDisposable
             return;
         }
 
-        _disposed = true;
+        // CRITICAL: Clear native callback registration FIRST to prevent new callbacks.
+        // This ensures the native worker thread will stop invoking our delegate
+        // before we mark ourselves as disposed or free resources.
+        if (!_streamer.IsInvalid)
+        {
+            TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), 0, 0);
+        }
 
-        // Clear callback before stopping to prevent callbacks during shutdown
+        // Memory barrier ensures native side sees the cleared callback before we proceed
+        Thread.MemoryBarrier();
+
+        // Now safe to mark as disposed - any in-flight callback will complete
+        // but no new callbacks will start
+        _disposed = true;
         _eventCallback = null;
 
         // Stop streaming before disposing handle
@@ -764,7 +783,7 @@ public sealed class NativeStreamer : IDisposable
             TsDuckNativeMethods.StreamerStop(_streamer.DangerousGetHandle());
         }
 
-        // Free GCHandle for event callback
+        // Free GCHandle for event callback (safe now since native callback is cleared)
         if (_eventCallbackHandle.IsAllocated)
         {
             _eventCallbackHandle.Free();

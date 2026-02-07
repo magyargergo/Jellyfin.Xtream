@@ -331,12 +331,17 @@ WriteResult SharedMemoryProducer::write(std::span<const std::byte> data) noexcep
     std::uint64_t available_slots = slot_count_ - 1 - used_slots;
 
     if (available_slots == 0) {
-        // Buffer full - advance read position to make room (drop oldest data)
+        // Buffer full - advance read position to make room (drop oldest data).
+        // This is an acceptable SPSC pattern because:
+        // 1. Producer only advances read_pos forward, never backward
+        // 2. Consumer uses acquire load and will see the new position
+        // 3. Overflow flag signals to consumer that data was lost
         result.overflow = true;
         header_->flags.fetch_or(
             static_cast<std::uint32_t>(SharedMemoryFlags::Overflow),
             std::memory_order_release);
 
+        // Calculate how many slots we need and advance read_position to make room
         std::uint64_t slots_needed = (packets_to_write + packets_per_slot - 1) / packets_per_slot;
         header_->read_position.store(read_pos + slots_needed, std::memory_order_release);
         available_slots = slots_needed;
@@ -354,6 +359,13 @@ WriteResult SharedMemoryProducer::write(std::span<const std::byte> data) noexcep
 
     while (remaining > 0 && available_slots > 0) {
         std::size_t to_copy = std::min(remaining, slot_size_);
+
+        // Overflow check: slot_index * slot_size_ could overflow for very large values
+        if (slot_index > SIZE_MAX / slot_size_) {
+            LOG_ERROR(kLogComponent, "slot offset calculation would overflow: slot_index=%zu slot_size=%zu",
+                      slot_index, slot_size_);
+            break;
+        }
         std::byte* dest = data_region_ + (slot_index * slot_size_);
 
         // SIMD-optimized copy for streaming hot path

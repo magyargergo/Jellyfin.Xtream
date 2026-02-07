@@ -112,6 +112,7 @@ if(CURL_FOUND)
         set(DOCKER_INTEGRATION_TESTS
             test_analyzer_integration
             test_restamper_integration
+            test_sps_pps_injection
         )
 
         foreach(test ${DOCKER_INTEGRATION_TESTS})

@@ -244,6 +244,8 @@ private:
     std::unique_ptr<ipc::SharedMemoryProducer> shm_producer_;
     std::string shm_name_;
     std::size_t shm_bytes_since_signal_{0};  // Bytes written since last signal
+    bool first_shm_write_{true};  // True until first data is written, triggers immediate signal
+    int buffer_signal_counter_{0};  // Counter for periodic heartbeat signals during keyframe alignment
 
     // Timing state for mid-stream switch
     int64_t last_output_pts_{-1};
@@ -253,6 +255,11 @@ private:
 
     // Disconnect reason tracking (for failover decision-making)
     DisconnectReason last_disconnect_reason_{DisconnectReason::Unknown};
+
+    // Flag to prevent double switch when manual switch is requested mid-session
+    // Set to true when perform_switch() is called from stream_session(),
+    // checked in worker_loop() to skip disconnect/stall handling
+    bool switch_performed_in_session_{false};
 
     // Session timing
     int64_t session_start_ticks_{0};

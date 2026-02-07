@@ -42,11 +42,15 @@ struct NetworkConfig {
     // IP Version
     int32_t ip_resolve_mode = static_cast<int32_t>(IpResolveMode::IPv4Only);
 
-    // Timeouts
+    // Timeouts (based on industry standards research)
+    // DNS: 5s reasonable for most scenarios
+    // TCP connect: 10s for slow IPTV providers
+    // TLS handshake: 5s reasonable
+    // First byte: 15s for Xtream API variability
     int32_t dns_timeout_ms = 5000;
-    int32_t tcp_connect_timeout_ms = 5000;
+    int32_t tcp_connect_timeout_ms = 10000;
     int32_t tls_handshake_timeout_ms = 5000;
-    int32_t first_byte_timeout_ms = 10000;
+    int32_t first_byte_timeout_ms = 15000;
     int32_t happy_eyeballs_timeout_ms = 200;
 
     // TCP Keep-Alive
@@ -54,8 +58,8 @@ struct NetworkConfig {
     int32_t tcp_keepalive_idle_sec = 60;
     int32_t tcp_keepalive_interval_sec = 60;
 
-    // Buffer
-    int32_t recv_buffer_size = 65536;
+    // Buffer (128KB for higher throughput on high-bitrate streams)
+    int32_t recv_buffer_size = 131072;
 
     // Reserved for future
     int32_t reserved[4] = {};

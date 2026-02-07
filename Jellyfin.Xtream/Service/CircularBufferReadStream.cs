@@ -66,8 +66,11 @@ public sealed class CircularBufferReadStream : Stream
 
     private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB read
 
-    // Simple timeout - C++ handles reconnection and streaming state
-    private const int MaxWaitMs = 30000;
+    // Simple timeout - C++ handles reconnection and streaming state.
+    // Set to 10s to accommodate keyframe alignment (5s max) plus connection overhead.
+    // Native code now signals heartbeats during alignment, so this timeout only triggers
+    // when data flow has truly stopped.
+    private const int MaxWaitMs = 10000;
 
     private static readonly int _simdThreshold = DetermineSimdThreshold();
     private static readonly bool _avx512Supported = Avx512F.IsSupported;
@@ -97,7 +100,7 @@ public sealed class CircularBufferReadStream : Stream
     private CacheLinePadded _totalOverflowBytes;
     private CacheLinePaddedInt _overflowCount;
     private int _lastSeenDiscontinuityCount;
-    private bool _isDisposed;
+    private volatile bool _isDisposed;
     private DateTime _lastOverflowLog = DateTime.MinValue;
     private DateTime _lastPredictorUpdate = DateTime.MinValue;
     private long _lastProgressLogBytes;
@@ -253,10 +256,17 @@ public sealed class CircularBufferReadStream : Stream
     /// <inheritdoc />
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
+        // Fast path: if already disposed or source buffer is disposed, return immediately
+        if (_isDisposed || _sourceBuffer.IsDisposed)
+        {
+            return 0;
+        }
+
         var gap = _sourceBuffer.TotalBytesWritten - ReadHead;
         var waitStart = DateTime.UtcNow;
 
-        while (gap == 0 && !cancellationToken.IsCancellationRequested)
+        // Check _isDisposed and source buffer disposal in loop to respond quickly to disposal.
+        while (gap == 0 && !cancellationToken.IsCancellationRequested && !_isDisposed && !_sourceBuffer.IsDisposed)
         {
             // Simple polling - C++ manages connection state
             try
@@ -264,6 +274,12 @@ public sealed class CircularBufferReadStream : Stream
                 await Task.Delay(50, cancellationToken).ConfigureAwait(false);
             }
             catch (TaskCanceledException)
+            {
+                return 0;
+            }
+
+            // Check disposal after delay
+            if (_isDisposed || _sourceBuffer.IsDisposed)
             {
                 return 0;
             }
@@ -282,7 +298,7 @@ public sealed class CircularBufferReadStream : Stream
             }
         }
 
-        if (cancellationToken.IsCancellationRequested || gap == 0)
+        if (cancellationToken.IsCancellationRequested || gap == 0 || _isDisposed || _sourceBuffer.IsDisposed)
         {
             return 0;
         }

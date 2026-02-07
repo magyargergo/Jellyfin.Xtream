@@ -112,13 +112,49 @@ public sealed class StreamConsumerSimulator : IDisposable
         var overallStart = sw.Elapsed;
         DateTime? lastReadTime = null;
 
+        // Create a timeout-based CTS that enforces the duration limit
+        // Add 5 second margin to allow graceful completion
+        using var timeoutCts = new CancellationTokenSource(duration + TimeSpan.FromSeconds(5));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
         try
         {
-            while (sw.Elapsed < duration && !cancellationToken.IsCancellationRequested)
+            while (sw.Elapsed < duration && !linkedCts.Token.IsCancellationRequested)
             {
                 var readStart = Stopwatch.GetTimestamp();
 
-                int bytesRead = await _stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                // Use per-read timeout to prevent ReadAsync from blocking beyond remaining duration
+                var remainingTime = duration - sw.Elapsed;
+                if (remainingTime <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                // Limit each ReadAsync to at most 5 seconds or remaining duration, whichever is smaller
+                var readTimeout = TimeSpan.FromSeconds(Math.Min(5, remainingTime.TotalSeconds + 1));
+                using var readCts = new CancellationTokenSource(readTimeout);
+                using var readLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    linkedCts.Token,
+                    readCts.Token
+                );
+
+                int bytesRead;
+                try
+                {
+                    bytesRead = await _stream.ReadAsync(buffer, readLinkedCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (readCts.Token.IsCancellationRequested && !linkedCts.Token.IsCancellationRequested)
+                {
+                    // Read timed out but overall test not cancelled - just continue to check duration
+                    bytesRead = 0;
+                }
+
+                // Check duration again after ReadAsync returns (it may have blocked)
+                if (sw.Elapsed >= duration)
+                {
+                    break;
+                }
 
                 var readLatency = Stopwatch.GetElapsedTime(readStart);
                 _readLatencies.Add(readLatency);
@@ -152,11 +188,20 @@ public sealed class StreamConsumerSimulator : IDisposable
                     ZeroReadCount++;
                 }
 
-                if (readIntervalMs > 0)
+                if (readIntervalMs > 0 && sw.Elapsed < duration && !linkedCts.Token.IsCancellationRequested)
                 {
-                    await Task.Delay(readIntervalMs, cancellationToken).ConfigureAwait(false);
+                    // Use remaining time for delay too
+                    var delayTime = Math.Min(readIntervalMs, (int)(duration - sw.Elapsed).TotalMilliseconds);
+                    if (delayTime > 0)
+                    {
+                        await Task.Delay(delayTime, linkedCts.Token).ConfigureAwait(false);
+                    }
                 }
             }
+        }
+        catch (OperationCanceledException) when (timeoutCts.Token.IsCancellationRequested)
+        {
+            // Test duration timeout reached - this is expected, not an error
         }
         finally
         {
@@ -191,25 +236,54 @@ public sealed class StreamConsumerSimulator : IDisposable
         long probeBytes = 0;
         long ffmpegBytes = 0;
 
+        // Total timeout for entire operation with margin
+        var totalTimeout = TimeSpan.FromMilliseconds(probeReadMs + handoffDelayMs + ffmpegReadMs + 10000);
+        using var timeoutCts = new CancellationTokenSource(totalTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
         // Phase 1: FFprobe reads briefly
         using (var probeStream = restream.GetStream())
         {
             var probeSw = Stopwatch.StartNew();
-            while (probeSw.ElapsedMilliseconds < probeReadMs && !cancellationToken.IsCancellationRequested)
+            while (probeSw.ElapsedMilliseconds < probeReadMs && !linkedCts.Token.IsCancellationRequested)
             {
-                int read = await probeStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                // Per-read timeout
+                var remainingMs = probeReadMs - (int)probeSw.ElapsedMilliseconds;
+                if (remainingMs <= 0)
+                    break;
+
+                using var readCts = new CancellationTokenSource(Math.Min(2000, remainingMs + 500));
+                using var readLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    linkedCts.Token,
+                    readCts.Token
+                );
+
+                int read;
+                try
+                {
+                    read = await probeStream.ReadAsync(buffer, readLinkedCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (readCts.Token.IsCancellationRequested && !linkedCts.Token.IsCancellationRequested)
+                {
+                    read = 0;
+                }
+
                 if (read > 0)
                 {
                     probeBytes += read;
                 }
 
-                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                if (probeSw.ElapsedMilliseconds < probeReadMs && !linkedCts.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(10, linkedCts.Token).ConfigureAwait(false);
+                }
             }
         }
         // probeStream disposed here (simulates FFprobe exit)
 
         // Handoff delay (simulates FFprobe finishing and FFmpeg starting)
-        await Task.Delay(handoffDelayMs, cancellationToken).ConfigureAwait(false);
+        await Task.Delay(handoffDelayMs, linkedCts.Token).ConfigureAwait(false);
 
         // Phase 2: FFmpeg reconnects
         bool reconnectSuccessful;
@@ -219,9 +293,30 @@ public sealed class StreamConsumerSimulator : IDisposable
             reconnectSuccessful = true;
 
             var ffmpegSw = Stopwatch.StartNew();
-            while (ffmpegSw.ElapsedMilliseconds < ffmpegReadMs && !cancellationToken.IsCancellationRequested)
+            while (ffmpegSw.ElapsedMilliseconds < ffmpegReadMs && !linkedCts.Token.IsCancellationRequested)
             {
-                int read = await ffmpegStream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                // Per-read timeout
+                var remainingMs = ffmpegReadMs - (int)ffmpegSw.ElapsedMilliseconds;
+                if (remainingMs <= 0)
+                    break;
+
+                using var readCts = new CancellationTokenSource(Math.Min(2000, remainingMs + 500));
+                using var readLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    linkedCts.Token,
+                    readCts.Token
+                );
+
+                int read;
+                try
+                {
+                    read = await ffmpegStream.ReadAsync(buffer, readLinkedCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (readCts.Token.IsCancellationRequested && !linkedCts.Token.IsCancellationRequested)
+                {
+                    read = 0;
+                }
+
                 if (read > 0)
                 {
                     ffmpegBytes += read;
@@ -229,7 +324,10 @@ public sealed class StreamConsumerSimulator : IDisposable
                     ReadCount++;
                 }
 
-                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                if (ffmpegSw.ElapsedMilliseconds < ffmpegReadMs && !linkedCts.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(10, linkedCts.Token).ConfigureAwait(false);
+                }
             }
         }
         catch (InvalidOperationException)

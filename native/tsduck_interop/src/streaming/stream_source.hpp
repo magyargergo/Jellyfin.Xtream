@@ -160,7 +160,7 @@ public:
         return urls_[current_url_index_].url;
     }
 
-    int32_t current_url_index() const noexcept { return current_url_index_; }
+    int32_t current_url_index() const noexcept { return current_url_index_.load(std::memory_order_acquire); }
 
     /// Legacy method: Advance to next URL in rotation (simple round-robin).
     /// @deprecated Use select_best_url() for health-aware selection.
@@ -284,7 +284,7 @@ private:
 
     mutable std::mutex url_mutex_;
     std::vector<UrlInfo> urls_;
-    int32_t current_url_index_{0};
+    std::atomic<int32_t> current_url_index_{0};
 
     int64_t bytes_received_{0};
     int32_t last_http_status_{0};

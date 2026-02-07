@@ -92,6 +92,9 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     // When a reader disconnects, it records its position here so the next reader can continue
     private CacheLinePadded _lastReaderPosition;
 
+    // Disposed state for signaling to readers that the stream is terminated
+    private volatile bool _isDisposed;
+
     private const int TsPacketSize = 188;
     private const byte TsSyncByte = 0x47;
 
@@ -162,6 +165,12 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     /// Gets the time when the last reader disconnected.
     /// </summary>
     public DateTime LastReaderDisconnectTime { get; private set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the stream has been disposed.
+    /// Readers should check this to detect when the source stream is terminated.
+    /// </summary>
+    public bool IsDisposed => _isDisposed;
 
     /// <summary>
     /// Records a reader's final position when it disconnects.
@@ -1014,6 +1023,7 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     /// <inheritdoc />
     protected override void Dispose(bool disposing)
     {
+        _isDisposed = true;
         base.Dispose(disposing);
     }
 }

@@ -96,7 +96,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private CancellationTokenSource _tokenSource;
     private Task? _broadcastTask;
     private int _consumerCount;
-    private bool _isDisposed;
+    private volatile bool _isDisposed;
     private int _bufferUnderrunCount;
     private int _bufferHealthWarnings;
     private string? _killReason;
@@ -135,7 +135,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// Gets a value indicating whether this stream has been disposed.
     /// Used to detect stale stream references held by Jellyfin.
     /// </summary>
-    public bool IsDisposed => Volatile.Read(in _isDisposed);
+    public bool IsDisposed => _isDisposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Restream"/> class.
@@ -476,8 +476,15 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         finally
         {
             _receivingData = false;
-            _nativeStreamer.SetEventCallback(callback: null);
-            _nativeStreamer.Stop();
+
+            // Capture local reference: Dispose() may set _nativeStreamer to null concurrently
+            var streamer = _nativeStreamer;
+            if (streamer != null)
+            {
+                streamer.SetEventCallback(callback: null);
+                streamer.Stop();
+            }
+
             _shmConsumer?.Dispose();
             _shmConsumer = null;
             _buffer.SignalSourceDisconnected();
@@ -487,71 +494,128 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <summary>
     /// Connects to shared memory and reads data in a loop, writing to the circular buffer.
     /// Handles discontinuity, overflow, end-of-stream, and error flags from the producer.
+    /// Uses exponential backoff for initial shared memory connection.
     /// </summary>
     private async Task ConnectAndReadSharedMemoryAsync(CancellationToken cancellationToken)
     {
-        // Wait briefly for producer to initialize shared memory
-        await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+        // Wait for producer to initialize shared memory with exponential backoff.
+        // The C++ worker creates the /dev/shm file on startup, but thread scheduling
+        // can delay this. Retry avoids the race condition where C# opens before C++ creates.
+        const int maxRetries = 6;
+        var retryDelayMs = 100;
+        var connected = false;
 
-        try
+        for (int attempt = 0; attempt < maxRetries && !cancellationToken.IsCancellationRequested; attempt++)
         {
-            // Dispose any previous consumer before creating new one
-            _shmConsumer?.Dispose();
-            _shmConsumer = new SharedMemoryConsumer(_sharedMemoryName);
+            await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                _shmConsumer?.Dispose();
+                _shmConsumer = new SharedMemoryConsumer(_sharedMemoryName);
+                connected = true;
+                break;
+            }
+            catch (FileNotFoundException) when (attempt < maxRetries - 1)
+            {
+                _logger.LogDebugIfEnabled(
+                    "Shared memory not ready (attempt {Attempt}/{Max}), retrying in {Delay}ms",
+                    attempt + 1,
+                    maxRetries,
+                    retryDelayMs
+                );
+                retryDelayMs = Math.Min(retryDelayMs * 2, 1600);
+            }
+            catch (Exception ex)
+            {
+                _logger.PluginLogError(ex, "Failed to connect to shared memory: {Name}", _sharedMemoryName);
+                _killReason = "Shared memory connection failed";
+                return;
+            }
         }
-        catch (Exception ex)
+
+        if (!connected)
         {
-            _logger.PluginLogError(ex, "Failed to connect to shared memory: {Name}", _sharedMemoryName);
-            _killReason = "Shared memory connection failed";
+            _logger.PluginLogWarning(
+                "Shared memory not available after {Max} retries for channel {ChannelId}: {Name}",
+                maxRetries,
+                MediaSource.Id,
+                _sharedMemoryName
+            );
+            _killReason = "Shared memory connection failed after retries";
             return;
         }
 
         _logger.LogDebugIfEnabled("Connected to shared memory: {Name}", _sharedMemoryName);
 
+        var consumer = _shmConsumer;
+        if (consumer == null)
+        {
+            _killReason = "Shared memory consumer unexpectedly null";
+            return;
+        }
+
         var lastHealthCheckTime = DateTime.UtcNow;
+        var lastDataTime = DateTime.UtcNow;
+        const int noDataTimeoutSeconds = 30;
 
         while (!cancellationToken.IsCancellationRequested && _receivingData)
         {
             // Wait for data with timeout
-            if (!_shmConsumer.WaitForData(TimeSpan.FromMilliseconds(100), cancellationToken))
+            if (!consumer.WaitForData(TimeSpan.FromMilliseconds(100), cancellationToken))
             {
                 // Check for terminal conditions
-                if (_shmConsumer.IsEndOfStream && _shmConsumer.AvailableBytes == 0)
+                if (consumer.IsEndOfStream && consumer.AvailableBytes == 0)
                 {
                     _logger.PluginLogInformation("Shared memory end of stream for {ChannelId}", MediaSource.Id);
                     _killReason = "Stream ended";
                     break;
                 }
 
-                if (_shmConsumer.HasError)
+                if (consumer.HasError)
                 {
                     _logger.PluginLogWarning(
                         "Shared memory error {Code}: {Message}",
-                        _shmConsumer.ErrorCode,
-                        _shmConsumer.ErrorMessage
+                        consumer.ErrorCode,
+                        consumer.ErrorMessage
                     );
-                    _killReason = $"Shared memory error: {_shmConsumer.ErrorCode}";
+                    _killReason = $"Shared memory error: {consumer.ErrorCode}";
+                    break;
+                }
+
+                // No-data timeout: if no data arrives for 30s, the stream is dead
+                if ((DateTime.UtcNow - lastDataTime).TotalSeconds >= noDataTimeoutSeconds)
+                {
+                    _logger.PluginLogWarning(
+                        "No data from shared memory for {Timeout}s for channel {ChannelId}",
+                        noDataTimeoutSeconds,
+                        MediaSource.Id
+                    );
+                    _killReason = "No data timeout";
                     break;
                 }
 
                 continue;
             }
 
+            // Data received - reset no-data timer
+            lastDataTime = DateTime.UtcNow;
+
             // Handle discontinuity (URL switch in native streamer)
-            if (_shmConsumer.ConsumeDiscontinuity())
+            if (consumer.ConsumeDiscontinuity())
             {
                 _logger.LogDebugIfEnabled("Discontinuity detected for {ChannelId}", MediaSource.Id);
                 _buffer.MarkDiscontinuityAligned();
             }
 
             // Handle overflow (slow consumer - data was dropped)
-            if (_shmConsumer.ConsumeOverflow())
+            if (consumer.ConsumeOverflow())
             {
                 _logger.PluginLogWarning("Shared memory overflow for {ChannelId}", MediaSource.Id);
             }
 
             // Read directly from shared memory to circular buffer (zero-copy)
-            _shmConsumer.ReadTo(_buffer);
+            consumer.ReadTo(_buffer);
 
             // Periodic health check
             var now = DateTime.UtcNow;
@@ -855,6 +919,29 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             if (!_tokenSource.IsCancellationRequested)
             {
                 _tokenSource.Cancel();
+            }
+
+            // Wait for broadcast task to complete so its finally block runs
+            // before we dispose the resources it uses. Use a timeout to avoid
+            // hanging if the C++ worker is stuck in a long curl operation.
+            if (_broadcastTask != null)
+            {
+                try
+                {
+                    if (!_broadcastTask.Wait(TimeSpan.FromSeconds(5)))
+                    {
+                        _logger.PluginLogWarning(
+                            "Broadcast task did not complete within 5s for channel {ChannelId}",
+                            MediaSource.Id
+                        );
+                    }
+                }
+                catch (AggregateException)
+                {
+                    // Expected: broadcast was cancelled or errored
+                }
+
+                _broadcastTask = null;
             }
 
             _tokenSource.Dispose();

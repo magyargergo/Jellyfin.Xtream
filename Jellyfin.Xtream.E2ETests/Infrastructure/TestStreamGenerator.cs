@@ -4,6 +4,18 @@ using System.Buffers.Binary;
 namespace Jellyfin.Xtream.E2ETests.Infrastructure;
 
 /// <summary>
+/// H.264 NAL unit type constants.
+/// </summary>
+internal static class H264NalType
+{
+    public const byte NonIdrSlice = 1;
+    public const byte IdrSlice = 5;
+    public const byte Sps = 7;
+    public const byte Pps = 8;
+    public const byte Aud = 9;
+}
+
+/// <summary>
 /// Generates valid MPEG-TS data for E2E testing.
 /// Produces compliant TS packets with PAT, PMT, PCR, and PES headers.
 /// </summary>
@@ -18,6 +30,13 @@ internal sealed class TestStreamGenerator
     private const int VideoPid = 0x0101;
     private const int AudioPid = 0x0102;
     private const int NullPid = 0x1FFF;
+
+    // H.264 NAL generation
+    private static readonly byte[] NalStartCode4 = [0x00, 0x00, 0x00, 0x01];
+    private static readonly byte[] NalStartCode3 = [0x00, 0x00, 0x01];
+    private bool _enableH264Nals;
+    private int _frameCounter;
+    private int _gopSize = 30; // IDR every 30 frames
 
     // PCR clock: 27MHz base, 300 extension divisor → 90kHz PCR base
     private const long PcrTicksPerSecond = 27_000_000L;
@@ -38,11 +57,20 @@ internal sealed class TestStreamGenerator
     /// </summary>
     /// <param name="bitrateKbps">Target bitrate in kbps (determines null packet insertion rate).</param>
     /// <param name="initialPcrOffset">Initial PCR offset in 90kHz ticks (for restamp testing).</param>
-    public TestStreamGenerator(int bitrateKbps = 5000, long initialPcrOffset = 0)
+    /// <param name="enableH264Nals">When true, generates valid H.264 NAL units (SPS/PPS/IDR) instead of pseudo data.</param>
+    /// <param name="gopSize">Number of frames between IDR frames (default 30).</param>
+    public TestStreamGenerator(
+        int bitrateKbps = 5000,
+        long initialPcrOffset = 0,
+        bool enableH264Nals = false,
+        int gopSize = 30
+    )
     {
         _initialPcrOffset = initialPcrOffset;
         _currentPcr90Khz = initialPcrOffset;
         _currentPts90Khz = initialPcrOffset;
+        _enableH264Nals = enableH264Nals;
+        _gopSize = gopSize;
 
         // Calculate how many packets between PCR insertions
         // At bitrate B, packets/sec = B*1000/8/188
@@ -148,6 +176,7 @@ internal sealed class TestStreamGenerator
         _currentPts90Khz = _initialPcrOffset;
         _packetIndex = 0;
         _pcrPacketCounter = 0;
+        _frameCounter = 0;
     }
 
     private void WritePatPacket(Span<byte> packet)
@@ -250,6 +279,9 @@ internal sealed class TestStreamGenerator
         // Advance PCR by interval
         _currentPcr90Khz += (PcrIntervalMs * Pcr90KhzPerSecond) / 1000;
 
+        // Determine if this is a keyframe
+        bool isKeyframe = _frameCounter % _gopSize == 0;
+
         // TS header with adaptation field + payload
         packet[0] = SyncByte;
         packet[1] = (byte)(0x40 | ((VideoPid >> 8) & 0x1F)); // PUSI=1
@@ -258,7 +290,7 @@ internal sealed class TestStreamGenerator
 
         // Adaptation field
         packet[4] = 7; // adaptation_field_length (1 flags + 6 PCR)
-        packet[5] = 0x50; // PCR flag=1, random_access=1
+        packet[5] = (byte)(0x50 | (isKeyframe ? 0x40 : 0x00)); // PCR flag=1, random_access=1 if keyframe
 
         // PCR (42-bit base + 6 reserved + 9-bit extension)
         long pcrBase = _currentPcr90Khz;
@@ -274,12 +306,27 @@ internal sealed class TestStreamGenerator
         int pesOffset = 12;
         WritePesHeader(packet.Slice(pesOffset), 0xE0, true); // video stream_id, with PTS
 
-        // Fill remaining with pseudo video data
+        // Fill with video data
         int dataStart = pesOffset + 14; // PES header is 14 bytes with PTS
-        for (int i = dataStart; i < TsPacketSize; i++)
+        if (_enableH264Nals)
         {
-            packet[i] = (byte)(i & 0xFF);
+            // Generate real H.264 NAL units
+            var nals = GenerateH264FrameNals(isKeyframe, _frameCounter % _gopSize);
+            int copyLen = Math.Min(nals.Length, TsPacketSize - dataStart);
+            nals.AsSpan(0, copyLen).CopyTo(packet.Slice(dataStart));
+            // Fill remainder with padding
+            packet[(dataStart + copyLen)..].Fill(0xFF);
         }
+        else
+        {
+            // Fill with pseudo video data
+            for (int i = dataStart; i < TsPacketSize; i++)
+            {
+                packet[i] = (byte)(i & 0xFF);
+            }
+        }
+
+        _frameCounter++;
     }
 
     private void WriteVideoPesPacket(Span<byte> packet)
@@ -287,21 +334,61 @@ internal sealed class TestStreamGenerator
         packet.Clear();
         var cc = NextContinuityCounter(VideoPid);
 
+        // Determine if this is a keyframe
+        bool isKeyframe = _frameCounter % _gopSize == 0;
+
         packet[0] = SyncByte;
         packet[1] = (byte)(0x40 | ((VideoPid >> 8) & 0x1F)); // PUSI=1
         packet[2] = (byte)(VideoPid & 0xFF);
-        packet[3] = (byte)(0x10 | cc); // payload only
 
-        // Advance PTS (assuming 30fps -> ~3003 ticks per frame at 90kHz)
-        _currentPts90Khz += 3003;
-
-        WritePesHeader(packet.Slice(4), 0xE0, true);
-
-        // Fill with pseudo data
-        for (int i = 18; i < TsPacketSize; i++)
+        // If keyframe, add adaptation field with RAI flag
+        if (isKeyframe && _enableH264Nals)
         {
-            packet[i] = (byte)(i & 0xFF);
+            packet[3] = (byte)(0x30 | cc); // adaptation + payload
+            packet[4] = 1; // adaptation_field_length = 1
+            packet[5] = 0x40; // random_access_indicator = 1
+
+            // Advance PTS (assuming 30fps -> ~3003 ticks per frame at 90kHz)
+            _currentPts90Khz += 3003;
+
+            WritePesHeader(packet.Slice(6), 0xE0, true);
+
+            // Fill with video data
+            int dataStart = 6 + 14; // adaptation(2) + PES header(14)
+            var nals = GenerateH264FrameNals(isKeyframe, _frameCounter % _gopSize);
+            int copyLen = Math.Min(nals.Length, TsPacketSize - dataStart);
+            nals.AsSpan(0, copyLen).CopyTo(packet.Slice(dataStart));
+            packet[(dataStart + copyLen)..].Fill(0xFF);
         }
+        else
+        {
+            packet[3] = (byte)(0x10 | cc); // payload only
+
+            // Advance PTS (assuming 30fps -> ~3003 ticks per frame at 90kHz)
+            _currentPts90Khz += 3003;
+
+            WritePesHeader(packet[4..], 0xE0, true);
+
+            // Fill with video data
+            int dataStart = 18; // TS header(4) + PES header(14)
+            if (_enableH264Nals)
+            {
+                var nals = GenerateH264FrameNals(isKeyframe, _frameCounter % _gopSize);
+                int copyLen = Math.Min(nals.Length, TsPacketSize - dataStart);
+                nals.AsSpan(0, copyLen).CopyTo(packet[dataStart..]);
+                packet[(dataStart + copyLen)..].Fill(0xFF);
+            }
+            else
+            {
+                // Fill with pseudo data
+                for (int i = dataStart; i < TsPacketSize; i++)
+                {
+                    packet[i] = (byte)(i & 0xFF);
+                }
+            }
+        }
+
+        _frameCounter++;
     }
 
     private void WriteAudioPesPacket(Span<byte> packet)
@@ -378,6 +465,148 @@ internal sealed class TestStreamGenerator
         int cc = _continuityCounters[pid];
         _continuityCounters[pid] = (cc + 1) & 0x0F;
         return cc;
+    }
+
+    // ========================================================================
+    // H.264 NAL Unit Generation
+    // ========================================================================
+
+    /// <summary>
+    /// Creates a minimal H.264 SPS NAL unit.
+    /// Profile: High (100), Level: 4.0, Resolution: 1920x1080.
+    /// </summary>
+    /// <returns>SPS NAL unit bytes including NAL header (without start code).</returns>
+    public static byte[] CreateH264Sps()
+    {
+        // NAL header: nal_ref_idc=3, nal_unit_type=7 (SPS) -> 0x67
+        // Profile: High (100), Level: 4.0 (40), Resolution: 1920x1080
+        // This is a simplified but parseable SPS that TsDuck can decode
+        return new byte[]
+        {
+            0x67, // NAL header (SPS)
+            0x64, // profile_idc = 100 (High)
+            0x00, // constraint_set flags
+            0x28, // level_idc = 40 (4.0)
+            0xAC, // seq_parameter_set_id=0 + log2_max_frame_num=4 + pic_order_cnt_type=0
+            0xD9, // log2_max_pic_order_cnt_lsb=4 + max_num_ref_frames=4
+            0x40, // gaps_in_frame_num_allowed=0 + pic_width_in_mbs_minus1=119 (1920/16-1)
+            0x77, // pic_width cont'd
+            0x20, // pic_height_in_map_units_minus1=67 (1080/16-1)
+            0x10, // pic_height cont'd + frame_mbs_only=1
+            0xB8, // direct_8x8_inference=1 + frame_cropping=1
+            0x00, // crop_left=0, crop_right=0
+            0x00, // crop_top=0
+            0x04, // crop_bottom=4 (1088-1080=8 pixels, /2=4)
+            0x80, // rbsp_trailing_bits
+        };
+    }
+
+    /// <summary>
+    /// Creates a minimal H.264 PPS NAL unit.
+    /// </summary>
+    /// <returns>PPS NAL unit bytes including NAL header (without start code).</returns>
+    public static byte[] CreateH264Pps()
+    {
+        // NAL header: nal_ref_idc=3, nal_unit_type=8 (PPS) -> 0x68
+        return new byte[]
+        {
+            0x68, // NAL header (PPS)
+            0xE8, // pic_parameter_set_id=0 + seq_parameter_set_id=0
+            0x43, // entropy_coding_mode=1 (CABAC) + other flags
+            0xC8, // deblocking, constrained_intra, redundant_pic_cnt
+            0x80, // rbsp_trailing_bits
+        };
+    }
+
+    /// <summary>
+    /// Creates an H.264 IDR slice NAL unit header.
+    /// </summary>
+    /// <returns>IDR NAL unit header bytes (without start code).</returns>
+    public static byte[] CreateH264Idr()
+    {
+        // NAL header: nal_ref_idc=3, nal_unit_type=5 (IDR) -> 0x65
+        return new byte[]
+        {
+            0x65, // NAL header (IDR slice)
+            0x88, // first_mb_in_slice=0 + slice_type=7 (I)
+            0x84, // pic_parameter_set_id=0 + frame_num=0
+            0x00, // padding
+        };
+    }
+
+    /// <summary>
+    /// Creates an H.264 non-IDR P-slice NAL unit header.
+    /// </summary>
+    /// <param name="frameNum">Frame number (0-15).</param>
+    /// <returns>P-slice NAL unit header bytes (without start code).</returns>
+    public static byte[] CreateH264PSlice(int frameNum)
+    {
+        // NAL header: nal_ref_idc=2, nal_unit_type=1 (non-IDR) -> 0x41
+        return new byte[]
+        {
+            0x41, // NAL header (non-IDR slice)
+            0x9A, // first_mb_in_slice=0 + slice_type=5 (P)
+            (byte)(0x80 | ((frameNum & 0x0F) << 3)), // pic_parameter_set_id + frame_num
+            0x00, // padding
+        };
+    }
+
+    /// <summary>
+    /// Creates an H.264 AUD (Access Unit Delimiter) NAL unit.
+    /// </summary>
+    /// <param name="primaryPicType">Primary picture type (0=I, 1=P/I, 2=B/P/I, 7=any).</param>
+    /// <returns>AUD NAL unit bytes (without start code).</returns>
+    public static byte[] CreateH264Aud(int primaryPicType = 7)
+    {
+        // NAL header: nal_ref_idc=0, nal_unit_type=9 (AUD) -> 0x09
+        return new byte[]
+        {
+            0x09, // NAL header (AUD)
+            (byte)((primaryPicType << 5) | 0x10), // primary_pic_type + rbsp_trailing_bits
+        };
+    }
+
+    /// <summary>
+    /// Generates H.264 NAL data for a video frame.
+    /// Returns SPS+PPS+IDR for keyframes, AUD+P-slice for inter frames.
+    /// </summary>
+    /// <param name="isKeyframe">True if this should be an IDR frame.</param>
+    /// <param name="frameNum">Frame number within GOP.</param>
+    /// <returns>NAL units with start codes.</returns>
+    private byte[] GenerateH264FrameNals(bool isKeyframe, int frameNum)
+    {
+        using var ms = new MemoryStream(64);
+
+        if (isKeyframe)
+        {
+            // AUD (I-frame)
+            ms.Write(NalStartCode4);
+            ms.Write(CreateH264Aud(0));
+
+            // SPS
+            ms.Write(NalStartCode4);
+            ms.Write(CreateH264Sps());
+
+            // PPS
+            ms.Write(NalStartCode4);
+            ms.Write(CreateH264Pps());
+
+            // IDR slice
+            ms.Write(NalStartCode3);
+            ms.Write(CreateH264Idr());
+        }
+        else
+        {
+            // AUD (P-frame)
+            ms.Write(NalStartCode4);
+            ms.Write(CreateH264Aud(1));
+
+            // P-slice
+            ms.Write(NalStartCode3);
+            ms.Write(CreateH264PSlice(frameNum));
+        }
+
+        return ms.ToArray();
     }
 
     /// <summary>

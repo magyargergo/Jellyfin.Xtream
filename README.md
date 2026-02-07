@@ -151,7 +151,7 @@ The plugin uses a native C++ streaming layer that handles HTTP connections, fail
 │                                                                                  │
 │  ┌───────────────────────────────────────────────────────────────────────────┐  │
 │  │  ┌─────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐    │  │
-│  │  │ Restream Manager│─▶│ProviderHealthScorer│  │CircularBuffer Write │    │  │
+│  │  │ Restream Manager│─▶│  Native Streamer   │  │CircularBuffer Write │    │  │
 │  │  └────────┬────────┘  └─────────────────────┘  └──────────┬──────────┘    │  │
 │  │           │                                               │               │  │
 │  │           └───────────────────────────────────────────────┘               │  │
@@ -704,12 +704,12 @@ The streaming architecture has been significantly refactored. C++ is now the mai
 
 #### Health-Based Provider Selection
 
-Bidirectional health management: C# manages long-term patterns, C++ handles instant decisions.
+Unified native health management: C++ handles all health tracking and instant failover decisions.
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **ProviderHealthScorer** | ✅ Complete | Weighted health scoring for provider selection |
-| **StreamingOutcomeRecorder** | ✅ Complete | Tracks streaming success/failure outcomes |
+| **UnifiedProviderHealthManager (C++)** | ✅ Complete | brpc circuit breaker + Finagle EWMA + P2C selection |
+| **Circuit Breaker** | ✅ Complete | 3-state (Closed→Open→HalfOpen) with dual-window EMA |
 | **Health Score Algorithm** | ✅ Complete | 50.0 initial, +0.5 success, -5.0 failure, range 0-100 |
 | **Quality-Based Switching** | ✅ Complete | Configurable thresholds trigger provider switches |
 

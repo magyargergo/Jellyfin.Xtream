@@ -268,6 +268,11 @@ int StreamSource::perform_multi() noexcept {
         return 0;
     }
 
+    // Check stop flag BEFORE doing any work - allows fast exit
+    if (stop_requested_.load(std::memory_order_acquire)) {
+        return 0;
+    }
+
     int still_running = 0;
     CURLMcode mc = curl_multi_perform(curl_multi_, &still_running);
 
@@ -276,10 +281,16 @@ int StreamSource::perform_multi() noexcept {
     }
 
     // If there are still running transfers, wait for activity
+    // Use SHORT timeout (10ms) to allow responsive stop detection
+    // The trade-off: more CPU wakeups vs faster shutdown response
     if (still_running > 0) {
+        // Check stop flag again before blocking
+        if (stop_requested_.load(std::memory_order_acquire)) {
+            return 0;
+        }
         int numfds = 0;
-        // Wait up to 100ms for socket activity
-        curl_multi_poll(curl_multi_, nullptr, 0, 100, &numfds);
+        // Reduced from 100ms to 10ms for faster stop response
+        curl_multi_poll(curl_multi_, nullptr, 0, 10, &numfds);
     }
 
     return still_running;
@@ -338,6 +349,13 @@ int32_t StreamSource::get_current_http_status() const noexcept {
 
 size_t StreamSource::curl_write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) noexcept {
     auto* self = static_cast<StreamSource*>(userdata);
+
+    // Check for multiplication overflow before computing total
+    if (nmemb != 0 && size > SIZE_MAX / nmemb) {
+        LOG_ERROR(kStreamSource, "curl_write_callback: size overflow (%zu * %zu)", size, nmemb);
+        return 0;  // Abort transfer - signal error to curl
+    }
+
     const size_t total = size * nmemb;
 
     if (self->stop_requested_.load(std::memory_order_acquire)) {

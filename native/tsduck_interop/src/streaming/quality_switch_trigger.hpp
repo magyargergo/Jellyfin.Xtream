@@ -85,6 +85,11 @@ public:
 
         // Sync loss: ANY occurrence is catastrophic - immediate switch
         int64_t sync_loss_delta = p1.sync_loss - baseline_p1_.sync_loss;
+        // Negative delta indicates counter reset/wraparound - re-establish baseline
+        if (sync_loss_delta < 0) {
+            reset_window(p1, p2);
+            return false;
+        }
         if (sync_loss_delta >= config_.max_sync_errors_per_window) {
             reset_window(p1, p2);
             total_quality_switches_++;
@@ -93,6 +98,10 @@ public:
 
         // Continuity count errors: indicates packet loss
         int64_t cc_delta = p1.continuity_count_error - baseline_p1_.continuity_count_error;
+        if (cc_delta < 0) {
+            reset_window(p1, p2);
+            return false;
+        }
         double cc_per_sec = static_cast<double>(cc_delta) / window_seconds;
         if (cc_per_sec > static_cast<double>(config_.max_continuity_errors_per_sec)) {
             reset_window(p1, p2);
@@ -106,6 +115,10 @@ public:
 
         // Transport errors (TEI bit)
         int64_t tei_delta = p2.transport_error - baseline_p2_.transport_error;
+        if (tei_delta < 0) {
+            reset_window(p1, p2);
+            return false;
+        }
         double tei_per_sec = static_cast<double>(tei_delta) / window_seconds;
         if (tei_per_sec > static_cast<double>(config_.max_transport_errors_per_sec)) {
             reset_window(p1, p2);
@@ -114,8 +127,13 @@ public:
         }
 
         // PCR errors (discontinuity + repetition combined)
-        int64_t pcr_delta = (p2.pcr_discontinuity_error - baseline_p2_.pcr_discontinuity_error) +
-                            (p2.pcr_repetition_error - baseline_p2_.pcr_repetition_error);
+        int64_t pcr_disc_delta = p2.pcr_discontinuity_error - baseline_p2_.pcr_discontinuity_error;
+        int64_t pcr_rep_delta = p2.pcr_repetition_error - baseline_p2_.pcr_repetition_error;
+        if (pcr_disc_delta < 0 || pcr_rep_delta < 0) {
+            reset_window(p1, p2);
+            return false;
+        }
+        int64_t pcr_delta = pcr_disc_delta + pcr_rep_delta;
         double pcr_per_sec = static_cast<double>(pcr_delta) / window_seconds;
         if (pcr_per_sec > static_cast<double>(config_.max_pcr_errors_per_sec)) {
             reset_window(p1, p2);
@@ -186,17 +204,20 @@ public:
         double window_seconds = static_cast<double>(window_ms) / 1000.0;
         snap.window_seconds = window_seconds;
 
+        // Use max(0, delta) to handle counter reset/wraparound gracefully
         int64_t cc_delta = p1.continuity_count_error - baseline_p1_.continuity_count_error;
-        snap.cc_errors_per_sec = static_cast<double>(cc_delta) / window_seconds;
+        snap.cc_errors_per_sec = cc_delta > 0 ? static_cast<double>(cc_delta) / window_seconds : 0.0;
 
         int64_t tei_delta = p2.transport_error - baseline_p2_.transport_error;
-        snap.tei_errors_per_sec = static_cast<double>(tei_delta) / window_seconds;
+        snap.tei_errors_per_sec = tei_delta > 0 ? static_cast<double>(tei_delta) / window_seconds : 0.0;
 
-        int64_t pcr_delta = (p2.pcr_discontinuity_error - baseline_p2_.pcr_discontinuity_error) +
-                            (p2.pcr_repetition_error - baseline_p2_.pcr_repetition_error);
+        int64_t pcr_disc_delta = p2.pcr_discontinuity_error - baseline_p2_.pcr_discontinuity_error;
+        int64_t pcr_rep_delta = p2.pcr_repetition_error - baseline_p2_.pcr_repetition_error;
+        int64_t pcr_delta = (pcr_disc_delta > 0 ? pcr_disc_delta : 0) + (pcr_rep_delta > 0 ? pcr_rep_delta : 0);
         snap.pcr_errors_per_sec = static_cast<double>(pcr_delta) / window_seconds;
 
-        snap.sync_losses_in_window = p1.sync_loss - baseline_p1_.sync_loss;
+        int64_t sync_delta = p1.sync_loss - baseline_p1_.sync_loss;
+        snap.sync_losses_in_window = sync_delta > 0 ? sync_delta : 0;
 
         snap.thresholds_exceeded =
             (snap.sync_losses_in_window >= config_.max_sync_errors_per_window) ||

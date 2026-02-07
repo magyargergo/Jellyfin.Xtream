@@ -217,7 +217,8 @@ public sealed class SharedMemoryConsumer : IDisposable
         get
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            Span<byte> buffer = stackalloc byte[64];
+            // Buffer size matches C++ error_message[48] in SharedMemoryHeader
+            Span<byte> buffer = stackalloc byte[48];
             ReadBytes(ErrorMessageOffset, buffer);
             int nullIndex = buffer.IndexOf((byte)0);
             if (nullIndex >= 0)
@@ -486,15 +487,41 @@ public sealed class SharedMemoryConsumer : IDisposable
 
     /// <summary>
     /// Checks and clears the overflow flag.
+    /// When overflow is detected, syncs the consumer read position to catch up with the producer.
     /// Call this to detect if data was lost due to slow consumption.
     /// </summary>
     /// <returns>True if overflow occurred, false otherwise.</returns>
-    public bool ConsumeOverflow()
+    public unsafe bool ConsumeOverflow()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (HasFlag(SharedMemoryStatusFlags.Overflow))
         {
+            // Overflow occurred - producer has overwritten old data.
+            // We need to sync our read position to catch up with the producer.
+            // Leave a small margin (quarter of buffer) to avoid immediate re-overflow.
+            byte* ptr = _basePtr;
+            ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
+            ulong currentReadPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
+
+            // Calculate how far behind we are
+            ulong slotsUsed = writePos - currentReadPos;
+            ulong bufferCapacity = _slotCount - 1; // One slot reserved for full/empty distinction
+
+            // If we're behind by more than the buffer, sync to (writePos - quarter buffer)
+            // This leaves room for continued streaming without immediate overflow
+            if (slotsUsed >= bufferCapacity)
+            {
+                ulong margin = _slotCount / 4; // Keep 25% buffer margin
+                ulong newReadPos = writePos > margin ? writePos - margin : 0;
+
+                // Only advance, never go backwards
+                if (newReadPos > currentReadPos)
+                {
+                    Volatile.Write(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset), newReadPos);
+                }
+            }
+
             ClearFlag(SharedMemoryStatusFlags.Overflow);
             return true;
         }

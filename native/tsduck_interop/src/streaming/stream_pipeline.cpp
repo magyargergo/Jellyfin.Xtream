@@ -24,6 +24,9 @@ namespace streaming {
 namespace {
 constexpr const char* kPipeline = "StreamPipeline";
 
+// NAL start code prefix for creating SPS/PPS packets
+constexpr uint8_t NAL_START_CODE[] = {0x00, 0x00, 0x00, 0x01};
+
 /// Classify a CURLcode into a DisconnectReason for failover decisions.
 constexpr DisconnectReason classify_curl_error(CURLcode code) noexcept {
     switch (code) {
@@ -59,6 +62,146 @@ constexpr bool is_severe_infrastructure_error(CURLcode code) noexcept {
 
 /// Duration for forced ejection of providers with severe errors (5 minutes).
 constexpr int64_t SEVERE_ERROR_EJECTION_MS = 300000;
+
+/// Create TS packets containing SPS and PPS NAL units for decoder initialization.
+/// This function generates MPEG-TS PES packets that contain the H.264/HEVC parameter
+/// sets needed for decoder initialization after a keyframe alignment.
+///
+/// @param video_pid The video PID to use for the generated packets
+/// @param params The cached NAL parameter sets (SPS/PPS/VPS)
+/// @param output Buffer to receive the generated TS packets
+/// @return Number of bytes written to output, or 0 if params incomplete
+int32_t create_parameter_set_packets(uint16_t video_pid, const NalParameterSets& params,
+                                     std::vector<uint8_t>& output) {
+    if (!params.has_sps() || !params.has_pps()) {
+        return 0;  // Need at least SPS and PPS for H.264
+    }
+
+    // For HEVC, we also need VPS
+    bool is_hevc = (params.codec_info.codec_type == static_cast<uint8_t>(VideoCodecType::H265_HEVC));
+    if (is_hevc && !params.has_vps()) {
+        return 0;  // HEVC requires VPS
+    }
+
+    // Calculate total NAL data size (with start codes)
+    size_t nal_data_size = 0;
+    if (is_hevc && params.has_vps()) {
+        nal_data_size += 4 + params.vps_length;  // start_code + VPS
+    }
+    nal_data_size += 4 + params.sps_length;  // start_code + SPS
+    nal_data_size += 4 + params.pps_length;  // start_code + PPS
+
+    // Build NAL unit data with start codes
+    std::vector<uint8_t> nal_data;
+    nal_data.reserve(nal_data_size);
+
+    // VPS first for HEVC
+    if (is_hevc && params.has_vps()) {
+        nal_data.insert(nal_data.end(), NAL_START_CODE, NAL_START_CODE + 4);
+        nal_data.insert(nal_data.end(), params.vps_data, params.vps_data + params.vps_length);
+    }
+
+    // SPS
+    nal_data.insert(nal_data.end(), NAL_START_CODE, NAL_START_CODE + 4);
+    nal_data.insert(nal_data.end(), params.sps_data, params.sps_data + params.sps_length);
+
+    // PPS
+    nal_data.insert(nal_data.end(), NAL_START_CODE, NAL_START_CODE + 4);
+    nal_data.insert(nal_data.end(), params.pps_data, params.pps_data + params.pps_length);
+
+    // Create PES packet header
+    // PES header: 00 00 01 E0 [length] [flags] [header_length] [PTS optional]
+    // For simplicity, we'll create a short PES without PTS (parameter sets don't need timing)
+    constexpr size_t PES_HEADER_SIZE = 9;  // Minimal PES header with no PTS
+    uint8_t pes_header[PES_HEADER_SIZE] = {
+        0x00, 0x00, 0x01,  // Start code
+        0xE0,              // Video stream ID
+        0x00, 0x00,        // Packet length (will be filled in, or 0 for unbounded)
+        0x80,              // Marker bits (10) + no scrambling + no priority + no alignment + no copyright + no original
+        0x00,              // No PTS/DTS flags
+        0x00               // PES header data length = 0
+    };
+
+    // Calculate PES packet length (excluding start code and stream_id, so length - 6)
+    size_t pes_payload_size = nal_data.size();
+    size_t pes_packet_length = 3 + pes_payload_size;  // flags(2) + header_length(1) + payload
+    if (pes_packet_length <= 65535) {
+        pes_header[4] = static_cast<uint8_t>((pes_packet_length >> 8) & 0xFF);
+        pes_header[5] = static_cast<uint8_t>(pes_packet_length & 0xFF);
+    }
+    // If > 65535, leave as 0 (unbounded PES)
+
+    // Calculate total bytes needed and number of TS packets
+    size_t total_pes_size = PES_HEADER_SIZE + nal_data.size();
+    size_t ts_payload_first = ts::PKT_SIZE - 4 - 1;  // First packet has adaptation field for PUSI
+    size_t ts_payload_cont = ts::PKT_SIZE - 4;       // Continuation packets
+
+    // Calculate number of TS packets needed
+    size_t remaining = total_pes_size;
+    size_t num_packets = 1;  // At least one packet
+    if (remaining > ts_payload_first) {
+        remaining -= ts_payload_first;
+        num_packets += (remaining + ts_payload_cont - 1) / ts_payload_cont;
+    }
+
+    // Reserve space in output
+    output.resize(num_packets * ts::PKT_SIZE);
+
+    // Build TS packets
+    size_t pes_offset = 0;
+    uint8_t continuity_counter = 0;
+
+    // Combine PES header and NAL data
+    std::vector<uint8_t> pes_data;
+    pes_data.reserve(total_pes_size);
+    pes_data.insert(pes_data.end(), pes_header, pes_header + PES_HEADER_SIZE);
+    pes_data.insert(pes_data.end(), nal_data.begin(), nal_data.end());
+
+    for (size_t pkt_idx = 0; pkt_idx < num_packets; ++pkt_idx) {
+        uint8_t* pkt = output.data() + pkt_idx * ts::PKT_SIZE;
+
+        // Clear packet
+        std::memset(pkt, 0xFF, ts::PKT_SIZE);
+
+        // Save current CC before incrementing
+        uint8_t current_cc = continuity_counter & 0x0F;
+        continuity_counter = (continuity_counter + 1) & 0x0F;
+
+        // Calculate payload size for this packet
+        size_t remaining_pes = pes_data.size() - pes_offset;
+        size_t payload_size = std::min(remaining_pes, ts::PKT_SIZE - 4);
+
+        // If this is the last packet and there's space left, we need stuffing
+        size_t stuffing = (ts::PKT_SIZE - 4) - payload_size;
+
+        // TS header (4 bytes)
+        pkt[0] = 0x47;  // Sync byte
+        pkt[1] = static_cast<uint8_t>((pkt_idx == 0 ? 0x40 : 0x00) | ((video_pid >> 8) & 0x1F));  // PUSI + PID high
+        pkt[2] = static_cast<uint8_t>(video_pid & 0xFF);  // PID low
+
+        if (stuffing > 0) {
+            // Add adaptation field for stuffing
+            pkt[3] = static_cast<uint8_t>(0x30 | current_cc);  // Adaptation + payload + CC
+            pkt[4] = static_cast<uint8_t>(stuffing - 1);  // Adaptation field length (excluding this byte)
+            if (stuffing > 1) {
+                pkt[5] = 0x00;  // Adaptation flags (no flags set)
+                // Fill rest with 0xFF
+                std::memset(pkt + 6, 0xFF, stuffing - 2);
+            }
+            // Copy payload after adaptation field
+            std::memcpy(pkt + 4 + stuffing, pes_data.data() + pes_offset, payload_size);
+        } else {
+            // No stuffing needed
+            pkt[3] = static_cast<uint8_t>(0x10 | current_cc);  // No adaptation + CC
+            // Copy payload directly after header
+            std::memcpy(pkt + 4, pes_data.data() + pes_offset, payload_size);
+        }
+
+        pes_offset += payload_size;
+    }
+
+    return static_cast<int32_t>(output.size());
+}
 }  // namespace
 
 // curl_global_init() is NOT thread-safe and must only be called once.
@@ -247,6 +390,9 @@ bool StreamPipeline::start() noexcept {
     packets_output_ = 0;
     bytes_received_total_ = 0;
     first_data_after_switch_ = false;
+    first_shm_write_ = true;  // Reset for immediate signal on first data
+    buffer_signal_counter_ = 0;  // Reset heartbeat signal counter for new session
+    switch_performed_in_session_ = false;  // Reset mid-session switch flag for new session
     session_start_ticks_ = get_dotnet_ticks();
     switch_requested_.store(false, std::memory_order_release);
 
@@ -342,6 +488,13 @@ void StreamPipeline::worker_loop() noexcept {
             break;
         }
 
+        // If a switch was performed mid-session (manual switch request),
+        // skip the disconnect/stall handling to prevent double switch
+        if (switch_performed_in_session_) {
+            switch_performed_in_session_ = false;
+            continue;  // Go directly to next session with the new URL
+        }
+
         // Check if failover manager says we should continue
         if (failover_.is_terminal()) {
             emit_event(StreamEvent::Stopped, 0);
@@ -431,6 +584,7 @@ void StreamPipeline::stream_session() noexcept {
             switch_requested_.store(false, std::memory_order_release);
             source_.disconnect();
             perform_switch();
+            switch_performed_in_session_ = true;  // Prevent double switch in worker_loop
             return;
         }
 
@@ -528,6 +682,7 @@ void StreamPipeline::stream_session() noexcept {
                 emit_event(StreamEvent::QualityDegraded, source_.current_url_index());
                 source_.disconnect();
                 perform_switch();
+                switch_performed_in_session_ = true;  // Prevent double switch in worker_loop
                 return;
             }
         }
@@ -560,6 +715,17 @@ void StreamPipeline::on_data_received(const uint8_t* data, size_t size) noexcept
 
     // Also record to registry if available (centralized health tracking)
     record_provider_success(static_cast<int64_t>(size));
+
+    // CRITICAL: Signal data availability immediately on first data after switch/start.
+    // This lets the C# consumer know data is flowing, even if keyframe alignment
+    // is buffering and not outputting yet. Without this, the consumer times out
+    // waiting for data that's being held by the keyframe aligner.
+    if (shm_producer_ && first_shm_write_) {
+        // Signal consumer that producer is active and receiving data
+        shm_producer_->signal_data_available();
+        // Note: We don't clear first_shm_write_ here - that happens when actual
+        // data is written. This signal is just a "heartbeat" to prevent timeout.
+    }
 
     // If this is first data after connect, transition to Streaming
     // and record success in health manager (once per connection, not per chunk)
@@ -608,7 +774,15 @@ void StreamPipeline::process_aligned(uint8_t* data, int32_t length) noexcept {
     if (keyframe_aligner_.is_waiting()) {
         auto result = keyframe_aligner_.process(data, length);
         if (result.length == 0) {
-            // Still buffering - don't output anything yet
+            // Still buffering - don't output anything yet.
+            // But signal the consumer periodically so it knows data is flowing.
+            // This prevents the C# side from timing out during keyframe alignment.
+            if (shm_producer_) {
+                if (++buffer_signal_counter_ >= 10) {  // Signal every ~10 chunks
+                    shm_producer_->signal_data_available();
+                    buffer_signal_counter_ = 0;
+                }
+            }
             return;
         }
 
@@ -618,14 +792,85 @@ void StreamPipeline::process_aligned(uint8_t* data, int32_t length) noexcept {
                      result.length);
         }
 
+        // Extract SPS/PPS from pre-IDR packets before they're discarded
+        // This ensures decoder has proper initialization data
+        std::vector<uint8_t> param_set_packets;
+        if (result.found_keyframe && result.pre_idr_data != nullptr && result.pre_idr_length > 0 && analyzer_) {
+            // Feed pre-IDR packets through NAL parser for SPS/PPS extraction
+            // This is analysis-only - we don't output these packets
+            int32_t pre_idr_packets = result.pre_idr_length / static_cast<int32_t>(ts::PKT_SIZE);
+            const ts::TSPacket* pkt_array = reinterpret_cast<const ts::TSPacket*>(result.pre_idr_data);
+
+            uint16_t video_pid = 0;
+            for (int32_t i = 0; i < pre_idr_packets; ++i) {
+                auto& pkt = const_cast<ts::TSPacket&>(pkt_array[i]);
+                if (!pkt.hasValidSync()) continue;
+
+                uint16_t pid = pkt.getPID();
+
+                // Check if this is a video PES start with SPS/PPS
+                if (pkt.startPES()) {
+                    const uint8_t* payload = pkt.getPayload();
+                    size_t payload_size = pkt.getPayloadSize();
+                    if (payload_size >= 4) {
+                        uint8_t stream_id = payload[3];
+                        if (ts::IsVideoSID(stream_id)) {
+                            video_pid = pid;
+                            // Process for NAL extraction
+                            analyzer_->nal_parser.process_pes_start(pkt, pid, i);
+                        }
+                    }
+                }
+            }
+
+            // Try to get cached SPS/PPS for the video PID
+            if (video_pid > 0) {
+                NalParameterSets params{};
+                // Read the cached parameters (seqlock-protected read)
+                int32_t stream_idx = analyzer_->nal_parser.find_stream_index(video_pid);
+                if (stream_idx >= 0) {
+                    params = concurrency::seqlock_read(
+                        analyzer_->nal_parser.stream_seqlocks[stream_idx],
+                        analyzer_->nal_parser.video_streams[stream_idx]);
+
+                    if (params.can_initialize_decoder()) {
+                        int32_t param_bytes = create_parameter_set_packets(video_pid, params, param_set_packets);
+                        if (param_bytes > 0) {
+                            LOG_INFO(kPipeline, "prepending SPS/PPS packets (%d bytes) before IDR for decoder init",
+                                     param_bytes);
+                        }
+                    }
+                }
+            }
+        }
+
         // Process the aligned data (may be from buffer, not original input)
         // Note: result.data points to keyframe aligner's internal buffer
         // We need to copy to a mutable buffer for feed_and_restamp
         std::vector<uint8_t> aligned_data(result.data, result.data + result.length);
         keyframe_aligner_.clear_buffer();  // Safe to clear now
 
-        // Recursively process the keyframe-aligned data
-        process_aligned(aligned_data.data(), static_cast<int32_t>(aligned_data.size()));
+        // Reset TR 101 290 counters and quality trigger after keyframe alignment
+        // This ensures the new stream segment is measured from a clean slate
+        if (result.found_keyframe && analyzer_) {
+            analyzer_->tr101290.reset();
+            quality_trigger_.reset();
+        }
+
+        // If we have parameter set packets, prepend them and process together
+        if (!param_set_packets.empty()) {
+            // Create combined buffer: param_set_packets + aligned_data
+            std::vector<uint8_t> combined_data;
+            combined_data.reserve(param_set_packets.size() + aligned_data.size());
+            combined_data.insert(combined_data.end(), param_set_packets.begin(), param_set_packets.end());
+            combined_data.insert(combined_data.end(), aligned_data.begin(), aligned_data.end());
+
+            // Recursively process the combined data
+            process_aligned(combined_data.data(), static_cast<int32_t>(combined_data.size()));
+        } else {
+            // Recursively process the keyframe-aligned data
+            process_aligned(aligned_data.data(), static_cast<int32_t>(aligned_data.size()));
+        }
         return;
     }
 
@@ -696,14 +941,21 @@ void StreamPipeline::write_output(const uint8_t* data, int32_t length) noexcept 
                         result.bytes_written, length);
         }
 
-        // Batch signaling: signal every ~64KB or on overflow to balance latency vs syscall overhead.
+        // Signal strategy:
+        // - First write: signal immediately to wake consumer as soon as data starts flowing
+        // - Subsequent writes: batch to ~64KB or on overflow to balance latency vs syscall overhead
         // At 10 Mbps, 64KB = ~50ms of data, which is acceptable latency for streaming.
-        // Signal immediately on overflow to wake consumer for recovery.
         constexpr std::size_t kSignalThreshold = 65536;
         shm_bytes_since_signal_ += result.bytes_written;
-        if (result.overflow || shm_bytes_since_signal_ >= kSignalThreshold) {
+
+        bool should_signal = result.overflow ||                        // Always signal on overflow
+                             first_shm_write_ ||                       // Immediate signal on first write
+                             shm_bytes_since_signal_ >= kSignalThreshold;
+
+        if (should_signal) {
             shm_producer_->signal_data_available();
             shm_bytes_since_signal_ = 0;
+            first_shm_write_ = false;
         }
     } else if (config_.output_fd >= 0) {
         // Pipe mode: write to file descriptor
@@ -762,6 +1014,12 @@ void StreamPipeline::perform_switch() noexcept {
 
     // Reset quality trigger (fresh baseline on new source)
     quality_trigger_.reset();
+
+    // Reset TR 101 290 counters to prevent accumulated errors from old stream
+    // triggering immediate quality switches on the new source
+    if (analyzer_) {
+        analyzer_->tr101290.reset();
+    }
 
     // Reset alignment buffer (discard partial packets from old stream)
     alignment_.reset();

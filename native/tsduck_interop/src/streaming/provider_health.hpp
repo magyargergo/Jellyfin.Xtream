@@ -17,6 +17,7 @@
 #include <random>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../core/constants.hpp"
@@ -107,20 +108,27 @@ public:
     /// @param latency_ms Latency in milliseconds.
     /// @param now_ns Current time in nanoseconds.
     void update(double latency_ms, int64_t now_ns) noexcept {
-        int64_t last = last_update_ns_.load(std::memory_order_relaxed);
+        double old_val, new_val;
 
-        double weight;
-        if (last == 0) {
-            weight = 1.0;  // First sample
-        } else {
-            double elapsed = static_cast<double>(now_ns - last);
-            weight = 1.0 - std::exp(-elapsed / decay_ns_);
-        }
+        // CAS loop to ensure atomic read-modify-write on value_
+        do {
+            int64_t last = last_update_ns_.load(std::memory_order_acquire);
+            old_val = value_.load(std::memory_order_acquire);
 
-        double old_val = value_.load(std::memory_order_relaxed);
-        double new_val = (old_val * (1.0 - weight)) + (latency_ms * weight);
+            double weight;
+            if (last == 0) {
+                weight = 1.0;  // First sample
+            } else {
+                double elapsed = static_cast<double>(now_ns - last);
+                weight = 1.0 - std::exp(-elapsed / decay_ns_);
+            }
 
-        value_.store(new_val, std::memory_order_release);
+            new_val = (old_val * (1.0 - weight)) + (latency_ms * weight);
+        } while (!value_.compare_exchange_weak(old_val, new_val,
+                                                std::memory_order_release,
+                                                std::memory_order_relaxed));
+
+        // Update timestamp - concurrent stores are fine (latest caller wins)
         last_update_ns_.store(now_ns, std::memory_order_release);
     }
 
@@ -206,9 +214,12 @@ public:
     }
 
 private:
+    // Maximum CAS retry attempts before giving up (prevents livelock)
+    static constexpr int32_t kMaxCasRetries = 64;
+
     [[nodiscard]] int64_t update_latency(int64_t latency_us) noexcept {
         int64_t ema_latency = ema_latency_.load(std::memory_order_relaxed);
-        while (true) {
+        for (int32_t retry = 0; retry < kMaxCasRetries; ++retry) {
             int64_t next_ema_latency;
             if (ema_latency == 0) {
                 next_ema_latency = latency_us;
@@ -220,7 +231,13 @@ private:
                     std::memory_order_relaxed)) {
                 return next_ema_latency;
             }
+            // Yield on every 8th retry to prevent CPU spinning
+            if ((retry & 7) == 7) {
+                std::this_thread::yield();
+            }
         }
+        // Give up after max retries - return current raw value
+        return latency_us;
     }
 
     [[nodiscard]] bool update_error_cost(int64_t error_cost, int64_t ema_latency,
@@ -239,9 +256,9 @@ private:
             return ema_error_cost <= max_error_cost;
         }
 
-        // Successful response - decay error cost
+        // Successful response - decay error cost (with retry limit)
         int64_t ema_error_cost = ema_error_cost_.load(std::memory_order_relaxed);
-        while (true) {
+        for (int32_t retry = 0; retry < kMaxCasRetries; ++retry) {
             if (ema_error_cost == 0) {
                 break;
             } else if (ema_error_cost < 500) {  // min_error_cost_us
@@ -255,6 +272,10 @@ private:
                         std::memory_order_relaxed)) {
                     break;
                 }
+            }
+            // Yield on every 8th retry to prevent CPU spinning
+            if ((retry & 7) == 7) {
+                std::this_thread::yield();
             }
         }
         return true;
@@ -450,8 +471,7 @@ enum class DnsFailurePolicy : int32_t {
 class UnifiedProviderHealthManager {
 public:
     explicit UnifiedProviderHealthManager(const ProviderHealthConfig& config = {}) noexcept
-        : config_(config)
-        , rng_(std::random_device{}()) {}
+        : config_(config) {}
 
     // ========================================================================
     // Provider Registration
@@ -541,11 +561,13 @@ public:
             return (cost_a <= cost_b) ? eligible[0] : eligible[1];
         }
 
+        // Use thread_local RNG to avoid concurrent corruption under shared_lock
+        static thread_local std::mt19937 tl_rng{std::random_device{}()};
         std::uniform_int_distribution<size_t> dist(0, eligible.size() - 1);
-        size_t pick_a = dist(rng_);
-        size_t pick_b = dist(rng_);
+        size_t pick_a = dist(tl_rng);
+        size_t pick_b = dist(tl_rng);
         while (pick_b == pick_a && eligible.size() > 2) {
-            pick_b = dist(rng_);
+            pick_b = dist(tl_rng);
         }
 
         double cost_a = compute_cost(*providers_[eligible[pick_a]], now);
@@ -648,30 +670,37 @@ public:
 
         int64_t now = now_ns();
 
-        // Calculate success rates
-        std::vector<double> rates;
+        // Store provider index with rate to avoid index misalignment from atomic changes
+        struct ProviderRate {
+            size_t provider_idx;
+            double rate;
+        };
+
+        // Calculate success rates with provider index
+        std::vector<ProviderRate> rates;
         rates.reserve(providers_.size());
 
-        for (auto& p : providers_) {
+        for (size_t i = 0; i < providers_.size(); ++i) {
+            auto& p = providers_[i];
             int64_t total = p->total_requests.load(std::memory_order_relaxed);
             if (total < config_.load_balancer.min_samples_for_outlier) {
                 continue;  // Not enough data
             }
             int64_t successes = p->total_successes.load(std::memory_order_relaxed);
-            rates.push_back(static_cast<double>(successes) / static_cast<double>(total));
+            rates.push_back({i, static_cast<double>(successes) / static_cast<double>(total)});
         }
 
         if (rates.size() < 2) return;
 
         // Calculate mean
         double sum = 0.0;
-        for (double r : rates) sum += r;
+        for (const auto& r : rates) sum += r.rate;
         double mean = sum / static_cast<double>(rates.size());
 
         // Calculate stddev
         double variance_sum = 0.0;
-        for (double r : rates) {
-            double diff = r - mean;
+        for (const auto& r : rates) {
+            double diff = r.rate - mean;
             variance_sum += diff * diff;
         }
         double variance = variance_sum / static_cast<double>(rates.size());
@@ -680,21 +709,16 @@ public:
         // Ejection threshold (Envoy formula)
         double threshold = mean - (config_.load_balancer.outlier_stddev_factor * stddev);
 
-        // Check each provider
-        size_t rate_idx = 0;
-        for (auto& p : providers_) {
-            int64_t total = p->total_requests.load(std::memory_order_relaxed);
-            if (total < config_.load_balancer.min_samples_for_outlier) {
-                continue;
-            }
+        // Check each provider using stored indices
+        for (const auto& pr : rates) {
+            auto& p = providers_[pr.provider_idx];
 
+            // Only eject Active providers
             if (p->state.load(std::memory_order_relaxed) != ProviderState::Active) {
-                ++rate_idx;
                 continue;
             }
 
-            double rate = rates[rate_idx++];
-            if (rate < threshold && rate < mean) {
+            if (pr.rate < threshold && pr.rate < mean) {
                 // Statistical outlier - eject
                 eject_provider(*p, now);
             }
@@ -936,7 +960,6 @@ private:
     ProviderHealthConfig config_;
     std::vector<std::unique_ptr<ProviderHealth>> providers_;
     mutable std::shared_mutex mutex_;
-    mutable std::mt19937 rng_;
 };
 
 }  // namespace tsduck_interop::streaming

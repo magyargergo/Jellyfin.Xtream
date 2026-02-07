@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <chrono>
 #include <tsduck.h>
 #include "../core/constants.hpp"
 #include "../core/logging.hpp"
@@ -40,9 +41,12 @@ public:
     static constexpr int32_t DEFAULT_MAX_PACKETS = 2000;       // ~376KB, enough for ~1-2 GOPs
     static constexpr int32_t MIN_PACKETS_BEFORE_SCAN = 7;      // Need enough for PES header
     static constexpr size_t MAX_PES_BUFFER_SIZE = 256 * 1024;  // 256KB max per PID
+    static constexpr auto DEFAULT_TIMEOUT = std::chrono::seconds(5);  // Max time to wait for IDR
 
-    explicit KeyframeAligner(int32_t max_packets = DEFAULT_MAX_PACKETS) noexcept
-        : max_packets_(max_packets), waiting_for_keyframe_(false), packets_buffered_(0), idr_packet_index_(-1) {
+    explicit KeyframeAligner(int32_t max_packets = DEFAULT_MAX_PACKETS,
+                             std::chrono::milliseconds timeout = DEFAULT_TIMEOUT) noexcept
+        : max_packets_(max_packets), timeout_(timeout), waiting_for_keyframe_(false),
+          packets_buffered_(0), idr_packet_index_(-1) {
         buffer_.reserve(static_cast<size_t>(max_packets) * ts::PKT_SIZE);
     }
 
@@ -58,7 +62,9 @@ public:
         idr_packet_index_ = -1;
         buffer_.clear();
         clear_pid_states();
-        LOG_DEBUG("KeyframeAligner", "started waiting for keyframe");
+        waiting_started_ = std::chrono::steady_clock::now();
+        LOG_DEBUG("KeyframeAligner", "started waiting for keyframe (timeout=%lldms)",
+                  static_cast<long long>(timeout_.count()));
     }
 
     /// Stop waiting (reset to pass-through mode).
@@ -82,13 +88,15 @@ public:
         const uint8_t* data;  // Data to output (may be from buffer or input)
         int32_t length;       // Bytes to output (0 if still buffering)
         bool found_keyframe;  // True if IDR was found this call
+        const uint8_t* pre_idr_data;  // Pre-IDR data for SPS/PPS extraction (null if not found)
+        int32_t pre_idr_length;       // Bytes before IDR frame
     };
 
     /// Process aligned TS data.
     /// If waiting for keyframe: buffers data, scans for IDR, returns aligned output.
     /// If not waiting: passes through unchanged.
     ProcessResult process(const uint8_t* data, int32_t length) noexcept {
-        ProcessResult result{nullptr, 0, false};
+        ProcessResult result{nullptr, 0, false, nullptr, 0};
 
         if (!waiting_for_keyframe_) {
             // Pass-through mode
@@ -119,11 +127,32 @@ public:
             result.length = static_cast<int32_t>(buffer_.size()) - idr_byte_offset;
             result.found_keyframe = true;
 
+            // Provide pre-IDR data for SPS/PPS extraction
+            // The caller should feed this through NAL parser before discarding
+            if (idr_packet_index_ > 0) {
+                result.pre_idr_data = buffer_.data();
+                result.pre_idr_length = idr_byte_offset;
+            }
+
             LOG_INFO("KeyframeAligner", "found IDR at packet %d, discarding %d packets, outputting %d packets",
                      idr_packet_index_, idr_packet_index_, result.length / static_cast<int32_t>(ts::PKT_SIZE));
 
             waiting_for_keyframe_ = false;
             // Don't clear buffer yet - caller needs to use the data pointer
+            return result;
+        }
+
+        // Check timeout - prevents infinite buffering if no IDR is ever found
+        auto elapsed = std::chrono::steady_clock::now() - waiting_started_;
+        if (elapsed > timeout_) {
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+            LOG_WARNING("KeyframeAligner", "timeout (%lldms) waiting for IDR after %lldms, emitting %d buffered packets",
+                        static_cast<long long>(timeout_.count()), static_cast<long long>(elapsed_ms), packets_buffered_);
+            result.data = buffer_.data();
+            result.length = static_cast<int32_t>(buffer_.size());
+            result.found_keyframe = false;
+
+            waiting_for_keyframe_ = false;
             return result;
         }
 
@@ -161,9 +190,11 @@ public:
 
 private:
     int32_t max_packets_;
+    std::chrono::milliseconds timeout_;
     bool waiting_for_keyframe_;
     int32_t packets_buffered_;
     int32_t idr_packet_index_;
+    std::chrono::steady_clock::time_point waiting_started_;
     std::vector<uint8_t> buffer_;
 
     // Per-PID state for PES accumulation

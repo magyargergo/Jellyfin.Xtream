@@ -1048,19 +1048,20 @@ TSDUCK_API NetworkConfigNative tsduck_network_config_default(void) {
     NetworkConfigNative config{};
 
     // Use sensible defaults matching the C++ NetworkConfig defaults
+    // Timeouts based on industry standards research (TR 101 290, TVHeadend, etc.)
     config.dns_mode = DNS_RESOLVE_SYSTEM;
     config.dns_server_count = 0;
     config.dns_cache_timeout_sec = 60;
     config.ip_resolve_mode = IP_RESOLVE_IPV4_ONLY;  // Safe default for IPTV
     config.dns_timeout_ms = 5000;
-    config.tcp_connect_timeout_ms = 5000;
+    config.tcp_connect_timeout_ms = 10000;  // 10s for slow IPTV providers
     config.tls_handshake_timeout_ms = 5000;
-    config.first_byte_timeout_ms = 10000;
+    config.first_byte_timeout_ms = 15000;   // 15s for Xtream API variability
     config.happy_eyeballs_timeout_ms = 200;
     config.tcp_keepalive_enabled = 1;
     config.tcp_keepalive_idle_sec = 60;
     config.tcp_keepalive_interval_sec = 60;
-    config.recv_buffer_size = 65536;  // 64KB
+    config.recv_buffer_size = 131072;  // 128KB for higher throughput
 
     // Zero out arrays
     std::memset(config.dns_servers, 0, sizeof(config.dns_servers));

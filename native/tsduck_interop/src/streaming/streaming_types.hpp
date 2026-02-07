@@ -62,10 +62,13 @@ enum class DisconnectReason : int32_t {
 // ============================================================================
 
 struct StreamerConfig {
-    // Connection settings
-    int32_t connect_timeout_ms = 5000;      // TCP+TLS handshake timeout
-    int32_t response_timeout_ms = 10000;    // Time to first byte
-    int32_t stall_timeout_ms = 20000;       // No data for this long = stalled
+    // Connection settings (based on industry standards research)
+    // Connect: 10-15s recommended for slow IPTV providers
+    // Response: 15s recommended for Xtream API variability
+    // Stall: 30s industry standard (TVHeadend, etc.)
+    int32_t connect_timeout_ms = 10000;     // TCP+TLS handshake timeout
+    int32_t response_timeout_ms = 15000;    // Time to first byte
+    int32_t stall_timeout_ms = 30000;       // No data for this long = stalled
     int32_t max_retries = 10;               // Total retry attempts before Failed
 
     // Backoff settings
