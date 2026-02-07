@@ -61,6 +61,38 @@ public class XtreamController(
 {
     private const int CacheMinutes = 5;
 
+    private static readonly string[] ConfigurationSections =
+    [
+        "Proxy",
+        "Epg",
+        "Discord",
+        "Timeouts",
+        "Health",
+        "UserAgent",
+        "RateLimiting",
+        "Visibility",
+        "Failover",
+        "ConnectionLimits",
+        "Hedging",
+        "Buffer",
+        "Logging",
+        "StreamProcessing",
+    ];
+
+    private static readonly string[] StreamOperations =
+    [
+        "GET ActiveStreams",
+        "DELETE ActiveStreams/{id}",
+        "GET ActiveStreams/{id}/Providers",
+        "GET ActiveStreams/{id}/Providers/{idx}/Health",
+        "POST ActiveStreams/{id}/ForceReconnect",
+        "POST ActiveStreams/{id}/Providers/{idx}/Eject",
+        "POST ActiveStreams/{id}/Providers/Reset",
+        "GET ActiveStreams/{id}/Metrics",
+        "GET Diagnostics/Bundle",
+        "GET Metrics/Aggregate",
+    ];
+
     private readonly ILogger<XtreamController> _logger = logger;
     private readonly ILoggerFactory _loggerFactory = loggerFactory;
     private readonly IMemoryCache _cache = cache;
@@ -2447,5 +2479,602 @@ public class XtreamController(
         Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Health configuration updated via API");
         return Ok(new { success = true, message = "Health configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - User-Agent
+    // =========================================================================
+
+    /// <summary>
+    /// Get User-Agent configuration.
+    /// </summary>
+    /// <returns>Current User-Agent settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/UserAgent")]
+    public ActionResult<object> GetUserAgentConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                customUserAgent = config.CustomUserAgent,
+                enableRotation = config.EnableUserAgentRotation,
+                useRandom = config.UseRandomUserAgent,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update User-Agent configuration.
+    /// </summary>
+    /// <param name="request">User-Agent settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/UserAgent")]
+    public ActionResult<object> UpdateUserAgentConfig([FromBody] UserAgentConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.CustomUserAgent = request.CustomUserAgent;
+        config.EnableUserAgentRotation = request.EnableRotation;
+        config.UseRandomUserAgent = request.UseRandom;
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("User-Agent configuration updated via API");
+        return Ok(new { success = true, message = "User-Agent configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - Rate Limiting
+    // =========================================================================
+
+    /// <summary>
+    /// Get rate limiting configuration.
+    /// </summary>
+    /// <returns>Current rate limiting settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/RateLimiting")]
+    public ActionResult<object> GetRateLimitConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                enabled = config.EnableRateLimiting,
+                requestsPerSecond = config.RequestsPerSecond,
+                burstSize = config.BurstSize,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update rate limiting configuration.
+    /// </summary>
+    /// <param name="request">Rate limiting settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/RateLimiting")]
+    public ActionResult<object> UpdateRateLimitConfig([FromBody] RateLimitConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.EnableRateLimiting = request.Enabled;
+        config.RequestsPerSecond = Math.Clamp(request.RequestsPerSecond, 1, 50);
+        config.BurstSize = Math.Clamp(request.BurstSize, 1, 100);
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Rate limiting configuration updated via API");
+        return Ok(new { success = true, message = "Rate limiting configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - Visibility
+    // =========================================================================
+
+    /// <summary>
+    /// Get content visibility configuration.
+    /// </summary>
+    /// <returns>Current visibility settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Visibility")]
+    public ActionResult<object> GetVisibilityConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                isCatchupVisible = config.IsCatchupVisible,
+                isSeriesVisible = config.IsSeriesVisible,
+                isVodVisible = config.IsVodVisible,
+                isTmdbVodOverride = config.IsTmdbVodOverride,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update content visibility configuration.
+    /// </summary>
+    /// <param name="request">Visibility settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Visibility")]
+    public ActionResult<object> UpdateVisibilityConfig([FromBody] VisibilityConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.IsCatchupVisible = request.IsCatchupVisible;
+        config.IsSeriesVisible = request.IsSeriesVisible;
+        config.IsVodVisible = request.IsVodVisible;
+        config.IsTmdbVodOverride = request.IsTmdbVodOverride;
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Visibility configuration updated via API");
+        return Ok(new { success = true, message = "Visibility configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - Failover
+    // =========================================================================
+
+    /// <summary>
+    /// Get failover configuration.
+    /// </summary>
+    /// <returns>Current failover settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Failover")]
+    public ActionResult<object> GetFailoverConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                mergeDuplicateChannels = config.MergeDuplicateChannels,
+                enableProviderFailover = config.EnableProviderFailover,
+                skipUnavailableProviders = config.SkipUnavailableProviders,
+                providerCheckIntervalSeconds = config.ProviderCheckIntervalSeconds,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update failover configuration.
+    /// </summary>
+    /// <param name="request">Failover settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Failover")]
+    public ActionResult<object> UpdateFailoverConfig([FromBody] FailoverConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.MergeDuplicateChannels = request.MergeDuplicateChannels;
+        config.EnableProviderFailover = request.EnableProviderFailover;
+        config.SkipUnavailableProviders = request.SkipUnavailableProviders;
+        config.ProviderCheckIntervalSeconds = Math.Clamp(request.ProviderCheckIntervalSeconds, 15, 300);
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Failover configuration updated via API");
+        return Ok(new { success = true, message = "Failover configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - Connection Limits
+    // =========================================================================
+
+    /// <summary>
+    /// Get connection limit configuration.
+    /// </summary>
+    /// <returns>Current connection limit settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/ConnectionLimits")]
+    public ActionResult<object> GetConnectionLimitConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                enforceConnectionLimit = config.EnforceConnectionLimit,
+                maxConcurrentStreams = config.MaxConcurrentStreams,
+                autoKillOldestStream = config.AutoKillOldestStream,
+                filterChannelsByCapacity = config.FilterChannelsByCapacity,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update connection limit configuration.
+    /// </summary>
+    /// <param name="request">Connection limit settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/ConnectionLimits")]
+    public ActionResult<object> UpdateConnectionLimitConfig([FromBody] ConnectionLimitConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.EnforceConnectionLimit = request.EnforceConnectionLimit;
+        config.MaxConcurrentStreams = Math.Clamp(request.MaxConcurrentStreams, 0, 100);
+        config.AutoKillOldestStream = request.AutoKillOldestStream;
+        config.FilterChannelsByCapacity = request.FilterChannelsByCapacity;
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Connection limit configuration updated via API");
+        return Ok(new { success = true, message = "Connection limit configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - Hedging
+    // =========================================================================
+
+    /// <summary>
+    /// Get hedging configuration.
+    /// </summary>
+    /// <returns>Current hedging settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Hedging")]
+    public ActionResult<object> GetHedgingConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                enabled = config.EnableHedging,
+                delayMs = config.HedgingDelayMs,
+                maxAttempts = config.MaxHedgedAttempts,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update hedging configuration.
+    /// </summary>
+    /// <param name="request">Hedging settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Hedging")]
+    public ActionResult<object> UpdateHedgingConfig([FromBody] HedgingConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.EnableHedging = request.Enabled;
+        config.HedgingDelayMs = Math.Clamp(request.DelayMs, 50, 2000);
+        config.MaxHedgedAttempts = Math.Clamp(request.MaxAttempts, 1, 5);
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Hedging configuration updated via API");
+        return Ok(new { success = true, message = "Hedging configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - Buffer
+    // =========================================================================
+
+    /// <summary>
+    /// Get buffer health configuration.
+    /// </summary>
+    /// <returns>Current buffer health settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Buffer")]
+    public ActionResult<object> GetBufferConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                underrunThresholdPercent = config.BufferUnderrunThresholdPercent,
+                nearFullThresholdPercent = config.BufferNearFullThresholdPercent,
+                underrunNotificationThreshold = config.BufferUnderrunNotificationThreshold,
+                consumerDisconnectGraceSeconds = config.ConsumerDisconnectGraceSeconds,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update buffer health configuration.
+    /// </summary>
+    /// <param name="request">Buffer settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Buffer")]
+    public ActionResult<object> UpdateBufferConfig([FromBody] BufferConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.BufferUnderrunThresholdPercent = Math.Clamp(request.UnderrunThresholdPercent, 1.0, 50.0);
+        config.BufferNearFullThresholdPercent = Math.Clamp(request.NearFullThresholdPercent, 50.0, 99.0);
+        config.BufferUnderrunNotificationThreshold = Math.Clamp(request.UnderrunNotificationThreshold, 1, 50);
+        config.ConsumerDisconnectGraceSeconds = Math.Clamp(request.ConsumerDisconnectGraceSeconds, 1, 60);
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Buffer configuration updated via API");
+        return Ok(new { success = true, message = "Buffer configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - Logging
+    // =========================================================================
+
+    /// <summary>
+    /// Get logging configuration.
+    /// </summary>
+    /// <returns>Current logging settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/Logging")]
+    public ActionResult<object> GetLoggingConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(
+            new
+            {
+                enableDebugLogging = config.EnableDebugLogging,
+                logViewerMaxEntries = config.LogViewerMaxEntries,
+                enablePeriodicHealthReports = config.EnablePeriodicHealthReports,
+                healthReportIntervalMinutes = config.HealthReportIntervalMinutes,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Update logging configuration.
+    /// </summary>
+    /// <param name="request">Logging settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/Logging")]
+    public ActionResult<object> UpdateLoggingConfig([FromBody] LoggingConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.EnableDebugLogging = request.EnableDebugLogging;
+        config.LogViewerMaxEntries = Math.Clamp(request.LogViewerMaxEntries, 100, 50000);
+        config.EnablePeriodicHealthReports = request.EnablePeriodicHealthReports;
+        config.HealthReportIntervalMinutes = Math.Clamp(request.HealthReportIntervalMinutes, 5, 1440);
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Logging configuration updated via API");
+        return Ok(new { success = true, message = "Logging configuration updated" });
+    }
+
+    // =========================================================================
+    // Configuration CRUD - Stream Processing
+    // =========================================================================
+
+    /// <summary>
+    /// Get stream processing configuration.
+    /// </summary>
+    /// <returns>Current stream processing settings.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Configuration/StreamProcessing")]
+    public ActionResult<object> GetStreamProcessingConfig()
+    {
+        var config = Plugin.Instance.Configuration;
+        return Ok(new { forceRemux = config.ForceRemux });
+    }
+
+    /// <summary>
+    /// Update stream processing configuration.
+    /// </summary>
+    /// <param name="request">Stream processing settings to apply.</param>
+    /// <returns>Result indicating success.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPut("Configuration/StreamProcessing")]
+    public ActionResult<object> UpdateStreamProcessingConfig([FromBody] StreamProcessingConfigRequest request)
+    {
+        var config = Plugin.Instance.Configuration;
+        config.ForceRemux = request.ForceRemux;
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Stream processing configuration updated via API");
+        return Ok(new { success = true, message = "Stream processing configuration updated" });
+    }
+
+    // =========================================================================
+    // Batch Channel Override Operations
+    // =========================================================================
+
+    /// <summary>
+    /// List all channel overrides for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>All overrides for the provider.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Providers/{providerId}/Channels/Overrides")]
+    public ActionResult<object> GetAllChannelOverrides(string providerId)
+    {
+        var provider = GetProvider(providerId);
+        if (provider == null)
+        {
+            return NotFound(new { message = "Provider not found" });
+        }
+
+        var overrides = provider.LiveTvOverrides.Select(kvp => new
+        {
+            streamId = kvp.Key,
+            number = kvp.Value.Number,
+            name = kvp.Value.Name,
+            logoUrl = kvp.Value.LogoUrl,
+        });
+
+        return Ok(
+            new
+            {
+                providerId,
+                count = provider.LiveTvOverrides.Count,
+                overrides,
+            }
+        );
+    }
+
+    /// <summary>
+    /// Set multiple channel overrides in a single request.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <param name="request">Batch override request.</param>
+    /// <returns>Result with count of applied overrides.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpPost("Providers/{providerId}/Channels/Overrides/Batch")]
+    public ActionResult<object> BatchSetChannelOverrides(
+        string providerId,
+        [FromBody] BatchChannelOverrideRequest request
+    )
+    {
+        var provider = GetProvider(providerId);
+        if (provider == null)
+        {
+            return NotFound(new { message = "Provider not found" });
+        }
+
+        var applied = 0;
+        foreach (var entry in request.Overrides)
+        {
+            provider.LiveTvOverrides[entry.StreamId] = new Configuration.ChannelOverrides
+            {
+                Number = entry.Number ?? 0,
+                Name = entry.Name ?? string.Empty,
+                LogoUrl = entry.LogoUrl ?? string.Empty,
+            };
+            applied++;
+        }
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation(
+            "Batch set {Count} channel overrides for provider {ProviderId}",
+            applied,
+            providerId
+        );
+        return Ok(
+            new
+            {
+                success = true,
+                applied,
+                message = $"Applied {applied} override(s)",
+            }
+        );
+    }
+
+    /// <summary>
+    /// Clear all channel overrides for a provider.
+    /// </summary>
+    /// <param name="providerId">The provider ID.</param>
+    /// <returns>Result with count of cleared overrides.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpDelete("Providers/{providerId}/Channels/Overrides")]
+    public ActionResult<object> ClearAllChannelOverrides(string providerId)
+    {
+        var provider = GetProvider(providerId);
+        if (provider == null)
+        {
+            return NotFound(new { message = "Provider not found" });
+        }
+
+        var count = provider.LiveTvOverrides.Count;
+        provider.LiveTvOverrides.Clear();
+
+        Plugin.Instance.SaveConfiguration();
+        _logger.PluginLogInformation("Cleared {Count} channel overrides for provider {ProviderId}", count, providerId);
+        return Ok(
+            new
+            {
+                success = true,
+                cleared = count,
+                message = $"Cleared {count} override(s)",
+            }
+        );
+    }
+
+    // =========================================================================
+    // Capabilities Manifest
+    // =========================================================================
+
+    /// <summary>
+    /// Get machine-readable capability manifest for agent and automation discovery.
+    /// </summary>
+    /// <returns>Plugin capabilities, features, and endpoint catalog.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Capabilities")]
+    public ActionResult<object> GetCapabilities()
+    {
+        return Ok(
+            new
+            {
+                pluginVersion = Plugin.Instance.Version.ToString(),
+                apiVersion = "1.0",
+                features = new
+                {
+                    multiProvider = new
+                    {
+                        enabled = true,
+                        supportsFailover = true,
+                        supportsLoadBalancing = true,
+                    },
+                    streamQuality = new
+                    {
+                        supportsTR101290 = true,
+                        supportsPCRAnalysis = true,
+                        supportsAVSync = true,
+                    },
+                    nativeStreamer = new
+                    {
+                        enabled = true,
+                        supportsSharedMemory = true,
+                        supportsHealthTracking = true,
+                    },
+                    notifications = new { discord = true, sse = false },
+                },
+                configurationSections = ConfigurationSections,
+                streamOperations = StreamOperations,
+                limits = new
+                {
+                    maxProviders = 10,
+                    maxConcurrentStreams = Plugin.Instance.Configuration.MaxConcurrentStreams,
+                },
+            }
+        );
+    }
+
+    // =========================================================================
+    // Aggregate Metrics
+    // =========================================================================
+
+    /// <summary>
+    /// Get system-wide aggregated metrics across all active streams.
+    /// </summary>
+    /// <returns>Aggregated stream, buffer, quality, and network metrics.</returns>
+    [Authorize(Policy = "RequiresElevation")]
+    [HttpGet("Metrics/Aggregate")]
+    public ActionResult<object> GetAggregateMetrics()
+    {
+        var streams = Restream.GetActiveStreamSnapshots();
+
+        return Ok(
+            new
+            {
+                timestamp = DateTime.UtcNow,
+                streams = new
+                {
+                    total = streams.Count,
+                    streaming = streams.Count(s => s.StreamerState == "Streaming"),
+                    connecting = streams.Count(s => s.StreamerState == "Connecting"),
+                    withQualityIssues = streams.Count(s => s.HasQualityIssues),
+                },
+                buffer = new
+                {
+                    totalOverflows = streams.Sum(s => s.OverflowCount),
+                    totalBytesWritten = streams.Sum(s => s.TotalBytesWritten),
+                    avgGapPercentage = streams.Count > 0 ? streams.Average(s => s.GapPercentage) : 0.0,
+                },
+                quality = new
+                {
+                    totalPacketErrors = streams.Sum(s => s.PacketErrors),
+                    totalContinuityErrors = streams.Sum(s => s.ContinuityErrors),
+                    totalSyncErrors = streams.Sum(s => s.SyncErrors),
+                    streamsWithAVDrift = streams.Count(s => Math.Abs(s.AvDriftMs) > 100),
+                },
+                network = new
+                {
+                    totalBytesReceived = streams.Sum(s => s.BytesReceived),
+                    totalPacketsOutput = streams.Sum(s => s.PacketsOutput),
+                    avgBitrateBps = streams.Count > 0 ? streams.Average(s => s.TsBitrate) : 0.0,
+                },
+                providers = new
+                {
+                    totalSwitches = streams.Sum(s => s.SwitchesCompleted),
+                    qualityTriggeredSwitches = streams.Sum(s => s.QualitySwitches),
+                    totalProviders = streams.Sum(s => s.ProviderCount),
+                },
+            }
+        );
     }
 }

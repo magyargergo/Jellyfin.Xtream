@@ -200,6 +200,247 @@ public sealed class TimeoutConfigRequest
 }
 
 /// <summary>
+/// Request model for User-Agent configuration.
+/// </summary>
+public sealed class UserAgentConfigRequest
+{
+    /// <summary>
+    /// Gets or sets the custom User-Agent header (null to use default).
+    /// </summary>
+    public string? CustomUserAgent { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to rotate User-Agent headers.
+    /// </summary>
+    public bool EnableRotation { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to use random selection (vs sequential).
+    /// </summary>
+    public bool UseRandom { get; set; } = true;
+}
+
+/// <summary>
+/// Request model for rate limiting configuration.
+/// </summary>
+public sealed class RateLimitConfigRequest
+{
+    /// <summary>
+    /// Gets or sets a value indicating whether rate limiting is enabled.
+    /// </summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets the maximum requests per second (1-50).
+    /// </summary>
+    public int RequestsPerSecond { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets the burst size (1-100).
+    /// </summary>
+    public int BurstSize { get; set; } = 20;
+}
+
+/// <summary>
+/// Request model for content visibility configuration.
+/// </summary>
+public sealed class VisibilityConfigRequest
+{
+    /// <summary>
+    /// Gets or sets a value indicating whether Catch-up is visible.
+    /// </summary>
+    public bool IsCatchupVisible { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether Series is visible.
+    /// </summary>
+    public bool IsSeriesVisible { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether VOD is visible.
+    /// </summary>
+    public bool IsVodVisible { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether TMDB VOD override is enabled.
+    /// </summary>
+    public bool IsTmdbVodOverride { get; set; } = true;
+}
+
+/// <summary>
+/// Request model for failover configuration.
+/// </summary>
+public sealed class FailoverConfigRequest
+{
+    /// <summary>
+    /// Gets or sets a value indicating whether duplicate channel merging is enabled.
+    /// </summary>
+    public bool MergeDuplicateChannels { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether provider failover is enabled.
+    /// </summary>
+    public bool EnableProviderFailover { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to skip unavailable providers.
+    /// </summary>
+    public bool SkipUnavailableProviders { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the provider check interval in seconds (15-300).
+    /// </summary>
+    public int ProviderCheckIntervalSeconds { get; set; } = 60;
+}
+
+/// <summary>
+/// Request model for connection limit configuration.
+/// </summary>
+public sealed class ConnectionLimitConfigRequest
+{
+    /// <summary>
+    /// Gets or sets a value indicating whether connection limits are enforced.
+    /// </summary>
+    public bool EnforceConnectionLimit { get; set; }
+
+    /// <summary>
+    /// Gets or sets the max concurrent streams (0 = use provider limit).
+    /// </summary>
+    public int MaxConcurrentStreams { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to auto-kill oldest stream at limit.
+    /// </summary>
+    public bool AutoKillOldestStream { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to hide channels from providers at capacity.
+    /// </summary>
+    public bool FilterChannelsByCapacity { get; set; }
+}
+
+/// <summary>
+/// Request model for hedging configuration.
+/// </summary>
+public sealed class HedgingConfigRequest
+{
+    /// <summary>
+    /// Gets or sets a value indicating whether hedging is enabled.
+    /// </summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets the hedging delay in milliseconds (50-2000).
+    /// </summary>
+    public int DelayMs { get; set; } = 200;
+
+    /// <summary>
+    /// Gets or sets the max hedged attempts (1-5).
+    /// </summary>
+    public int MaxAttempts { get; set; } = 2;
+}
+
+/// <summary>
+/// Request model for buffer health configuration.
+/// </summary>
+public sealed class BufferConfigRequest
+{
+    /// <summary>
+    /// Gets or sets the underrun threshold percentage (1-50).
+    /// </summary>
+    public double UnderrunThresholdPercent { get; set; } = 10.0;
+
+    /// <summary>
+    /// Gets or sets the near-full threshold percentage (50-99).
+    /// </summary>
+    public double NearFullThresholdPercent { get; set; } = 90.0;
+
+    /// <summary>
+    /// Gets or sets the underrun notification threshold (1-50).
+    /// </summary>
+    public int UnderrunNotificationThreshold { get; set; } = 5;
+
+    /// <summary>
+    /// Gets or sets the consumer disconnect grace period in seconds (1-60).
+    /// </summary>
+    public int ConsumerDisconnectGraceSeconds { get; set; } = 5;
+}
+
+/// <summary>
+/// Request model for logging configuration.
+/// </summary>
+public sealed class LoggingConfigRequest
+{
+    /// <summary>
+    /// Gets or sets a value indicating whether debug logging is enabled.
+    /// </summary>
+    public bool EnableDebugLogging { get; set; }
+
+    /// <summary>
+    /// Gets or sets the log viewer max entries (100-50000).
+    /// </summary>
+    public int LogViewerMaxEntries { get; set; } = 5000;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether periodic health reports are enabled.
+    /// </summary>
+    public bool EnablePeriodicHealthReports { get; set; }
+
+    /// <summary>
+    /// Gets or sets the health report interval in minutes (5-1440).
+    /// </summary>
+    public int HealthReportIntervalMinutes { get; set; } = 60;
+}
+
+/// <summary>
+/// Request model for stream processing configuration.
+/// </summary>
+public sealed class StreamProcessingConfigRequest
+{
+    /// <summary>
+    /// Gets or sets a value indicating whether to force FFmpeg remuxing.
+    /// </summary>
+    public bool ForceRemux { get; set; } = true;
+}
+
+/// <summary>
+/// Request model for batch channel override operations.
+/// </summary>
+public sealed class BatchChannelOverrideRequest
+{
+    /// <summary>
+    /// Gets or sets the list of overrides to apply.
+    /// </summary>
+    public System.Collections.ObjectModel.Collection<BatchOverrideEntry> Overrides { get; } = [];
+}
+
+/// <summary>
+/// A single entry in a batch channel override request.
+/// </summary>
+public sealed class BatchOverrideEntry
+{
+    /// <summary>
+    /// Gets or sets the stream ID.
+    /// </summary>
+    public int StreamId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the TV channel number override.
+    /// </summary>
+    public int? Number { get; set; }
+
+    /// <summary>
+    /// Gets or sets the TV channel name override.
+    /// </summary>
+    public string? Name { get; set; }
+
+    /// <summary>
+    /// Gets or sets the channel logo URL override.
+    /// </summary>
+    public string? LogoUrl { get; set; }
+}
+
+/// <summary>
 /// Request model for health and load balancer configuration.
 /// </summary>
 public sealed class HealthConfigRequest
