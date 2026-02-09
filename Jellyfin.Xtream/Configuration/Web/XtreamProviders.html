@@ -22,10 +22,10 @@
       </div>
 
       <!-- Connection Status Panel -->
-      <div id="ConnectionStatusPanel" class="hide" style="margin-bottom: 20px; padding: 16px; border-radius: 8px; background: var(--theme-card-background-color, #1c1c1e);">
+      <div id="ConnectionStatusPanel" style="margin-bottom: 20px; padding: 16px; border-radius: 8px; background: var(--theme-card-background-color, #1c1c1e);">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <span class="material-icons" id="ConnectionStatusIcon" style="font-size: 24px;">wifi</span>
+            <span class="material-icons" id="ConnectionStatusIcon" style="font-size: 24px; color: #888;">wifi</span>
             <span style="font-weight: bold;">Connection Status</span>
           </div>
           <button is="emby-button" type="button" id="RefreshConnectionStatusBtn" class="fab emby-button" title="Refresh Status" style="width: 32px; height: 32px; min-width: 32px;">
@@ -33,7 +33,32 @@
           </button>
         </div>
         <div id="ConnectionStatusContent">
-          <!-- Status content will be dynamically inserted here -->
+          <!-- Skeleton loader shown until API responds -->
+          <div id="ConnectionStatusSkeleton">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px;">
+              <div style="text-align: center;">
+                <div class="xt-skeleton xt-skeleton-circle" style="width: 90px; height: 90px; margin: 0 auto;"></div>
+                <div class="xt-skeleton xt-skeleton-text xt-skeleton-text--narrow" style="margin: 8px auto 0;"></div>
+              </div>
+              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; text-align: center;">
+                <div class="xt-skeleton xt-skeleton-text" style="width: 60px; height: 24px; margin: 4px auto;"></div>
+                <div class="xt-skeleton xt-skeleton-text xt-skeleton-text--medium" style="margin: 8px auto 0;"></div>
+              </div>
+              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; text-align: center;">
+                <div class="xt-skeleton xt-skeleton-text" style="width: 30px; height: 24px; margin: 4px auto;"></div>
+                <div class="xt-skeleton xt-skeleton-text xt-skeleton-text--narrow" style="margin: 8px auto 0;"></div>
+              </div>
+              <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; text-align: center;">
+                <div class="xt-skeleton xt-skeleton-text" style="width: 30px; height: 24px; margin: 4px auto;"></div>
+                <div class="xt-skeleton xt-skeleton-text xt-skeleton-text--medium" style="margin: 8px auto 0;"></div>
+              </div>
+            </div>
+            <div style="background: rgba(255,255,255,0.02); border-radius: 8px; padding: 12px;">
+              <div class="xt-skeleton xt-skeleton-text xt-skeleton-text--narrow" style="margin-bottom: 10px;"></div>
+              <div class="xt-skeleton xt-skeleton-text xt-skeleton-text--wide" style="height: 16px; margin-bottom: 8px;"></div>
+              <div class="xt-skeleton xt-skeleton-text xt-skeleton-text--wide" style="height: 16px;"></div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -42,54 +67,51 @@
       </div>
 
       <!-- Add/Edit Provider Dialog -->
-      <div id="ProviderDialog" class="dialog hide" style="display: none;">
-        <div class="dialog-content" style="max-width: 500px; margin: 50px auto; background: var(--theme-card-background-color, #1c1c1e); padding: 24px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
-          <h2 id="ProviderDialogTitle" style="margin-top: 0;">Add Provider</h2>
-          <form id="ProviderForm">
-            <input type="hidden" id="ProviderId" name="ProviderId" />
-            <div class="inputContainer">
-              <label class="inputLabel inputLabelUnfocused" for="ProviderName">Provider Name</label>
-              <input id="ProviderName" name="ProviderName" type="text" is="emby-input" required />
-              <div class="fieldDescription">A friendly name for this provider.</div>
-            </div>
-            <div class="inputContainer">
-              <label class="inputLabel inputLabelUnfocused" for="ProviderBaseUrl">Base URL</label>
-              <input id="ProviderBaseUrl" name="ProviderBaseUrl" type="text" is="emby-input" required />
-              <div class="fieldDescription">The base URL including protocol without trailing slash (e.g., http://example.com:8080).</div>
-            </div>
-            <div class="inputContainer">
-              <label class="inputLabel inputLabelUnfocused" for="ProviderUsername">Username</label>
-              <input id="ProviderUsername" name="ProviderUsername" type="text" is="emby-input" required />
-            </div>
-            <div class="inputContainer">
-              <label class="inputLabel inputLabelUnfocused" for="ProviderPassword">Password</label>
-              <input id="ProviderPassword" name="ProviderPassword" type="password" is="emby-input" required />
-            </div>
-            <div class="checkboxContainer" style="margin: 16px 0;">
-              <label>
-                <input type="checkbox" id="ProviderEnabled" is="emby-checkbox" checked />
-                <span>Enabled</span>
-              </label>
-            </div>
-            <div style="display: flex; gap: 8px; margin-top: 24px;">
-              <button is="emby-button" type="submit" class="raised button-submit emby-button">
-                <span id="ProviderDialogSaveText">Save</span>
-              </button>
-              <button is="emby-button" type="button" id="CancelProviderBtn" class="raised emby-button">
-                <span>Cancel</span>
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
+      <dialog id="ProviderDialog" class="xt-dialog">
+        <h2 id="ProviderDialogTitle" style="margin-top: 0;">Add Provider</h2>
+        <form id="ProviderForm">
+          <input type="hidden" id="ProviderId" name="ProviderId" />
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="ProviderName">Provider Name</label>
+            <input id="ProviderName" name="ProviderName" type="text" is="emby-input" required />
+            <div class="fieldDescription">A friendly name for this provider.</div>
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="ProviderBaseUrl">Base URL</label>
+            <input id="ProviderBaseUrl" name="ProviderBaseUrl" type="text" is="emby-input" required />
+            <div class="fieldDescription">The base URL including protocol without trailing slash (e.g., http://example.com:8080).</div>
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="ProviderUsername">Username</label>
+            <input id="ProviderUsername" name="ProviderUsername" type="text" is="emby-input" required />
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="ProviderPassword">Password</label>
+            <input id="ProviderPassword" name="ProviderPassword" type="password" is="emby-input" required />
+          </div>
+          <div class="checkboxContainer" style="margin: 16px 0;">
+            <label>
+              <input type="checkbox" id="ProviderEnabled" is="emby-checkbox" checked />
+              <span>Enabled</span>
+            </label>
+          </div>
+          <div style="display: flex; gap: 8px; margin-top: 24px;">
+            <button is="emby-button" type="submit" class="raised button-submit emby-button">
+              <span id="ProviderDialogSaveText">Save</span>
+            </button>
+            <button is="emby-button" type="button" id="CancelProviderBtn" class="raised emby-button">
+              <span>Cancel</span>
+            </button>
+          </div>
+        </form>
+      </dialog>
 
       <!-- Test Connection Result -->
       <div id="TestResultPanel" class="hide" style="margin-top: 20px; padding: 12px; border-radius: 4px;">
       </div>
 
       <!-- Discover Providers Dialog -->
-      <div id="ScrapeDialog" class="dialog hide" style="display: none;">
-        <div class="dialog-content" style="max-width: 800px; margin: 30px auto; background: var(--theme-card-background-color, #1c1c1e); padding: 24px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto;">
+      <dialog id="ScrapeDialog" class="xt-dialog xt-dialog--wide">
           <h2 style="margin-top: 0;">Discover TV Providers</h2>
           <div class="fieldDescription" style="margin-bottom: 16px;">
             Automatically discover and test Xtream providers with TV channels from online sources.
@@ -169,7 +191,7 @@
           <div id="ScrapeProgress" class="hide">
             <!-- Animated progress header -->
             <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
-              <div id="ScrapeSpinner" style="width: 24px; height: 24px; border: 3px solid rgba(156, 39, 176, 0.3); border-top-color: #9c27b0; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+              <div id="ScrapeSpinner" style="width: 24px; height: 24px; border: 3px solid rgba(156, 39, 176, 0.3); border-top-color: #9c27b0; border-radius: 50%; animation: xtream-spin 1s linear infinite;"></div>
               <div>
                 <div id="ScrapeProgressPhase" style="font-weight: bold; font-size: 1.1em;">Initializing...</div>
                 <div id="ScrapeProgressText" style="font-size: 0.85em; color: #888;">Preparing discovery...</div>
@@ -238,12 +260,6 @@
             </button>
           </div>
 
-          <style>
-            @keyframes spin {
-              to { transform: rotate(360deg); }
-            }
-          </style>
-
           <!-- Discovery Results -->
           <div id="ScrapeResults" class="hide">
             <div id="ScrapeResultsSummary" style="margin-bottom: 16px; padding: 12px; background: rgba(76, 175, 80, 0.1); border-radius: 4px; border-left: 3px solid #4caf50;"></div>
@@ -258,8 +274,7 @@
               </button>
             </div>
           </div>
-        </div>
-      </div>
+      </dialog>
     </div>
   </div>
 </div>

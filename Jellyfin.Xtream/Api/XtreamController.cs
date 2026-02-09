@@ -118,6 +118,91 @@ public class XtreamController(
             : config.GetProvider(providerId);
     }
 
+    private record ProviderStatusResult(
+        string ProviderId,
+        string ProviderName,
+        bool IsOnline,
+        int MaxConnections,
+        int ProviderActiveConnections,
+        bool IsTrial,
+        DateTime? ExpirationDate,
+        string? ErrorMessage
+    );
+
+    private async Task<ProviderStatusResult> QueryProviderStatusAsync(
+        XtreamProvider provider,
+        int timeoutSeconds,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            // Short-circuit the retry handler with a per-provider timeout so a single
+            // unreachable provider doesn't delay the entire dashboard response.
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+            using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
+            var playerApi = await client
+                .GetUserAndServerInfoAsync(provider.ToConnectionInfo(), cts.Token)
+                .ConfigureAwait(false);
+
+            if (playerApi?.UserInfo != null)
+            {
+                var userInfo = playerApi.UserInfo;
+                return new ProviderStatusResult(
+                    provider.Id,
+                    provider.Name,
+                    true,
+                    userInfo.MaxConnections,
+                    userInfo.ActiveCons,
+                    userInfo.IsTrial,
+                    userInfo.ExpDate,
+                    null
+                );
+            }
+
+            return new ProviderStatusResult(
+                provider.Id,
+                provider.Name,
+                false,
+                0,
+                0,
+                false,
+                null,
+                "Failed to get user info"
+            );
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebugIfEnabled("Status check timed out for provider {ProviderId}", provider.Id);
+            return new ProviderStatusResult(
+                provider.Id,
+                provider.Name,
+                false,
+                0,
+                0,
+                false,
+                null,
+                "Connection timed out"
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.PluginLogError(ex, "Failed to get connection status for provider {ProviderId}", provider.Id);
+            return new ProviderStatusResult(
+                provider.Id,
+                provider.Name,
+                false,
+                0,
+                0,
+                false,
+                null,
+                "Failed to connect to provider"
+            );
+        }
+    }
+
     private static CategoryResponse CreateCategoryResponse(Category category) =>
         new() { Id = category.CategoryId, Name = category.CategoryName };
 
@@ -1678,75 +1763,24 @@ public class XtreamController(
         var pluginActiveStreams = Restream.GetActiveStreamCount();
         var configuredMaxStreams = config.MaxConcurrentStreams;
 
+        // Query all providers in parallel with a per-provider timeout.
+        // Without this, a single timing-out provider (3 retries × 5s connect timeout + backoff)
+        // blocks the entire endpoint for 30+ seconds when queried sequentially.
+        const int PerProviderTimeoutSeconds = 8;
+        var tasks = enabledProviders
+            .Select(provider => QueryProviderStatusAsync(provider, PerProviderTimeoutSeconds, cancellationToken))
+            .ToArray();
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+
         int totalCapacity = 0;
         int totalActiveConnections = 0;
-        var providerDetails = new List<object>();
+        var providerDetails = new List<object>(results.Length);
 
-        foreach (var provider in enabledProviders)
+        foreach (var result in results)
         {
-            try
-            {
-                using var client = new XtreamClient(_httpClientFactory, _loggerFactory.CreateLogger<XtreamClient>());
-                var playerApi = await client
-                    .GetUserAndServerInfoAsync(provider.ToConnectionInfo(), cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (playerApi?.UserInfo != null)
-                {
-                    var userInfo = playerApi.UserInfo;
-                    var maxConn = userInfo.MaxConnections;
-                    var activeConn = userInfo.ActiveCons;
-                    totalCapacity += maxConn;
-                    totalActiveConnections += activeConn;
-
-                    providerDetails.Add(
-                        new
-                        {
-                            ProviderId = provider.Id,
-                            ProviderName = provider.Name,
-                            IsOnline = true,
-                            MaxConnections = maxConn,
-                            ProviderActiveConnections = activeConn,
-                            IsTrial = userInfo.IsTrial,
-                            ExpirationDate = userInfo.ExpDate,
-                            ErrorMessage = (string?)null,
-                        }
-                    );
-                }
-                else
-                {
-                    providerDetails.Add(
-                        new
-                        {
-                            ProviderId = provider.Id,
-                            ProviderName = provider.Name,
-                            IsOnline = false,
-                            MaxConnections = 0,
-                            ProviderActiveConnections = 0,
-                            IsTrial = false,
-                            ExpirationDate = (string?)null,
-                            ErrorMessage = "Failed to get user info",
-                        }
-                    );
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.PluginLogError(ex, "Failed to get connection status for provider {ProviderId}", provider.Id);
-                providerDetails.Add(
-                    new
-                    {
-                        ProviderId = provider.Id,
-                        ProviderName = provider.Name,
-                        IsOnline = false,
-                        MaxConnections = 0,
-                        ProviderActiveConnections = 0,
-                        IsTrial = false,
-                        ExpirationDate = (string?)null,
-                        ErrorMessage = "Failed to connect to provider",
-                    }
-                );
-            }
+            totalCapacity += result.MaxConnections;
+            totalActiveConnections += result.ProviderActiveConnections;
+            providerDetails.Add(result);
         }
 
         // Compute effective max and available slots

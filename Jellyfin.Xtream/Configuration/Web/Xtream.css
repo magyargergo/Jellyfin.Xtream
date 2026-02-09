@@ -2349,3 +2349,74 @@ div.categories-container {
   border-radius: var(--xt-radius-lg);
   margin-bottom: 16px;
 }
+
+/* ============================================
+   Native Dialog Styles
+   ============================================ */
+.pluginConfigurationPage dialog.xt-dialog {
+  max-width: 500px;
+  width: calc(100% - 48px);
+  background: var(--theme-card-background-color, #1c1c1e);
+  color: inherit;
+  padding: var(--xt-space-xxl);
+  border: none;
+  border-radius: var(--xt-radius-lg);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.pluginConfigurationPage dialog.xt-dialog--wide {
+  max-width: 800px;
+}
+
+.pluginConfigurationPage dialog.xt-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.7);
+  animation: xtream-fade-in 0.15s ease;
+}
+
+.pluginConfigurationPage dialog.xt-dialog[open] {
+  animation: xtream-dialog-open 0.2s ease-out;
+}
+
+@keyframes xtream-dialog-open {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ============================================
+   Skeleton Loading Styles
+   ============================================ */
+@keyframes xtream-skeleton-pulse {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.3; }
+}
+
+.pluginConfigurationPage .xt-skeleton {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: var(--xt-radius-md);
+  animation: xtream-skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+.pluginConfigurationPage .xt-skeleton-circle {
+  border-radius: 50%;
+}
+
+.pluginConfigurationPage .xt-skeleton-text {
+  height: 12px;
+  margin-bottom: 6px;
+}
+
+.pluginConfigurationPage .xt-skeleton-text:last-child {
+  margin-bottom: 0;
+}
+
+.pluginConfigurationPage .xt-skeleton-text--wide { width: 80%; }
+.pluginConfigurationPage .xt-skeleton-text--medium { width: 60%; }
+.pluginConfigurationPage .xt-skeleton-text--narrow { width: 40%; }

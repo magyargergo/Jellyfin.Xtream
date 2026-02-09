@@ -52,13 +52,11 @@ export default function (view) {
     const showDialog = (isEdit = false) => {
       dialogTitle.textContent = isEdit ? 'Edit Provider' : 'Add Provider';
       view.querySelector('#ProviderDialogSaveText').textContent = isEdit ? 'Save' : 'Add';
-      dialog.style.display = 'block';
-      dialog.classList.remove('hide');
+      dialog.showModal();
     };
 
     const hideDialog = () => {
-      dialog.style.display = 'none';
-      dialog.classList.add('hide');
+      dialog.close();
       form.reset();
       view.querySelector('#ProviderId').value = '';
     };
@@ -215,7 +213,9 @@ export default function (view) {
       try {
         const status = await Xtream.apiRequest('Xtream/ConnectionStatus');
 
-        connectionStatusPanel.classList.remove('hide');
+        // Remove skeleton if present
+        const skeleton = view.querySelector('#ConnectionStatusSkeleton');
+        if (skeleton) skeleton.remove();
 
         // Set icon color based on warning level
         if (status.WarningLevel === 'Critical') {
@@ -394,7 +394,12 @@ export default function (view) {
         connectionStatusContent.innerHTML = html;
       } catch (err) {
         console.error('Failed to load connection status:', err);
-        connectionStatusPanel.classList.add('hide');
+        // Remove skeleton and show error state instead of hiding panel
+        const skeleton = view.querySelector('#ConnectionStatusSkeleton');
+        if (skeleton) skeleton.remove();
+        connectionStatusIcon.style.color = '#888';
+        connectionStatusIcon.textContent = 'wifi_off';
+        connectionStatusContent.innerHTML = '<div style="text-align: center; padding: 12px; color: #888;">Unable to load connection status</div>';
       }
     };
 
@@ -621,11 +626,9 @@ export default function (view) {
       saveProviders();
     });
 
-    // Close dialog on background click
+    // Close provider dialog on backdrop click or ESC
     dialog.addEventListener('click', (e) => {
-      if (e.target === dialog) {
-        hideDialog();
-      }
+      if (e.target === dialog) hideDialog();
     });
 
     // =====================================================
@@ -651,17 +654,15 @@ export default function (view) {
     };
 
     const showScrapeDialog = () => {
-      scrapeDialog.style.display = 'block';
-      scrapeDialog.classList.remove('hide');
       scrapeOptions.classList.remove('hide');
       scrapeProgress.classList.add('hide');
       scrapeResults.classList.add('hide');
+      scrapeDialog.showModal();
     };
 
     const hideScrapeDialog = () => {
       stopPolling();
-      scrapeDialog.style.display = 'none';
-      scrapeDialog.classList.add('hide');
+      scrapeDialog.close();
     };
 
     const showScrapeProgress = () => {
@@ -1209,11 +1210,13 @@ export default function (view) {
     // Connection status refresh
     view.querySelector('#RefreshConnectionStatusBtn').addEventListener('click', loadConnectionStatus);
 
+    // Close scrape dialog on backdrop click (only when not running)
     scrapeDialog.addEventListener('click', (e) => {
-      // Only allow closing by clicking outside if discovery is not running
-      if (e.target === scrapeDialog && !isDiscoveryActive) {
-        hideScrapeDialog();
-      }
+      if (e.target === scrapeDialog && !isDiscoveryActive) hideScrapeDialog();
+    });
+    // Prevent ESC from closing the dialog during active discovery
+    scrapeDialog.addEventListener('cancel', (e) => {
+      if (isDiscoveryActive) e.preventDefault();
     });
 
     // Initial load
