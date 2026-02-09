@@ -1,17 +1,105 @@
-name: "🚀 Publish Plugin"
+name: "Publish Plugin"
 
 on:
-  release:
-    types:
-      - released
   workflow_dispatch:
 
 jobs:
+  # ============================================================
+  # Build the complete plugin package with native libraries
+  # Replaces the reusable JPRM build which only packaged the
+  # main DLL without dependencies or native .so files.
+  # ============================================================
   build:
-    uses: jellyfin/jellyfin-meta-plugins/.github/workflows/build.yaml@master
-    with:
-      dotnet-version: "8.0.*"
-      dotnet-target: "net8.0"
+    name: Build Plugin Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.*"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build native TsDuck libraries (outputs .so files)
+      - name: Build native TsDuck libraries
+        run: >-
+          docker build
+          --target artifacts
+          -o type=local,dest=native/tsduck_interop/output
+          native/tsduck_interop
+
+      # Build the .NET plugin (picks up native libs from output/)
+      - name: Build plugin
+        run: >-
+          dotnet build
+          --configuration Release
+          -p:TreatWarningsAsErrors=true
+          -p:BuildNativeLibrary=false
+
+      # Create the release zip matching JPRM naming convention
+      - name: Package plugin
+        run: |
+          # Read version from build.yaml metadata
+          VERSION=$(grep '^version:' build.yaml | sed 's/version: *"\?\([^"]*\)"\?/\1/')
+          ZIP_NAME="jellyfin-xtream_${VERSION}.zip"
+
+          STAGING=staging
+
+          mkdir -p "$STAGING/runtimes/linux-x64/native"
+
+          BUILD_DIR=Jellyfin.Xtream/bin/Release/net8.0
+
+          # Main plugin DLL
+          cp "$BUILD_DIR/Jellyfin.Xtream.dll" "$STAGING/"
+
+          # Required dependencies
+          DEPS=(
+            "Discord.Net.Core.dll"
+            "Discord.Net.Rest.dll"
+            "Discord.Net.Webhook.dll"
+            "Polly.dll"
+            "Polly.Core.dll"
+            "AngleSharp.dll"
+            "TurboXml.dll"
+            "Newtonsoft.Json.dll"
+          )
+
+          for dep in "${DEPS[@]}"; do
+            if [ -f "$BUILD_DIR/$dep" ]; then
+              cp "$BUILD_DIR/$dep" "$STAGING/"
+            else
+              echo "::error::Missing required dependency: $dep"
+              exit 1
+            fi
+          done
+
+          # Native TsDuck libraries
+          cp native/tsduck_interop/output/*.so "$STAGING/runtimes/linux-x64/native/"
+
+          echo "=== Package contents ==="
+          find "$STAGING" -type f -exec ls -lh {} \;
+
+          # Create zip from staging directory
+          cd "$STAGING"
+          zip -r "../$ZIP_NAME" .
+          cd ..
+
+          echo "=== Created $ZIP_NAME ==="
+          ls -lh "$ZIP_NAME"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: jellyfin-xtream_*.zip
+          retention-days: 90
+
+  # ============================================================
+  # Upload release assets with checksums
+  # ============================================================
   upload:
     runs-on: ubuntu-latest
     needs:
@@ -21,6 +109,7 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           name: build-artifact
+
       - name: Prepare GitHub Release assets
         run: |-
           for file in ./*; do
@@ -28,11 +117,16 @@ jobs:
             sha256sum ${file#./} >> ${file%.*}.sha256
           done
           ls -l
+
       - name: Upload GitHub Release assets
         uses: shogo82148/actions-upload-release-asset@v1.9.1
         with:
           upload_url: ${{ github.event.release.upload_url }}
           asset_path: ./*
+
+  # ============================================================
+  # Generate plugin repository manifest
+  # ============================================================
   generate:
     runs-on: ubuntu-latest
     needs:
