@@ -775,19 +775,41 @@ public static partial class StreamService
                 new()
                 {
                     AspectRatio = videoInfo?.AspectRatio,
-                    BitDepth = videoInfo?.BitsPerRawSample,
-                    Codec = videoInfo?.CodecName,
+                    BitDepth = videoInfo?.BitsPerRawSample ?? (isLive ? 8 : (int?)null),
+                    // Default to "h264" for live IPTV when no probe data is available.
+                    // Required for Jellyfin to enable VAAPI hardware decode (-hwaccel vaapi).
+                    // Without a known codec, Jellyfin falls back to software decode.
+                    // H.264 is the dominant codec for IPTV providers (~95% of streams).
+                    Codec = videoInfo?.CodecName ?? (isLive ? "h264" : null),
                     ColorPrimaries = videoInfo?.ColorPrimaries,
                     ColorRange = videoInfo?.ColorRange,
                     ColorSpace = videoInfo?.ColorSpace,
                     ColorTransfer = videoInfo?.ColorTransfer,
                     Height = videoInfo?.Height,
-                    Index = videoInfo?.Index ?? -1,
-                    IsAVC = videoInfo?.IsAVC,
-                    IsInterlaced = true,
-                    Level = videoInfo?.Level,
-                    PixelFormat = videoInfo?.PixelFormat,
-                    Profile = videoInfo?.Profile,
+                    // Use Index 0 to skip FFprobe (fast startup).
+                    // Jellyfin's OpenLiveStreamInternal probes when all indexes are -1,
+                    // but FFprobe takes 70+ seconds because Jellyfin's probesize minimum
+                    // is 50MB (hardcoded), which we cannot override from the plugin.
+                    // Instead, we provide default stream properties below to enable
+                    // VAAPI hardware decode without needing FFprobe.
+                    Index = videoInfo?.Index ?? 0,
+                    IsAVC = videoInfo?.IsAVC ?? (isLive ? true : null),
+                    // Normalize() in LiveTvMediaSourceProvider unconditionally overwrites
+                    // this to true for non-default live TV services. We set false as a
+                    // safe default for non-live streams. For live, the forced true +
+                    // hardware decode below → deinterlace_vaapi (fast GPU filter) instead
+                    // of software bwdif (slow CPU filter that causes reader gap growth).
+                    IsInterlaced = false,
+                    // Default video properties for live IPTV enable VAAPI hardware decode.
+                    // Without these, Jellyfin uses software decode + software bwdif
+                    // (because Normalize forces IsInterlaced=true), which is too slow
+                    // for real-time transcoding. With these properties, Jellyfin enables
+                    // -hwaccel vaapi -hwaccel_output_format vaapi → hardware decode →
+                    // deinterlace_vaapi (GPU) → h264_vaapi encode. All on GPU.
+                    // H.264 Main@L4.0 yuv420p 8-bit covers ~95% of IPTV streams.
+                    Level = videoInfo?.Level ?? (isLive ? 40 : 0),
+                    PixelFormat = videoInfo?.PixelFormat ?? (isLive ? "yuv420p" : null),
+                    Profile = videoInfo?.Profile ?? (isLive ? "Main" : null),
                     Type = MediaStreamType.Video,
                     Width = videoInfo?.Width,
                 },
@@ -796,8 +818,9 @@ public static partial class StreamService
                     BitRate = audioInfo?.Bitrate,
                     ChannelLayout = audioInfo?.ChannelLayout,
                     Channels = audioInfo?.Channels,
-                    Codec = audioInfo?.CodecName,
-                    Index = audioInfo?.Index ?? -1,
+                    // Default to "aac" for live IPTV to enable copy mode decisions.
+                    Codec = audioInfo?.CodecName ?? (isLive ? "aac" : null),
+                    Index = audioInfo?.Index ?? 1,
                     Profile = audioInfo?.Profile,
                     SampleRate = audioInfo?.SampleRate,
                     Type = MediaStreamType.Audio,
@@ -809,10 +832,13 @@ public static partial class StreamService
             RequiresClosing = restream,
             RequiresOpening = restream,
 
-            // When ForceRemux is enabled, disable direct play/stream to force FFmpeg remuxing
-            // FFmpeg will properly handle SPS/PPS injection and audio sync after discontinuities
+            // ForceRemux prevents direct play (no FFmpeg) but allows direct stream (FFmpeg copy mode).
+            // Direct stream = FFmpeg with -codec copy (remux): changes container without re-encoding.
+            // This preserves original A/V timestamps exactly, avoiding the encoder timing differences
+            // that cause A/V desync in full transcoding mode (h264_vaapi + libfdk_aac).
+            // FFmpeg still handles SPS/PPS injection and HLS segmentation in copy mode.
             SupportsDirectPlay = !forceRemux,
-            SupportsDirectStream = !forceRemux,
+            SupportsDirectStream = true,
             SupportsProbing = true,
             SupportsTranscoding = true,
             TranscodingContainer = extension,
@@ -832,23 +858,33 @@ public static partial class StreamService
             // - "Non-monotonic DTS" warnings in FFmpeg logs
             // - HLS segment timing issues
 
-            // GenPtsInput (-fflags +genpts): Generate missing PTS from DTS.
-            // Essential for codec copy mode where FFmpeg decoder is bypassed.
-            // Without this, streams lacking proper PTS data won't play.
+            // GenPtsInput (-fflags +genpts): Enabled.
+            // This flag only affects FFmpeg, NOT FFprobe (probe uses separate code path).
+            // For copy mode: Jellyfin's EncodingHelper always adds +genpts via IsCopyCodec
+            //   check regardless of this setting, so this is redundant but harmless.
+            // For transcoding mode (e.g. h264_vaapi deinterlace): this is REQUIRED because
+            //   MPEG-TS H.264 B-frame PES packets often lack PTS (only DTS present).
+            //   Without genpts, FFmpeg's demuxer can't compute correct display timestamps,
+            //   causing the decoder to output frames with wrong PTS → A/V desync in HLS.
             // See: https://github.com/jellyfin/jellyfin/pull/977
-            GenPtsInput = isLive,
+            GenPtsInput = true,
 
-            // IgnoreDts (-fflags +igndts): Ignore DTS when PTS is available.
-            // IPTV streams often have inconsistent DTS after reconnections that can
-            // cause "Non-monotonic DTS" errors. When PTS is available (which genpts
-            // ensures), we can safely ignore the potentially corrupted DTS.
+            // IgnoreDts (-fflags +igndts): Disabled.
+            // Previously enabled to suppress "Non-monotonic DTS" warnings after reconnections,
+            // but this causes A/V desync (~1s audio ahead) because:
+            // 1. FFmpeg discards all DTS values at the demuxer
+            // 2. In copy mode, the HLS fMP4 muxer needs DTS for correct baseMediaDecodeTime
+            // 3. Without DTS, FFmpeg estimates video DTS from PTS, which drifts for H.264 B-frames
+            // The native C++ restamper now handles DTS correction across provider switches,
+            // making this flag unnecessary. Non-monotonic DTS warnings are harmless in copy mode.
             // See: https://github.com/jellyfin/jellyfin/issues/13301
-            IgnoreDts = isLive,
+            IgnoreDts = false,
 
-            // AnalyzeDurationMs: Time FFmpeg spends analyzing the stream format.
-            // For live IPTV, we want quick startup but enough analysis to detect
-            // all streams. 3000ms matches Jellyfin's default for live TV probing.
-            // Setting to 0 uses FFmpeg default which can cause slow startup.
+            // AnalyzeDurationMs: Time FFmpeg spends analyzing the input stream format.
+            // For live IPTV, 3000ms gives quick startup with enough analysis to detect
+            // all streams. Passed as -analyzeduration 3000000 to FFmpeg.
+            // Note: This also applies to FFprobe if triggered, but with Index=0/1 above,
+            // FFprobe is skipped (AddMediaInfo lightweight path instead).
             AnalyzeDurationMs = isLive ? 3000 : 0,
         };
     }
