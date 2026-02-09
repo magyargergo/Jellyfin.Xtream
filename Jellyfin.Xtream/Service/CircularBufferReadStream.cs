@@ -67,10 +67,10 @@ public sealed class CircularBufferReadStream : Stream
     private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB read
 
     // Simple timeout - C++ handles reconnection and streaming state.
-    // Set to 10s to accommodate keyframe alignment (5s max) plus connection overhead.
-    // Native code now signals heartbeats during alignment, so this timeout only triggers
-    // when data flow has truly stopped.
-    private const int MaxWaitMs = 10000;
+    // Set to 30s to match the native no-data timeout in ConnectAndReadSharedMemoryAsync.
+    // This allows the native pipeline to complete failover/reconnection (which can take
+    // 10-15s with exponential backoff) without the reader prematurely returning EOF.
+    private const int MaxWaitMs = 30000;
 
     private static readonly int _simdThreshold = DetermineSimdThreshold();
     private static readonly bool _avx512Supported = Avx512F.IsSupported;
@@ -95,6 +95,12 @@ public sealed class CircularBufferReadStream : Stream
     private readonly bool _isPowerOfTwo;
     private readonly long _bufferMask;
     private readonly DateTime _startTime = DateTime.UtcNow;
+
+    // Initialization data (PAT + PMT + SPS/PPS) prepended before circular buffer reads.
+    // Ensures FFprobe/FFmpeg can initialize the H.264 decoder when joining mid-stream.
+    private readonly byte[]? _initData;
+    private int _initDataOffset;
+    private int _initDataRemaining;
 
     private CacheLinePadded _readHead;
     private CacheLinePadded _totalOverflowBytes;
@@ -226,6 +232,21 @@ public sealed class CircularBufferReadStream : Stream
         // Initialize overflow predictor for proactive overflow detection
         _overflowPredictor = new OverflowPredictor(sourceBuffer.BufferSize);
 
+        // Grab cached initialization data (PAT + PMT + SPS/PPS) to prepend before buffer reads.
+        // This ensures FFprobe/FFmpeg can initialize the H.264 decoder immediately without
+        // waiting for the next IDR frame (which may be seconds away in the circular buffer).
+        var initMemory = sourceBuffer.GetInitializationData();
+        if (!initMemory.IsEmpty)
+        {
+            _initData = initMemory.ToArray();
+            _initDataRemaining = _initData.Length;
+            _logger?.PluginLogInformation(
+                "Reader for stream {StreamId} prepending {Bytes} bytes of init data (PAT+PMT+SPS/PPS)",
+                _streamId,
+                _initData.Length
+            );
+        }
+
         _logger?.LogDebugIfEnabled(
             "Registered buffer reader for stream {StreamId} (total active: {Count})",
             _streamId,
@@ -243,11 +264,27 @@ public sealed class CircularBufferReadStream : Stream
     }
 
     /// <inheritdoc />
-    public override int Read(byte[] buffer, int offset, int count) =>
-        ReadFromCircularBuffer(new Span<byte>(buffer, offset, count));
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        var span = new Span<byte>(buffer, offset, count);
+        if (_initDataRemaining > 0)
+        {
+            return DeliverInitData(span);
+        }
+
+        return ReadFromCircularBuffer(span);
+    }
 
     /// <inheritdoc />
-    public override int Read(Span<byte> buffer) => ReadFromCircularBuffer(buffer);
+    public override int Read(Span<byte> buffer)
+    {
+        if (_initDataRemaining > 0)
+        {
+            return DeliverInitData(buffer);
+        }
+
+        return ReadFromCircularBuffer(buffer);
+    }
 
     /// <inheritdoc />
     public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
@@ -260,6 +297,13 @@ public sealed class CircularBufferReadStream : Stream
         if (_isDisposed || _sourceBuffer.IsDisposed)
         {
             return 0;
+        }
+
+        // Deliver initialization data (PAT+PMT+SPS/PPS) before any buffer reads.
+        // This is delivered immediately without waiting for buffer data.
+        if (_initDataRemaining > 0)
+        {
+            return DeliverInitData(buffer.Span);
         }
 
         var gap = _sourceBuffer.TotalBytesWritten - ReadHead;
@@ -304,6 +348,20 @@ public sealed class CircularBufferReadStream : Stream
         }
 
         return ReadFromCircularBuffer(buffer.Span);
+    }
+
+    /// <summary>
+    /// Copies initialization data (PAT + PMT + SPS/PPS TS packets) into the destination buffer.
+    /// Called before any circular buffer reads to ensure FFprobe/FFmpeg can initialize the decoder.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int DeliverInitData(Span<byte> destination)
+    {
+        var bytesToCopy = Math.Min(_initDataRemaining, destination.Length);
+        _initData.AsSpan(_initDataOffset, bytesToCopy).CopyTo(destination);
+        _initDataOffset += bytesToCopy;
+        _initDataRemaining -= bytesToCopy;
+        return bytesToCopy;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]

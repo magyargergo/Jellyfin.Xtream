@@ -4,6 +4,7 @@
 #ifndef TSDUCK_INTEROP_STREAMING_STREAM_PIPELINE_HPP
 #define TSDUCK_INTEROP_STREAMING_STREAM_PIPELINE_HPP
 
+#include <array>
 #include <thread>
 #include <atomic>
 #include <memory>
@@ -200,6 +201,17 @@ public:
     const context::TsDuckAnalyzer* analyzer() const noexcept { return analyzer_.get(); }
 
     // ========================================================================
+    // Init Packets (PAT + PMT + SPS/PPS for new reader initialization)
+    // ========================================================================
+
+    /// Get initialization packets (PAT + PMT + video parameter sets).
+    /// These packets have NO PTS timestamps, avoiding A/V desync.
+    /// @param buffer Output buffer to receive TS packets.
+    /// @param buffer_size Size of the output buffer in bytes.
+    /// @return Number of bytes written, or 0 if init data not yet available.
+    [[nodiscard]] int32_t get_init_packets(uint8_t* buffer, int32_t buffer_size) const noexcept;
+
+    // ========================================================================
     // Health Manager Access (for E2E testing and diagnostics)
     // ========================================================================
 
@@ -246,6 +258,13 @@ private:
     std::size_t shm_bytes_since_signal_{0};  // Bytes written since last signal
     bool first_shm_write_{true};  // True until first data is written, triggers immediate signal
     int buffer_signal_counter_{0};  // Counter for periodic heartbeat signals during keyframe alignment
+
+    // Cached PAT/PMT packets for init data generation
+    std::array<uint8_t, 188> cached_pat_{};
+    std::array<uint8_t, 188> cached_pmt_{};
+    bool has_cached_pat_{false};
+    bool has_cached_pmt_{false};
+    uint16_t cached_pmt_pid_{0};  // PMT PID extracted from PAT
 
     // Timing state for mid-stream switch
     int64_t last_output_pts_{-1};

@@ -1048,6 +1048,21 @@ TSDUCK_API TsDuckAnalyzerHandle tsduck_streamer_get_analyzer(
     TsDuckStreamerHandle streamer
 );
 
+/// Get initialization packets (PAT + PMT + video SPS/PPS/VPS) for new reader setup.
+/// These packets contain NO PTS timestamps, avoiding A/V desync by construction.
+/// @param streamer The streamer handle.
+/// @param out_buffer Buffer to receive the TS packets.
+/// @param buffer_size Size of the output buffer in bytes. Must be at least 4*188 bytes.
+/// @param out_bytes_written Receives the number of bytes written to the buffer.
+/// @return TSDUCK_OK on success, TSDUCK_ERROR_NULL_HANDLE if invalid,
+///         TSDUCK_ERROR_NOT_INITIALIZED if init data not yet available.
+TSDUCK_API int32_t tsduck_streamer_get_init_packets(
+    TsDuckStreamerHandle streamer,
+    uint8_t* out_buffer,
+    int32_t buffer_size,
+    int32_t* out_bytes_written
+);
+
 // =============================================================================
 // Streamer Shared Memory Output Mode
 // =============================================================================

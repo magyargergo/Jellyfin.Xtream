@@ -929,6 +929,52 @@ void StreamPipeline::process_aligned(uint8_t* data, int32_t length) noexcept {
         (void)analyzer_->feed_and_restamp(data, length);
     }
 
+    // Cache PAT and PMT packets for init data generation.
+    // Scan restamped output so timestamps are already corrected.
+    {
+        const ts::TSPacket* pkt_array = reinterpret_cast<const ts::TSPacket*>(data);
+        for (int32_t i = 0; i < packets; ++i) {
+            const auto& pkt = pkt_array[i];
+            if (!pkt.hasValidSync()) continue;
+
+            uint16_t pid = pkt.getPID();
+
+            if (pid == 0) {
+                // PAT (PID 0) - cache it and extract PMT PID
+                std::memcpy(cached_pat_.data(), &pkt, ts::PKT_SIZE);
+                has_cached_pat_ = true;
+
+                // Extract first PMT PID from PAT payload
+                const uint8_t* payload = pkt.getPayload();
+                size_t payload_size = pkt.getPayloadSize();
+                // PAT payload: pointer_field(1) + table_id(1) + section_length(2) + ts_id(2) + version(1) + section(1) + last_section(1) + entries...
+                // Each entry: program_number(2) + reserved(3 bits) + PID(13 bits)
+                if (payload_size >= 1) {
+                    size_t offset = 1 + payload[0];  // Skip pointer_field + pointer bytes
+                    if (offset + 8 < payload_size) {
+                        // Skip table header: table_id(1) + section_syntax(2) + transport_stream_id(2) + version_etc(1) + section_num(1) + last_section_num(1)
+                        offset += 8;
+                        // Iterate program entries
+                        while (offset + 4 <= payload_size - 4) {  // -4 for CRC32
+                            uint16_t prog_num = static_cast<uint16_t>((payload[offset] << 8) | payload[offset + 1]);
+                            uint16_t pmt_pid = static_cast<uint16_t>(((payload[offset + 2] & 0x1F) << 8) | payload[offset + 3]);
+                            if (prog_num != 0) {
+                                // First non-NIT program = our PMT PID
+                                cached_pmt_pid_ = pmt_pid;
+                                break;
+                            }
+                            offset += 4;
+                        }
+                    }
+                }
+            } else if (cached_pmt_pid_ > 0 && pid == cached_pmt_pid_) {
+                // PMT packet - cache it
+                std::memcpy(cached_pmt_.data(), &pkt, ts::PKT_SIZE);
+                has_cached_pmt_ = true;
+            }
+        }
+    }
+
     // Track last output PTS for switch continuity
     int64_t pts = extract_last_video_pts(data, length);
     if (pts >= 0) {
@@ -1200,6 +1246,79 @@ void StreamPipeline::record_provider_failure(DisconnectReason reason) noexcept {
         registry_->record_failure(current_provider_index_,
             static_cast<registry::DisconnectReason>(reason));
     }
+}
+
+// ============================================================================
+// Init Packets (PAT + PMT + SPS/PPS for new reader initialization)
+// ============================================================================
+
+int32_t StreamPipeline::get_init_packets(uint8_t* buffer, int32_t buffer_size) const noexcept {
+    if (buffer == nullptr || buffer_size <= 0) {
+        return 0;
+    }
+
+    // Need at least PAT and PMT
+    if (!has_cached_pat_ || !has_cached_pmt_) {
+        LOG_DEBUG(kPipeline, "get_init_packets: no cached PAT/PMT yet");
+        return 0;
+    }
+
+    // Find the first registered video PID from the analyzer's NAL parser
+    if (!analyzer_) {
+        LOG_DEBUG(kPipeline, "get_init_packets: no analyzer");
+        return 0;
+    }
+
+    // Look for video streams with cached parameter sets
+    std::vector<uint8_t> param_set_packets;
+    int32_t param_bytes = 0;
+
+    auto stream_count = static_cast<int32_t>(analyzer_->nal_parser.video_stream_count.load(std::memory_order_acquire));
+    for (int32_t i = 0; i < stream_count; ++i) {
+        uint16_t video_pid = analyzer_->nal_parser.video_streams[i].video_pid;
+        if (video_pid == 0) continue;
+
+        NalParameterSets params{};
+        params = concurrency::seqlock_read(
+            analyzer_->nal_parser.stream_seqlocks[i],
+            analyzer_->nal_parser.video_streams[i]);
+
+        if (params.can_initialize_decoder()) {
+            param_bytes = create_parameter_set_packets(video_pid, params, param_set_packets);
+            if (param_bytes > 0) {
+                LOG_DEBUG(kPipeline, "get_init_packets: generated %d bytes of param set packets for PID %u",
+                          param_bytes, video_pid);
+            }
+            break;  // Use first video PID with complete params
+        }
+    }
+
+    // Calculate total size: PAT + PMT + video init packets
+    int32_t total_size = static_cast<int32_t>(ts::PKT_SIZE) * 2;  // PAT + PMT
+    if (param_bytes > 0) {
+        total_size += param_bytes;
+    }
+
+    if (total_size > buffer_size) {
+        LOG_WARNING(kPipeline, "get_init_packets: buffer too small (%d < %d)", buffer_size, total_size);
+        return 0;
+    }
+
+    // Assemble: PAT + PMT + video init packets
+    int32_t offset = 0;
+    std::memcpy(buffer + offset, cached_pat_.data(), ts::PKT_SIZE);
+    offset += static_cast<int32_t>(ts::PKT_SIZE);
+
+    std::memcpy(buffer + offset, cached_pmt_.data(), ts::PKT_SIZE);
+    offset += static_cast<int32_t>(ts::PKT_SIZE);
+
+    if (param_bytes > 0) {
+        std::memcpy(buffer + offset, param_set_packets.data(), param_bytes);
+        offset += param_bytes;
+    }
+
+    LOG_INFO(kPipeline, "get_init_packets: returning %d bytes (PAT+PMT+%d param bytes)", offset, param_bytes);
+    return offset;
 }
 
 }  // namespace streaming

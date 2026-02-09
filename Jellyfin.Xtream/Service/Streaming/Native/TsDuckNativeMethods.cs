@@ -418,6 +418,23 @@ internal static partial class TsDuckNativeMethods
     internal static partial nint StreamerGetAnalyzer(nint streamer);
 
     /// <summary>
+    /// Gets initialization packets (PAT + PMT + video SPS/PPS/VPS) for new reader setup.
+    /// These packets contain NO PTS timestamps, avoiding A/V desync by construction.
+    /// </summary>
+    /// <param name="streamer">The streamer handle.</param>
+    /// <param name="outBuffer">Buffer to receive the TS packets.</param>
+    /// <param name="bufferSize">Size of the output buffer in bytes.</param>
+    /// <param name="outBytesWritten">Receives the number of bytes written.</param>
+    /// <returns>TSDUCK_OK (0) on success, negative error code otherwise.</returns>
+    [LibraryImport(LibraryName, EntryPoint = "tsduck_streamer_get_init_packets")]
+    internal static unsafe partial int StreamerGetInitPackets(
+        nint streamer,
+        byte* outBuffer,
+        int bufferSize,
+        int* outBytesWritten
+    );
+
+    /// <summary>
     /// Callback signature for streamer events.
     /// Called from the streaming thread on state changes.
     /// </summary>

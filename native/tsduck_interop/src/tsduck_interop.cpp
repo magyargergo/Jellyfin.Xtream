@@ -960,6 +960,28 @@ TSDUCK_API TsDuckAnalyzerHandle tsduck_streamer_get_analyzer(
     return toHandle(impl->analyzer());
 }
 
+TSDUCK_API int32_t tsduck_streamer_get_init_packets(
+    TsDuckStreamerHandle streamer,
+    uint8_t* out_buffer,
+    int32_t buffer_size,
+    int32_t* out_bytes_written)
+{
+    auto* impl = toImpl(streamer);
+    if (impl == nullptr || out_buffer == nullptr || out_bytes_written == nullptr) {
+        LOG_WARNING(kStreamer, "tsduck_streamer_get_init_packets: null parameter");
+        return TSDUCK_ERROR_NULL_HANDLE;
+    }
+
+    int32_t bytes = impl->get_init_packets(out_buffer, buffer_size);
+    *out_bytes_written = bytes;
+
+    if (bytes <= 0) {
+        return TSDUCK_ERROR_NOT_INITIALIZED;
+    }
+
+    return TSDUCK_OK;
+}
+
 // ============================================================================
 // Streamer Shared Memory Output Mode
 // ============================================================================

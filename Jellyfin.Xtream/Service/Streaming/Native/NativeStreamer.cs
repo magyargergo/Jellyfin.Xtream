@@ -542,6 +542,46 @@ public sealed class NativeStreamer : IDisposable
     }
 
     /// <summary>
+    /// Gets initialization packets (PAT + PMT + video SPS/PPS/VPS) from the native streamer.
+    /// These packets contain NO PTS timestamps, avoiding A/V desync by construction.
+    /// Returns null if init data is not yet available (no PAT/PMT/SPS cached yet).
+    /// </summary>
+    /// <returns>TS-aligned initialization packets, or null if not yet available.</returns>
+    public unsafe byte[]? GetInitPackets()
+    {
+        if (_disposed)
+        {
+            return null;
+        }
+
+        // Allocate a buffer large enough for PAT + PMT + several TS packets of SPS/PPS/VPS
+        // Max: PAT(188) + PMT(188) + ~10 TS packets of parameter sets = ~2256 bytes
+        const int maxBufferSize = 188 * 16;
+        byte* buffer = stackalloc byte[maxBufferSize];
+        int bytesWritten = 0;
+
+        var result = TsDuckNativeMethods.StreamerGetInitPackets(
+            _streamer.DangerousGetHandle(),
+            buffer,
+            maxBufferSize,
+            &bytesWritten
+        );
+
+        if (result != 0 || bytesWritten <= 0)
+        {
+            _logger?.LogDebugIfEnabled("NativeStreamer.GetInitPackets: not available yet (result={Result})", result);
+            return null;
+        }
+
+        // Copy to managed array
+        var data = new byte[bytesWritten];
+        new Span<byte>(buffer, bytesWritten).CopyTo(data);
+
+        _logger?.LogDebugIfEnabled("NativeStreamer.GetInitPackets: returning {Bytes} bytes", bytesWritten);
+        return data;
+    }
+
+    /// <summary>
     /// Gets A/V synchronization analysis from the streamer's internal analyzer.
     /// </summary>
     /// <returns>A/V sync analysis data, or null if unavailable.</returns>

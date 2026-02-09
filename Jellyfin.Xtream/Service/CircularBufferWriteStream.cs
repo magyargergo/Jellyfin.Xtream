@@ -23,6 +23,7 @@ using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Utility;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service;
@@ -47,6 +48,8 @@ namespace Jellyfin.Xtream.Service;
 /// <param name="loggerFactory">Optional logger factory for creating loggers.</param>
 public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? loggerFactory = null) : Stream
 {
+    private volatile byte[]? _initData;
+
     [StructLayout(LayoutKind.Explicit, Size = 128)]
     private struct CacheLinePadded
     {
@@ -171,6 +174,28 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     /// Readers should check this to detect when the source stream is terminated.
     /// </summary>
     public bool IsDisposed => _isDisposed;
+
+    /// <summary>
+    /// Gets the cached MPEG-TS initialization data (PAT + PMT + SPS/PPS packets).
+    /// New readers should prepend this data so FFprobe/FFmpeg can initialize the H.264 decoder
+    /// without waiting for the next IDR frame in the circular buffer.
+    /// </summary>
+    /// <returns>TS-aligned initialization packets, or empty if not yet available.</returns>
+    public ReadOnlyMemory<byte> GetInitializationData()
+    {
+        var data = _initData;
+        return data != null ? new ReadOnlyMemory<byte>(data) : ReadOnlyMemory<byte>.Empty;
+    }
+
+    /// <summary>
+    /// Sets the initialization data (PAT + PMT + SPS/PPS) from the native streamer.
+    /// Called once after the native streamer has cached PAT/PMT and SPS/PPS data.
+    /// </summary>
+    /// <param name="data">The initialization data, or null to clear.</param>
+    public void SetInitializationData(byte[]? data)
+    {
+        _initData = data;
+    }
 
     /// <summary>
     /// Records a reader's final position when it disconnects.
@@ -378,6 +403,9 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
                 DiscontinuityCount
             );
         }
+
+        // Init data (PAT/PMT/SPS/PPS) is now set by the native streamer via SetInitializationData()
+        // instead of scanning every packet in C#. This avoids duplicated TS parsing logic.
     }
 
     /// <summary>
@@ -894,6 +922,7 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
         _isSourceConnected = false;
         _isReconnecting = false;
         _lastProgressLogBytes = 0;
+        _initData = null;
 
         _logger?.LogDebugIfEnabled(
             "Buffer reset: cleared {PreviousMB:F1}MB, {PreviousDiscontinuities} discontinuities",
