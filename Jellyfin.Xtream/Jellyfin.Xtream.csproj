@@ -40,8 +40,6 @@
     </PackageReference>
 
     <!-- Dependencies that must be copied with the plugin -->
-    <PackageReference Include="FFmpeg.AutoGen.Abstractions" Version="7.0.0" />
-    <PackageReference Include="FFmpeg.AutoGen.Bindings.DynamicallyLoaded" Version="7.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Polly" Version="8.5.2" />
     <PackageReference Include="Polly.Core" Version="8.5.2" />
