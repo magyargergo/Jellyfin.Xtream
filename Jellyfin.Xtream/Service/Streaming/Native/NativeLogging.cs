@@ -97,24 +97,45 @@ public static unsafe class NativeLogging
     }
 
     /// <summary>
-    /// Determines the native log level based on what the ILogger accepts.
+    /// Determines the native log level based on what any log destination accepts.
     /// </summary>
     /// <param name="logger">The logger to check.</param>
-    /// <returns>The native log level that matches ILogger's minimum enabled level.</returns>
+    /// <returns>The most verbose native log level needed by any active destination.</returns>
+    /// <remarks>
+    /// The native C++ filter gates which messages reach the managed callback at all.
+    /// We must set it to the most verbose level that ANY destination (ILogger, dashboard,
+    /// plugin debug flag) will consume. Otherwise, messages that the dashboard wants
+    /// are silently dropped before the callback runs.
+    /// </remarks>
     private static TsDuckNativeMethods.NativeLogLevel DetermineNativeLogLevel(ILogger? logger)
     {
-        if (logger == null)
+        // Start with what the ILogger accepts
+        var loggerLevel = TsDuckNativeMethods.NativeLogLevel.Warning;
+        if (logger != null)
         {
-            return TsDuckNativeMethods.NativeLogLevel.Warning;
+            loggerLevel =
+                logger.IsEnabled(LogLevel.Trace) ? TsDuckNativeMethods.NativeLogLevel.Trace
+                : logger.IsEnabled(LogLevel.Debug) ? TsDuckNativeMethods.NativeLogLevel.Debug
+                : logger.IsEnabled(LogLevel.Information) ? TsDuckNativeMethods.NativeLogLevel.Info
+                : logger.IsEnabled(LogLevel.Warning) ? TsDuckNativeMethods.NativeLogLevel.Warning
+                : TsDuckNativeMethods.NativeLogLevel.Error;
         }
 
-        // Check levels from most verbose to least verbose
-        // Return the most verbose level that ILogger accepts
-        return logger.IsEnabled(LogLevel.Trace) ? TsDuckNativeMethods.NativeLogLevel.Trace
-            : logger.IsEnabled(LogLevel.Debug) ? TsDuckNativeMethods.NativeLogLevel.Debug
-            : logger.IsEnabled(LogLevel.Information) ? TsDuckNativeMethods.NativeLogLevel.Info
-            : logger.IsEnabled(LogLevel.Warning) ? TsDuckNativeMethods.NativeLogLevel.Warning
-            : TsDuckNativeMethods.NativeLogLevel.Error;
+        // When the dashboard is capturing or plugin debug is enabled, the callback
+        // will forward messages to PluginLogger.DirectLog even if ILogger filters them.
+        // Ensure the native filter doesn't block these messages before the callback runs.
+        var dashboardLevel = TsDuckNativeMethods.NativeLogLevel.Warning;
+        if (logger?.IsDebugEnabled() == true)
+        {
+            dashboardLevel = TsDuckNativeMethods.NativeLogLevel.Debug;
+        }
+        else if (PluginLogger.IsCapturing)
+        {
+            dashboardLevel = TsDuckNativeMethods.NativeLogLevel.Info;
+        }
+
+        // Use the most verbose level needed by any destination
+        return (TsDuckNativeMethods.NativeLogLevel)Math.Max((int)loggerLevel, (int)dashboardLevel);
     }
 
     /// <summary>
@@ -147,6 +168,30 @@ public static unsafe class NativeLogging
     /// Gets a value indicating whether native logging is initialized.
     /// </summary>
     public static bool IsInitialized => Volatile.Read(ref _state).Initialized;
+
+    /// <summary>
+    /// Re-syncs the native log level with the current managed state.
+    /// Call when capture state changes (dashboard opened/closed, debug toggled)
+    /// so that the C++ filter doesn't block messages the dashboard wants to see.
+    /// </summary>
+    public static void ResyncLogLevel()
+    {
+        var state = Volatile.Read(ref _state);
+        if (!state.Initialized)
+        {
+            return;
+        }
+
+        try
+        {
+            var nativeLevel = DetermineNativeLogLevel(state.Logger);
+            TsDuckNativeMethods.SetLogLevel((int)nativeLevel);
+        }
+        catch
+        {
+            // Ignore errors during resync
+        }
+    }
 
     /// <summary>
     /// Callback invoked by native code for each log message.

@@ -47,6 +47,10 @@ public static partial class PluginLogger
     public static void Initialize(IPluginLogService? logService, IPluginConfigurationProvider? configProvider = null)
     {
         Volatile.Write(ref _captureState, logService != null ? new CaptureState(logService, configProvider) : null);
+
+        // Re-sync native C++ log level so the native filter doesn't block
+        // messages that the dashboard now wants to capture.
+        Service.Streaming.Native.NativeLogging.ResyncLogLevel();
     }
 
     /// <summary>
@@ -60,6 +64,9 @@ public static partial class PluginLogger
         {
             Volatile.Write(ref _captureState, null);
         }
+
+        // Re-sync native C++ log level when capture state changes.
+        Service.Streaming.Native.NativeLogging.ResyncLogLevel();
     }
 
     /// <summary>

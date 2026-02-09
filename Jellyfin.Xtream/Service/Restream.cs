@@ -315,7 +315,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         {
             if (_cleanupCts != null)
             {
-                _logger.LogDebugIfEnabled(
+                _logger.PluginLogInformation(
                     "Consumer reconnected to channel {ChannelId}, cancelling scheduled cleanup",
                     MediaSource.Id
                 );
@@ -397,7 +397,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 _broadcastTask = null;
             }
 
-            _logger.LogDebugIfEnabled(
+            _logger.PluginLogInformation(
                 "Starting broadcast for channel {ChannelId} from URL: {Url} (timeout: {TimeoutMs}ms)",
                 MediaSource.Id,
                 _sourceUrl,
@@ -428,10 +428,22 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 throw new TimeoutException($"Stream did not produce data within {_firstByteTimeoutMs}ms");
             }
 
-            _logger.LogDebugIfEnabled(
+            _logger.PluginLogInformation(
                 "Broadcast started for channel {ChannelId} (first data received)",
                 MediaSource.Id
             );
+
+            // Query native streamer for cached PAT/PMT/SPS/PPS init packets (no PTS, avoids A/V desync)
+            var initData = _nativeStreamer?.GetInitPackets();
+            if (initData != null)
+            {
+                _buffer.SetInitializationData(initData);
+                _logger.PluginLogInformation(
+                    "Init packets cached for channel {ChannelId} ({ByteCount} bytes)",
+                    MediaSource.Id,
+                    initData.Length
+                );
+            }
 
             _discordService.SendFireAndForget(svc =>
                 svc.NotifyStreamStartAsync(MediaSource.Id, MediaSource.Name ?? "Unknown Channel")
@@ -486,7 +498,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             if (_buffer.TotalBytesWritten > 0)
             {
                 var elapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
-                _logger.LogDebugIfEnabled(
+                _logger.PluginLogInformation(
                     "WaitForFirstDataAsync: channel {ChannelId} received first data after {ElapsedMs}ms ({BytesWritten} bytes)",
                     MediaSource.Id,
                     elapsedMs,
@@ -500,7 +512,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         var totalElapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        _logger.LogDebugIfEnabled(
+        _logger.PluginLogWarning(
             "WaitForFirstDataAsync: channel {ChannelId} TIMEOUT after {ElapsedMs}ms, {PollCount} polls, {BytesWritten} bytes written",
             MediaSource.Id,
             totalElapsedMs,
@@ -527,6 +539,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         if (_nativeStreamer == null)
         {
+            _logger.PluginLogWarning(
+                "Native streamer unavailable for channel {ChannelId} - native library not loaded",
+                MediaSource.Id
+            );
             _killReason = "Native streamer unavailable";
             return;
         }
@@ -568,6 +584,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
             if (!_nativeStreamer.Start())
             {
+                _logger.PluginLogWarning(
+                    "Native streamer Start() returned false for channel {ChannelId}",
+                    MediaSource.Id
+                );
                 _killReason = "Native streamer start failed";
                 return;
             }
@@ -581,6 +601,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         finally
         {
             _receivingData = false;
+            _logger.PluginLogInformation(
+                "Broadcast task ending for channel {ChannelId}, reason: {KillReason}",
+                MediaSource.Id,
+                _killReason ?? "normal exit"
+            );
 
             // Capture local reference: Dispose() may set _nativeStreamer to null concurrently
             var streamer = _nativeStreamer;
@@ -699,7 +724,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             }
             catch (FileNotFoundException) when (attempt < maxRetries - 1)
             {
-                _logger.LogDebugIfEnabled(
+                _logger.PluginLogInformation(
                     "Shared memory not ready (attempt {Attempt}/{Max}), retrying in {Delay}ms",
                     attempt + 1,
                     maxRetries,
@@ -727,7 +752,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             return;
         }
 
-        _logger.LogDebugIfEnabled("Connected to shared memory: {Name}", _sharedMemoryName);
+        _logger.PluginLogInformation("Connected to shared memory: {Name}", _sharedMemoryName);
 
         var consumer = _shmConsumer;
         if (consumer == null)
@@ -824,11 +849,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         switch (eventType)
         {
             case StreamerEvent.Connected:
-                _logger.LogDebugIfEnabled("Native streamer connected for channel {ChannelId}", MediaSource.Id);
+                _logger.PluginLogInformation("Native streamer connected for channel {ChannelId}", MediaSource.Id);
                 break;
 
             case StreamerEvent.Disconnected:
-                _logger.LogDebugIfEnabled("Native streamer disconnected for channel {ChannelId}", MediaSource.Id);
+                _logger.PluginLogWarning("Native streamer disconnected for channel {ChannelId}", MediaSource.Id);
                 break;
 
             case StreamerEvent.Switched:
@@ -853,7 +878,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 break;
 
             case StreamerEvent.Stopped:
-                _logger.LogDebugIfEnabled("Native streamer stopped for channel {ChannelId}", MediaSource.Id);
+                _logger.PluginLogWarning("Native streamer stopped for channel {ChannelId}", MediaSource.Id);
                 _killReason = "Stream stopped";
                 break;
 
@@ -885,20 +910,35 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             return;
         }
 
-        // Buffer health checks
-        var bufferFillPct =
-            (double)(_buffer.TotalBytesWritten % _buffer.BufferSize) * 100.0 / (double)_buffer.BufferSize;
+        // Buffer health checks based on actual reader-writer gap (not write position).
+        // The old metric used TotalBytesWritten % BufferSize which is the physical write
+        // position in the circular buffer, NOT the amount of unread data. This produced
+        // false underrun warnings (e.g., "9.5% filled" when the buffer had plenty of data).
+        var readerSnapshots = CircularBufferReadStream
+            .GetActiveStreamSnapshots()
+            .Where(s => string.Equals(s.StreamId, MediaSource.Id, StringComparison.Ordinal))
+            .ToList();
 
-        if (bufferFillPct < _bufferUnderrunThresholdPercent)
+        // Use the minimum gap across all readers as the effective buffer fill
+        var minReaderGapBytes =
+            readerSnapshots.Count > 0 ? readerSnapshots.Min(s => s.CurrentGapBytes) : _buffer.TotalBytesWritten; // No readers = full buffer available
+
+        var bufferFillPct =
+            _buffer.BufferSize > 0
+                ? Math.Min(100.0, (double)minReaderGapBytes * 100.0 / (double)_buffer.BufferSize)
+                : 0.0;
+
+        if (bufferFillPct < _bufferUnderrunThresholdPercent && readerSnapshots.Count > 0)
         {
             _bufferUnderrunCount++;
 
             if (_bufferUnderrunCount % 3 == 1)
             {
                 _logger.PluginLogWarning(
-                    "Buffer underrun #{Count} for channel {ChannelId}. Only {FillPct:F1}% filled.",
+                    "Buffer underrun #{Count} for channel {ChannelId}. Slowest reader only {GapKB}KB ({FillPct:F1}%) behind live.",
                     _bufferUnderrunCount,
                     MediaSource.Id,
+                    minReaderGapBytes / 1024,
                     bufferFillPct
                 );
 
@@ -918,7 +958,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 }
             }
         }
-        else if (bufferFillPct > _bufferNearFullThresholdPercent)
+        else if (bufferFillPct > _bufferNearFullThresholdPercent && readerSnapshots.Count > 0)
         {
             _bufferHealthWarnings++;
             _logger.LogDebugIfEnabled(
@@ -930,11 +970,12 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         // Progress logging
-        _logger.LogDebugIfEnabled(
-            "Broadcast progress for channel {ChannelId}: {TotalMB} MB written, {Consumers} consumers, buffer {FillPct:F1}%",
+        _logger.PluginLogInformation(
+            "Broadcast progress for channel {ChannelId}: {TotalMB} MB written, {Consumers} consumers, reader gap {GapKB}KB ({FillPct:F1}%)",
             MediaSource.Id,
             _buffer.TotalBytesWritten / 1048576,
             ConsumerCount,
+            minReaderGapBytes / 1024,
             bufferFillPct
         );
     }
@@ -960,7 +1001,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <inheritdoc />
     public async Task Close()
     {
-        _logger.LogDebugIfEnabled("Closing broadcast for channel {ChannelId}", MediaSource.Id);
+        _logger.PluginLogInformation("Closing broadcast for channel {ChannelId}", MediaSource.Id);
 
         if (_isDisposed)
         {
@@ -992,7 +1033,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             _broadcastTask = null;
         }
 
-        _logger.LogDebugIfEnabled(
+        _logger.PluginLogInformation(
             "Broadcast closed for channel {ChannelId}, {Count} consumers were active",
             MediaSource.Id,
             ConsumerCount
@@ -1187,14 +1228,27 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             {
                 if (stream.Type == MediaStreamType.Video)
                 {
+                    // Width/Height are nullable and may be null before FFprobe runs.
+                    // Only classify as SD if we have confirmed low resolution.
+                    // When resolution is unknown (null/0), default to HD to avoid
+                    // undersized buffers that cause underruns on HD+ streams.
                     if (stream.Width >= 3840 || stream.Height >= 2160)
                     {
                         return "UHD/4K";
                     }
 
-                    return stream.Width >= 1920 || stream.Height >= 1080 ? "Full HD"
-                        : stream.Width >= 1280 || stream.Height >= 720 ? "HD"
-                        : "SD";
+                    if (stream.Width >= 1920 || stream.Height >= 1080)
+                    {
+                        return "Full HD";
+                    }
+
+                    if (stream.Width >= 1280 || stream.Height >= 720)
+                    {
+                        return "HD";
+                    }
+
+                    // Only classify as SD if we have actual resolution data confirming it
+                    return stream.Width > 0 && stream.Height > 0 ? "SD" : "HD";
                 }
             }
         }
