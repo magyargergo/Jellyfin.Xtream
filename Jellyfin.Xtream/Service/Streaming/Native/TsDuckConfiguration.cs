@@ -59,22 +59,22 @@ public sealed record TsDuckConfiguration
     /// <summary>
     /// Gets the drift threshold (in ms) at which corrections start being applied.
     /// </summary>
-    public double CorrectionThresholdMs { get; init; } = 45.0;
+    public double CorrectionThresholdMs { get; init; } = 25.0;
 
     /// <summary>
     /// Gets the maximum correction rate in milliseconds per second.
     /// </summary>
-    public double MaxCorrectionRateMs { get; init; } = 10.0;
+    public double MaxCorrectionRateMs { get; init; } = 20.0;
 
     /// <summary>
     /// Gets the drift threshold (in ms) below which corrections stop.
     /// </summary>
-    public double HysteresisThresholdMs { get; init; } = 20.0;
+    public double HysteresisThresholdMs { get; init; } = 10.0;
 
     /// <summary>
     /// Gets the stream bitrate hint for PCR smoothing (0 = auto-detect).
     /// </summary>
-    public long StreamBitrateHint { get; init; }
+    public long StreamBitrateHint { get; init; } = 20_000_000; // 20 Mbps typical for 1080i IPTV
 
     /// <summary>
     /// Gets a value indicating whether debug logging is enabled for native code.

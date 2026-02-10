@@ -146,9 +146,9 @@ inline constexpr std::int64_t PTS_MATCH_TOLERANCE_90KHZ = 4500;
 // Restamping Constants
 // ============================================================================
 
-inline constexpr double DEFAULT_CORRECTION_THRESHOLD_MS = 45.0;
-inline constexpr double DEFAULT_MAX_CORRECTION_RATE_MS = 10.0;
-inline constexpr double DEFAULT_HYSTERESIS_THRESHOLD_MS = 20.0;
+inline constexpr double DEFAULT_CORRECTION_THRESHOLD_MS = 25.0;
+inline constexpr double DEFAULT_MAX_CORRECTION_RATE_MS = 20.0;
+inline constexpr double DEFAULT_HYSTERESIS_THRESHOLD_MS = 10.0;
 
 /// Default gap between streams on switch: 100ms in 90kHz ticks
 inline constexpr std::int64_t DEFAULT_SWITCH_GAP_90KHZ = 9000;

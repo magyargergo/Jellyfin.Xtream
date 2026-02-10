@@ -756,6 +756,12 @@ public static partial class StreamService
         }
 
         var isLive = type == StreamType.Live;
+        // FFprobe is bypassed for live streams (Index=0/1) so Width/Height/Aspect may be null.
+        // Jellyfin core forces IsInterlaced=true for non-default tuners, which adds a deinterlace+scale
+        // filter chain that requires dimensions. Provide conservative HD defaults when absent.
+        var fallbackWidth = videoInfo?.Width ?? (isLive ? 1920 : (int?)null);
+        var fallbackHeight = videoInfo?.Height ?? (isLive ? 1080 : (int?)null);
+        var fallbackAspect = videoInfo?.AspectRatio ?? (isLive ? "16:9" : null);
 
         // Check if ForceRemux is enabled for live streams
         // When enabled, disable direct play/stream to force Jellyfin to use FFmpeg remuxing
@@ -774,7 +780,7 @@ public static partial class StreamService
             [
                 new()
                 {
-                    AspectRatio = videoInfo?.AspectRatio,
+                    AspectRatio = fallbackAspect,
                     BitDepth = videoInfo?.BitsPerRawSample ?? (isLive ? 8 : (int?)null),
                     // Default to "h264" for live IPTV when no probe data is available.
                     // Required for Jellyfin to enable VAAPI hardware decode (-hwaccel vaapi).
@@ -785,7 +791,7 @@ public static partial class StreamService
                     ColorRange = videoInfo?.ColorRange,
                     ColorSpace = videoInfo?.ColorSpace,
                     ColorTransfer = videoInfo?.ColorTransfer,
-                    Height = videoInfo?.Height,
+                    Height = fallbackHeight,
                     // Use Index 0 to skip FFprobe (fast startup).
                     // Jellyfin's OpenLiveStreamInternal probes when all indexes are -1,
                     // but FFprobe takes 70+ seconds because Jellyfin's probesize minimum
@@ -811,7 +817,7 @@ public static partial class StreamService
                     PixelFormat = videoInfo?.PixelFormat ?? (isLive ? "yuv420p" : null),
                     Profile = videoInfo?.Profile ?? (isLive ? "Main" : null),
                     Type = MediaStreamType.Video,
-                    Width = videoInfo?.Width,
+                    Width = fallbackWidth,
                 },
                 new()
                 {

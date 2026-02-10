@@ -740,6 +740,8 @@ private:
 
         // Apply PMT stream types to PID tracker (overrides PES stream_id guesses)
         int32_t prog_count = psi.get_program_count();
+        std::int64_t first_video_pid = -1;
+        std::int64_t first_audio_pid = -1;
         for (int32_t p = 0; p < prog_count; p++) {
             const auto& prog = psi.programs[p];
             if (!prog.active || !prog.pmt_received)
@@ -765,6 +767,9 @@ private:
                 if (es.is_video) {
                     slot.is_video.store(true, std::memory_order_release);
                     slot.is_audio.store(false, std::memory_order_release);
+                    if (first_video_pid < 0) {
+                        first_video_pid = static_cast<std::int64_t>(es.pid);
+                    }
 
                     // Register video PID for NAL parsing (H.264/H.265/H.266)
                     if (es.stream_type == 0x1B || es.stream_type == 0x24 || es.stream_type == 0x33) {
@@ -773,6 +778,9 @@ private:
                 } else if (es.is_audio) {
                     slot.is_audio.store(true, std::memory_order_release);
                     slot.is_video.store(false, std::memory_order_release);
+                    if (first_audio_pid < 0) {
+                        first_audio_pid = static_cast<std::int64_t>(es.pid);
+                    }
                 }
 
                 // Check for SCTE-35 stream type (0x86)
@@ -783,6 +791,11 @@ private:
                 // Mark elementary stream PIDs as expected for timeout tracking
                 pids.mark_expected(es.pid);
             }
+        }
+
+        // PMT stream mapping is authoritative, use first discovered A/V PIDs as primary restamp targets.
+        if (restamper && (first_video_pid >= 0 || first_audio_pid >= 0)) {
+            restamper->set_target_pids(first_video_pid, first_audio_pid);
         }
 
         // Feed estimated bitrate to TR 101 290 for PCR accuracy checks
@@ -813,9 +826,15 @@ private:
         if (is_video) {
             slot.is_video.store(true, std::memory_order_release);
             slot.stream_type.store(ts::ST_MPEG2_VIDEO, std::memory_order_release);
+            if (restamper) {
+                restamper->set_target_pids_if_unset(static_cast<std::int64_t>(pid), -1);
+            }
         } else if (is_audio || is_private) {
             slot.is_audio.store(true, std::memory_order_release);
             slot.stream_type.store(ts::ST_MPEG2_AUDIO, std::memory_order_release);
+            if (restamper) {
+                restamper->set_target_pids_if_unset(-1, static_cast<std::int64_t>(pid));
+            }
         }
 
         // Extract PTS/DTS via TsDuck

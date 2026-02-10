@@ -83,10 +83,25 @@ public:
         double elapsed_sec = static_cast<double>(current_time - last_time) / 1e9;
 
         double correction_ms = calculate_correction(elapsed_sec);
-        std::int64_t correction_90khz = static_cast<std::int64_t>(correction_ms * 90.0);
+        double accumulated_ms = accumulated_correction_ms_.load(std::memory_order_acquire);
+        std::int64_t accumulated_offset_90khz =
+            static_cast<std::int64_t>(std::llround(accumulated_ms * 90.0));
+        std::int64_t switch_off_90khz = switch_offset_90khz_.load(std::memory_order_relaxed);
 
-        std::int64_t switch_off = switch_offset_90khz_.load(std::memory_order_relaxed);
-        std::int64_t total_offset_90khz = correction_90khz + switch_off;
+        // Drift correction is stream-selective:
+        // - Positive drift (audio timestamp later than video) => delay video only.
+        // - Negative drift (audio timestamp earlier than video) => delay audio only.
+        // Switch offset applies to all streams for continuity across provider changes.
+        std::int64_t video_total_offset_90khz = switch_off_90khz;
+        std::int64_t audio_total_offset_90khz = switch_off_90khz;
+        if (accumulated_offset_90khz > 0) {
+            video_total_offset_90khz += accumulated_offset_90khz;
+        } else if (accumulated_offset_90khz < 0) {
+            audio_total_offset_90khz += -accumulated_offset_90khz;
+        }
+
+        std::int64_t video_pid = target_video_pid_.load(std::memory_order_acquire);
+        std::int64_t audio_pid = target_audio_pid_.load(std::memory_order_acquire);
 
         std::int32_t modifications = 0;
 
@@ -104,12 +119,20 @@ public:
                 continue;
             }
 
-            // Process PCR
-            modifications += process_pcr(pkt, packet_idx, total_offset_90khz);
+            // Process PCR with switch offset only. Drift correction is for A/V stream timestamps.
+            modifications += process_pcr(pkt, packet_idx, switch_off_90khz);
 
             // Process PTS/DTS
-            if (config.mode == RESTAMP_MODE_CORRECT && total_offset_90khz != 0) {
-                modifications += process_pts_dts(pkt, total_offset_90khz);
+            if (config.mode == RESTAMP_MODE_CORRECT &&
+                (switch_off_90khz != 0 || accumulated_offset_90khz != 0)) {
+                modifications += process_pts_dts(
+                    pkt,
+                    video_pid,
+                    audio_pid,
+                    switch_off_90khz,
+                    video_total_offset_90khz,
+                    audio_total_offset_90khz
+                );
             }
         }
 
@@ -182,6 +205,32 @@ public:
         }
     }
 
+    /// Set preferred video/audio PIDs for stream-selective drift correction.
+    /// PIDs < 0 are ignored to allow partial updates.
+    void set_target_pids(std::int64_t video_pid, std::int64_t audio_pid) noexcept {
+        if (video_pid >= 0) {
+            target_video_pid_.store(video_pid, std::memory_order_release);
+        }
+        if (audio_pid >= 0) {
+            target_audio_pid_.store(audio_pid, std::memory_order_release);
+        }
+    }
+
+    /// Set fallback video/audio PIDs only when current targets are unset.
+    /// Used by PES stream-id detection before PMT-derived stream mapping is available.
+    void set_target_pids_if_unset(std::int64_t video_pid, std::int64_t audio_pid) noexcept {
+        if (video_pid >= 0) {
+            std::int64_t expected = -1;
+            (void)target_video_pid_.compare_exchange_strong(
+                expected, video_pid, std::memory_order_acq_rel);
+        }
+        if (audio_pid >= 0) {
+            std::int64_t expected = -1;
+            (void)target_audio_pid_.compare_exchange_strong(
+                expected, audio_pid, std::memory_order_acq_rel);
+        }
+    }
+
     /// Get current switch offset in 90kHz ticks.
     /// @return Current switch offset
     [[nodiscard]] std::int64_t get_switch_offset_90khz() const noexcept {
@@ -204,6 +253,8 @@ public:
         last_original_pcr_.store(INVALID_PCR, std::memory_order_release);
         pending_discontinuity_.store(false, std::memory_order_release);
         discontinuity_pcr_pid_.store(-1, std::memory_order_release);
+        target_video_pid_.store(-1, std::memory_order_release);
+        target_audio_pid_.store(-1, std::memory_order_release);
 
         last_correction_time_ns_.store(now_ns(), std::memory_order_release);
     }
@@ -217,6 +268,8 @@ private:
 
     /// PCR discontinuity detection threshold: 100ms at 27MHz
     static constexpr std::int64_t PCR_DISCONTINUITY_THRESHOLD = 27'000'000 / 10;
+    /// Clamp very large PCR jumps to avoid timeline shocks during short source stalls.
+    static constexpr std::int64_t PCR_JUMP_CLAMP_TICKS = 27'000'000 * 3 / 10;  // 300ms
 
     // ========================================================================
     // Helper Functions
@@ -294,8 +347,16 @@ private:
             target_correction = std::copysign(max_correction, target_correction);
         }
 
+        // Keep correction bounded to prevent runaway offsets during unstable sources.
+        constexpr double MAX_ACCUMULATED_CORRECTION_MS = 500.0;
         double acc = accumulated_correction_ms_.load(std::memory_order_relaxed);
-        accumulated_correction_ms_.store(acc + target_correction, std::memory_order_release);
+        acc += target_correction;
+        if (acc > MAX_ACCUMULATED_CORRECTION_MS) {
+            acc = MAX_ACCUMULATED_CORRECTION_MS;
+        } else if (acc < -MAX_ACCUMULATED_CORRECTION_MS) {
+            acc = -MAX_ACCUMULATED_CORRECTION_MS;
+        }
+        accumulated_correction_ms_.store(acc, std::memory_order_release);
 
         return target_correction;
     }
@@ -352,13 +413,29 @@ private:
     /// Process PTS/DTS in a packet.
     /// @return Number of modifications (0, 1, or 2)
     [[nodiscard]] std::int32_t process_pts_dts(ts::TSPacket& pkt,
-                                               std::int64_t total_offset_90khz) noexcept {
+                                               std::int64_t video_pid,
+                                               std::int64_t audio_pid,
+                                               std::int64_t switch_offset_90khz,
+                                               std::int64_t video_offset_90khz,
+                                               std::int64_t audio_offset_90khz) noexcept {
         std::int32_t mods = 0;
+        std::int64_t pid = static_cast<std::int64_t>(pkt.getPID());
+        std::int64_t selected_offset_90khz = switch_offset_90khz;
+
+        if (pid == video_pid) {
+            selected_offset_90khz = video_offset_90khz;
+        } else if (pid == audio_pid) {
+            selected_offset_90khz = audio_offset_90khz;
+        }
+
+        if (selected_offset_90khz == 0) {
+            return 0;
+        }
 
         if (pkt.hasPTS()) {
             std::uint64_t pts = pkt.getPTS();
             if (pts != ts::INVALID_PTS) {
-                std::int64_t new_pts = (static_cast<std::int64_t>(pts) + total_offset_90khz) &
+                std::int64_t new_pts = (static_cast<std::int64_t>(pts) + selected_offset_90khz) &
                                       PTS_33BIT_MAX;
                 pkt.setPTS(static_cast<std::uint64_t>(new_pts));
                 increment_pts_corrected();
@@ -369,7 +446,7 @@ private:
         if (pkt.hasDTS()) {
             std::uint64_t dts = pkt.getDTS();
             if (dts != ts::INVALID_DTS) {
-                std::int64_t new_dts = (static_cast<std::int64_t>(dts) + total_offset_90khz) &
+                std::int64_t new_dts = (static_cast<std::int64_t>(dts) + selected_offset_90khz) &
                                       PTS_33BIT_MAX;
                 pkt.setDTS(static_cast<std::uint64_t>(new_dts));
                 increment_dts_corrected();
@@ -419,14 +496,26 @@ private:
             pcr_jump += PCR_WRAPAROUND;
         }
 
-        if (std::abs(pcr_jump) > PCR_DISCONTINUITY_THRESHOLD) {
+        if (std::abs(pcr_jump) > PCR_JUMP_CLAMP_TICKS) {
             LOG_DEBUG("Restamper",
-                     "PCR discontinuity detected: jump=%lld ticks (%.3fms), resetting smoothing",
+                     "PCR jump clamp: jump=%lld ticks (%.3fms) -> %.3fms",
+                     static_cast<long long>(pcr_jump),
+                     static_cast<double>(pcr_jump) / 27000.0,
+                     static_cast<double>(PCR_JUMP_CLAMP_TICKS) / 27000.0);
+            pcr_jump = (pcr_jump > 0) ? PCR_JUMP_CLAMP_TICKS : -PCR_JUMP_CLAMP_TICKS;
+        } else if (std::abs(pcr_jump) > PCR_DISCONTINUITY_THRESHOLD) {
+            LOG_DEBUG("Restamper",
+                     "PCR discontinuity detected: jump=%lld ticks (%.3fms), continuing with smoothing",
                      static_cast<long long>(pcr_jump),
                      static_cast<double>(pcr_jump) / 27000.0);
-            last_smoothed_pcr_.store(original_pcr, std::memory_order_release);
-            return original_pcr;
         }
+
+        std::int64_t adjusted_pcr_signed = static_cast<std::int64_t>(last_pcr) + pcr_jump;
+        while (adjusted_pcr_signed < 0) {
+            adjusted_pcr_signed += PCR_WRAPAROUND;
+        }
+        adjusted_pcr_signed %= PCR_WRAPAROUND;
+        std::uint64_t adjusted_pcr = static_cast<std::uint64_t>(adjusted_pcr_signed);
 
         // TsDuck pcradjust formula
         double bits_transmitted =
@@ -440,7 +529,7 @@ private:
                                     static_cast<std::uint64_t>(PCR_WRAPAROUND);
 
         // Compute signed difference with wraparound handling
-        std::int64_t delta = static_cast<std::int64_t>(original_pcr) -
+        std::int64_t delta = static_cast<std::int64_t>(adjusted_pcr) -
                             static_cast<std::int64_t>(expected_pcr);
         if (delta > half_scale) {
             delta -= PCR_WRAPAROUND;
@@ -462,7 +551,7 @@ private:
 
         // Update bitrate estimate from PCR deltas
         if (packet_delta > 100) {
-            update_bitrate_estimate(original_pcr, last_pcr, bits_transmitted);
+            update_bitrate_estimate(adjusted_pcr, last_pcr, bits_transmitted);
         }
 
         return smoothed_pcr;
@@ -558,6 +647,10 @@ private:
     // Discontinuity indicator management
     alignas(CACHE_LINE_SIZE) std::atomic<bool> pending_discontinuity_{false};
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> discontinuity_pcr_pid_{-1};
+
+    // Target stream selection for A/V drift correction
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> target_video_pid_{-1};
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> target_audio_pid_{-1};
 
     // Callback (not currently used, reserved for future)
     std::atomic<TsDuckCorrectionCallback> correction_callback_{nullptr};
