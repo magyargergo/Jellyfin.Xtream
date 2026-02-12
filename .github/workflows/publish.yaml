@@ -5,6 +5,66 @@ on:
 
 jobs:
   # ============================================================
+  # Job 0: Build TsDuck base image for the build job
+  # ============================================================
+  build-tsduck-base:
+    name: Build TsDuck Base Image
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image-ref.outputs.image }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read TsDuck version
+        id: version
+        run: |
+          VERSION=$(cat native/tsduck_interop/TSDUCK_VERSION)
+          echo "tsduck_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "TsDuck version: $VERSION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image reference
+        id: image-ref
+        run: |
+          IMAGE_REF="ghcr.io/${{ github.repository_owner }}/tsduck-base:${{ steps.version.outputs.tsduck_version }}"
+          echo "image=$IMAGE_REF" >> $GITHUB_OUTPUT
+          echo "Using image reference: $IMAGE_REF"
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/tsduck-base
+          tags: |
+            type=raw,value=${{ steps.version.outputs.tsduck_version }}
+            type=raw,value=latest
+
+      - name: Build and push TsDuck base image
+        uses: docker/build-push-action@v5
+        with:
+          context: native/tsduck_interop
+          file: native/tsduck_interop/Dockerfile.tsduck-base
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            TSDUCK_VERSION=${{ steps.version.outputs.tsduck_version }}
+
+  # ============================================================
   # Build the complete plugin package with native libraries
   # Replaces the reusable JPRM build which only packaged the
   # main DLL without dependencies or native .so files.
@@ -12,6 +72,7 @@ jobs:
   build:
     name: Build Plugin Package
     runs-on: ubuntu-latest
+    needs: build-tsduck-base
     steps:
       - uses: actions/checkout@v4
 
@@ -23,11 +84,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # Build native TsDuck libraries (outputs .so files)
       - name: Build native TsDuck libraries
         run: >-
           docker build
           --target artifacts
+          --build-arg TSDUCK_BASE_IMAGE=${{ needs.build-tsduck-base.outputs.image }}
           -o type=local,dest=native/tsduck_interop/output
           native/tsduck_interop
 

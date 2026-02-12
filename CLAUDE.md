@@ -84,16 +84,30 @@ When working on this codebase, apply these patterns:
 ## Build
 
 ### Native Library (Linux via Docker)
+
+**Two-step build process** (first time or after TSDuck updates):
+
+1. **Build base image** (contains TSDuck, ~5min, caches for 24hrs):
 ```bash
-# Build outputs to native/tsduck_interop/output/
-dotnet build  # Triggers Docker build automatically
+cd native/tsduck_interop
+./build-base.sh
 ```
 
-### Manual Docker Build
+2. **Build native library** (outputs to `native/tsduck_interop/output/`):
 ```bash
+# Option A: Via dotnet (automatic)
+dotnet build
+
+# Option B: Manual Docker build
 cd native/tsduck_interop
 docker build --target artifacts -o type=local,dest=output .
 ```
+
+**Quick iteration** (when only C++ code changes):
+```bash
+docker build --target artifacts -o type=local,dest=output .
+```
+This step takes ~30s instead of ~5min since TSDuck is pre-built in the base image.
 
 ### Compiler Flags (Release)
 ```
