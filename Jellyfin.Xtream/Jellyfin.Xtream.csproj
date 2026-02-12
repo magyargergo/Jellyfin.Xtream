@@ -103,12 +103,7 @@
     Condition="'$(BuildNativeLibrary)' == 'true' AND '$(TargetFramework)' != ''"
   >
     <!-- Check if Docker is available -->
-    <Exec
-      Command="docker --version"
-      IgnoreExitCode="true"
-      StandardOutputImportance="low"
-      StandardErrorImportance="low"
-    >
+    <Exec Command="docker --version" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
       <Output TaskParameter="ExitCode" PropertyName="DockerExitCode" />
     </Exec>
     <!-- Build native library if Docker is available -->
