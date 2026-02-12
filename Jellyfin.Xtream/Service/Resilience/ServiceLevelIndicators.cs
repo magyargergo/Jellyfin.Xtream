@@ -305,8 +305,7 @@ public sealed class ServiceLevelIndicators
         queue.Enqueue(new TimedValue<T>(DateTime.UtcNow, value));
 
         // Trim old samples
-        while (queue.Count > MaxSamples && queue.TryDequeue(out _))
-        { }
+        while (queue.Count > MaxSamples && queue.TryDequeue(out _)) { }
     }
 
     private static PercentileResult CalculatePercentiles(ConcurrentQueue<TimedValue<double>> queue)

@@ -59,7 +59,8 @@ internal sealed class SharedMemoryTestFixture : IDisposable
                 capacity: 0,
                 access: MemoryMappedFileAccess.ReadWrite,
                 inheritability: HandleInheritability.None,
-                leaveOpen: false);
+                leaveOpen: false
+            );
         }
 
         Accessor = Mmf.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);

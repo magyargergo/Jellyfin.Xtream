@@ -40,7 +40,8 @@ jobs:
 
       - name: Run format check
         run: |
-          dotnet format --verify-no-changes --verbosity diagnostic
+          dotnet format style --verify-no-changes --verbosity diagnostic
+          dotnet format analyzers --verify-no-changes --verbosity diagnostic
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
@@ -98,8 +99,11 @@ jobs:
       - name: Check code formatting
         id: format
         run: |
-          dotnet format --verify-no-changes --verbosity diagnostic 2>&1 | tee format-output.txt
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          dotnet format style --verify-no-changes --verbosity diagnostic 2>&1 | tee format-output.txt
+          STYLE_EXIT=${PIPESTATUS[0]}
+          dotnet format analyzers --verify-no-changes --verbosity diagnostic 2>&1 | tee -a format-output.txt
+          ANALYZER_EXIT=${PIPESTATUS[0]}
+          if [ $STYLE_EXIT -ne 0 ] || [ $ANALYZER_EXIT -ne 0 ]; then
             echo "format_failed=true" >> $GITHUB_OUTPUT
           fi
 
