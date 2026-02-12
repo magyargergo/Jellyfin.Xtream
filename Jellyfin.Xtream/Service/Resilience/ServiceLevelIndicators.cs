@@ -293,11 +293,14 @@ public sealed class ServiceLevelIndicators
         Interlocked.Exchange(ref _tr101290Priority1Errors, 0);
         Interlocked.Exchange(ref _tr101290Priority2Errors, 0);
 
-        while (_streamStartTimes.TryDequeue(out _)) { }
+        while (_streamStartTimes.TryDequeue(out _))
+        { }
 
-        while (_failoverTimes.TryDequeue(out _)) { }
+        while (_failoverTimes.TryDequeue(out _))
+        { }
 
-        while (_qualityScores.TryDequeue(out _)) { }
+        while (_qualityScores.TryDequeue(out _))
+        { }
     }
 
     private static void AddTimedSample<T>(ConcurrentQueue<TimedValue<T>> queue, T value)
@@ -305,7 +308,8 @@ public sealed class ServiceLevelIndicators
         queue.Enqueue(new TimedValue<T>(DateTime.UtcNow, value));
 
         // Trim old samples
-        while (queue.Count > MaxSamples && queue.TryDequeue(out _)) { }
+        while (queue.Count > MaxSamples && queue.TryDequeue(out _))
+        { }
     }
 
     private static PercentileResult CalculatePercentiles(ConcurrentQueue<TimedValue<double>> queue)

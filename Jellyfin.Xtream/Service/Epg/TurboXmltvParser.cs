@@ -225,7 +225,8 @@ public static class TurboXmltvParser
             ReadOnlySpan<char> standalone,
             int line,
             int column
-        ) { }
+        )
+        { }
 
         public readonly void OnComment(ReadOnlySpan<char> comment, int line, int column) { }
 
@@ -236,7 +237,8 @@ public static class TurboXmltvParser
             ReadOnlySpan<char> content,
             int line,
             int column
-        ) { }
+        )
+        { }
 
         private readonly void FinalizeCurrentProgram()
         {
