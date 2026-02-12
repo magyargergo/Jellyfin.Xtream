@@ -24,7 +24,8 @@ FROM ${TSDUCK_BASE_IMAGE} AS tsduck-builder
 FROM ubuntu:24.04 AS builder
 
 # Install build dependencies for the interop library
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN mkdir -p /usr/share/man/man1 \
+    && apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     pkg-config \

@@ -27,7 +27,8 @@ ARG TSDUCK_VERSION
 # Install only the essential build dependencies for minimal TsDuck
 # We explicitly DO NOT install: libusb-1.0-0-dev, libpcsclite-dev, libsrt-openssl-dev,
 # librist-dev, libedit-dev, libcurl4-openssl-dev
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN mkdir -p /usr/share/man/man1 \
+    && apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     dos2unix \

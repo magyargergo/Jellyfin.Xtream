@@ -108,7 +108,6 @@
       IgnoreExitCode="true"
       StandardOutputImportance="low"
       StandardErrorImportance="low"
-      ConsoleToMSBuild="true"
     >
       <Output TaskParameter="ExitCode" PropertyName="DockerExitCode" />
     </Exec>
@@ -137,8 +136,8 @@
       Condition="'$(DockerExitCode)' == '0'"
       Command="docker build --target artifacts --progress=plain $(DockerBuildArgs) -o type=local,dest=&quot;$(NativeLibraryOutputDir)&quot; &quot;$(NativeLibraryDockerfile)&quot;"
       WorkingDirectory="$(NativeLibraryDockerfile)"
-      ConsoleToMSBuild="true"
       StandardOutputImportance="low"
+      StandardErrorImportance="low"
       EnvironmentVariables="DOCKER_BUILDKIT=1"
     />
     <Message
