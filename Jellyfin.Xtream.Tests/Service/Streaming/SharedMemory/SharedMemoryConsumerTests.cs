@@ -15,8 +15,6 @@
 
 using System;
 using System.IO;
-using System.IO.MemoryMappedFiles;
-using System.Runtime.InteropServices;
 using System.Threading;
 using Jellyfin.Xtream.Service.Streaming.SharedMemory;
 using Xunit;
@@ -54,8 +52,7 @@ public sealed class SharedMemoryConsumerTests : IDisposable
     private static readonly long TotalSize = HeaderSize + (long)DefaultBufferCapacity;
 
     private readonly string _testName;
-    private MemoryMappedFile? _mmf;
-    private MemoryMappedViewAccessor? _accessor;
+    private SharedMemoryTestFixture? _fixture;
 
     public SharedMemoryConsumerTests()
     {
@@ -64,8 +61,7 @@ public sealed class SharedMemoryConsumerTests : IDisposable
 
     public void Dispose()
     {
-        _accessor?.Dispose();
-        _mmf?.Dispose();
+        _fixture?.Dispose();
     }
 
     #region Constructor Tests
@@ -674,8 +670,7 @@ public sealed class SharedMemoryConsumerTests : IDisposable
 
     private void CreateSharedMemory(ulong magic = ExpectedMagic, uint version = ExpectedVersion)
     {
-        _mmf = MemoryMappedFile.CreateNew(_testName, TotalSize);
-        _accessor = _mmf.CreateViewAccessor(0, TotalSize, MemoryMappedFileAccess.ReadWrite);
+        _fixture = new SharedMemoryTestFixture(_testName, TotalSize);
 
         // Write header
         var header = new SharedMemoryHeader
@@ -706,62 +701,62 @@ public sealed class SharedMemoryConsumerTests : IDisposable
             ErrorTimestamp = 0,
         };
 
-        _accessor.Write(0, ref header);
+        _fixture.Accessor.Write(0, ref header);
     }
 
     private void SetWritePosition(ulong position)
     {
-        _accessor!.Write(0x48, position);
+        _fixture!.Accessor.Write(0x48, position);
     }
 
     private void SetReadPosition(ulong position)
     {
-        _accessor!.Write(0x88, position);
+        _fixture!.Accessor.Write(0x88, position);
     }
 
     private void SetFlag(SharedMemoryStatusFlags flag)
     {
-        var current = _accessor!.ReadUInt32(0xC0);
-        _accessor.Write(0xC0, current | (uint)flag);
+        var current = _fixture!.Accessor.ReadUInt32(0xC0);
+        _fixture.Accessor.Write(0xC0, current | (uint)flag);
     }
 
     private void ClearFlag(SharedMemoryStatusFlags flag)
     {
-        var current = _accessor!.ReadUInt32(0xC0);
-        _accessor.Write(0xC0, current & ~(uint)flag);
+        var current = _fixture!.Accessor.ReadUInt32(0xC0);
+        _fixture.Accessor.Write(0xC0, current & ~(uint)flag);
     }
 
     private uint ReadFlags()
     {
-        return _accessor!.ReadUInt32(0xC0);
+        return _fixture!.Accessor.ReadUInt32(0xC0);
     }
 
     private void SetErrorCode(SharedMemoryErrorCode code)
     {
-        _accessor!.Write(0xC4, (uint)code);
+        _fixture!.Accessor.Write(0xC4, (uint)code);
     }
 
     private void SetProducerState(ProducerState state)
     {
-        _accessor!.Write(0x50, (ulong)state);
+        _fixture!.Accessor.Write(0x50, (ulong)state);
     }
 
     private ConsumerState ReadConsumerState()
     {
-        return (ConsumerState)_accessor!.ReadUInt64(0x90);
+        return (ConsumerState)_fixture!.Accessor.ReadUInt64(0x90);
     }
 
     private void SetStatistics(ulong bytesWritten, ulong packetsWritten, ulong writeWrap)
     {
-        _accessor!.Write(0x60, bytesWritten);
-        _accessor.Write(0x68, packetsWritten);
-        _accessor.Write(0x70, writeWrap);
+        _fixture!.Accessor.Write(0x60, bytesWritten);
+        _fixture.Accessor.Write(0x68, packetsWritten);
+        _fixture.Accessor.Write(0x70, writeWrap);
     }
 
     private void WriteDataToSlot(int slotIndex, byte[] data)
     {
         var offset = HeaderSize + (slotIndex * (int)DefaultSlotSize);
-        _accessor!.WriteArray(offset, data, 0, Math.Min(data.Length, (int)DefaultSlotSize));
+        _fixture!.Accessor.WriteArray(offset, data, 0, Math.Min(data.Length, (int)DefaultSlotSize));
     }
 
     private static byte[] CreateTsData(int size)

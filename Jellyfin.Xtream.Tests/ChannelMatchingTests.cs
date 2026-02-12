@@ -193,7 +193,7 @@ public sealed class ChannelMatchingTests(ITestOutputHelper output)
             }
 
             _output.WriteLine(
-                $"Threshold {threshold,2}%: {correct,2}/{testCases.Length} correct, {falsePositives} false positives, {falseNegatives} false negatives"
+                $"Threshold {threshold, 2}%: {correct, 2}/{testCases.Length} correct, {falsePositives} false positives, {falseNegatives} false negatives"
             );
         }
     }

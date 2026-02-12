@@ -121,7 +121,9 @@
 
     <!-- Conditionally construct Docker build args -->
     <PropertyGroup>
-      <DockerBuildArgs Condition="'$(TsDuckBaseImage)' != ''">--build-arg TSDUCK_BASE_IMAGE=$(TsDuckBaseImage)</DockerBuildArgs>
+      <DockerBuildArgs Condition="'$(TsDuckBaseImage)' != ''"
+        >--build-arg TSDUCK_BASE_IMAGE=$(TsDuckBaseImage)</DockerBuildArgs
+      >
       <DockerBuildArgs Condition="'$(TsDuckBaseImage)' == ''"></DockerBuildArgs>
     </PropertyGroup>
 
