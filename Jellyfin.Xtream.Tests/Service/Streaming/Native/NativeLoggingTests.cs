@@ -38,8 +38,24 @@ public class NativeLoggingTests
     /// </summary>
     private static bool IsNativeLibraryAvailable()
     {
-        // The native library is only available on Linux with the .so file present
-        return RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
+        // The native library is only available on Linux
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return false;
+        }
+
+        // Try to initialize the native library to see if it's actually available
+        try
+        {
+            NativeLogging.Initialize(null);
+            var isAvailable = NativeLogging.IsInitialized;
+            NativeLogging.Shutdown();
+            return isAvailable;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

@@ -56,6 +56,7 @@ public sealed class SharedMemoryStreamTests : IDisposable
     private readonly string _testName;
     private MemoryMappedFile? _mmf;
     private MemoryMappedViewAccessor? _accessor;
+    private FileStream? _fileStream;
 
     public SharedMemoryStreamTests()
     {
@@ -66,6 +67,24 @@ public sealed class SharedMemoryStreamTests : IDisposable
     {
         _accessor?.Dispose();
         _mmf?.Dispose();
+        _fileStream?.Dispose();
+
+        // Clean up the file-backed shared memory on Linux/macOS
+        if (!OperatingSystem.IsWindows())
+        {
+            var shmPath = GetShmPath(_testName);
+            if (File.Exists(shmPath))
+            {
+                try
+                {
+                    File.Delete(shmPath);
+                }
+                catch
+                {
+                    // Ignore cleanup errors
+                }
+            }
+        }
     }
 
     #region Stream Property Tests
@@ -750,7 +769,37 @@ public sealed class SharedMemoryStreamTests : IDisposable
 
     private void CreateSharedMemory()
     {
-        _mmf = MemoryMappedFile.CreateNew(_testName, TotalSize);
+        // Platform-specific shared memory creation
+        if (OperatingSystem.IsWindows())
+        {
+            // Windows: Use named memory-mapped file
+            _mmf = MemoryMappedFile.CreateNew(_testName, TotalSize);
+        }
+        else
+        {
+            // Linux/macOS: Use file-backed memory-mapped file
+            var shmPath = GetShmPath(_testName);
+
+            // Create the file and set its size
+            _fileStream = new FileStream(
+                shmPath,
+                FileMode.Create,
+                FileAccess.ReadWrite,
+                FileShare.ReadWrite
+            );
+            _fileStream.SetLength(TotalSize);
+
+            // Create memory-mapped file from the file stream
+            _mmf = MemoryMappedFile.CreateFromFile(
+                _fileStream,
+                mapName: null,
+                capacity: 0,
+                access: MemoryMappedFileAccess.ReadWrite,
+                inheritability: HandleInheritability.None,
+                leaveOpen: false
+            );
+        }
+
         _accessor = _mmf.CreateViewAccessor(0, TotalSize, MemoryMappedFileAccess.ReadWrite);
 
         // Write header
@@ -849,6 +898,14 @@ public sealed class SharedMemoryStreamTests : IDisposable
         }
 
         return data;
+    }
+
+    private static string GetShmPath(string name)
+    {
+        // Linux: /dev/shm is typically a tmpfs mount
+        // macOS: /dev/shm doesn't exist, use /tmp
+        var shmDir = Directory.Exists("/dev/shm") ? "/dev/shm" : "/tmp";
+        return Path.Combine(shmDir, name);
     }
 
     #endregion
