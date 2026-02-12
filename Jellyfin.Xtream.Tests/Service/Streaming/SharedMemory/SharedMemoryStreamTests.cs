@@ -781,12 +781,7 @@ public sealed class SharedMemoryStreamTests : IDisposable
             var shmPath = GetShmPath(_testName);
 
             // Create the file and set its size
-            _fileStream = new FileStream(
-                shmPath,
-                FileMode.Create,
-                FileAccess.ReadWrite,
-                FileShare.ReadWrite
-            );
+            _fileStream = new FileStream(shmPath, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
             _fileStream.SetLength(TotalSize);
 
             // Create memory-mapped file from the file stream

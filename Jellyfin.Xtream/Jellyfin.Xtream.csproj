@@ -118,9 +118,22 @@
       Importance="high"
       Text="Building native TsDuck interop library via Docker..."
     />
+
+    <!-- Conditionally construct Docker build args -->
+    <PropertyGroup>
+      <DockerBuildArgs Condition="'$(TsDuckBaseImage)' != ''">--build-arg TSDUCK_BASE_IMAGE=$(TsDuckBaseImage)</DockerBuildArgs>
+      <DockerBuildArgs Condition="'$(TsDuckBaseImage)' == ''"></DockerBuildArgs>
+    </PropertyGroup>
+
+    <Message
+      Condition="'$(DockerExitCode)' == '0' AND '$(TsDuckBaseImage)' != ''"
+      Importance="high"
+      Text="Using TsDuck base image: $(TsDuckBaseImage)"
+    />
+
     <Exec
       Condition="'$(DockerExitCode)' == '0'"
-      Command="docker build --target artifacts --progress=plain -o type=local,dest=&quot;$(NativeLibraryOutputDir)&quot; &quot;$(NativeLibraryDockerfile)&quot;"
+      Command="docker build --target artifacts --progress=plain $(DockerBuildArgs) -o type=local,dest=&quot;$(NativeLibraryOutputDir)&quot; &quot;$(NativeLibraryDockerfile)&quot;"
       WorkingDirectory="$(NativeLibraryDockerfile)"
       ConsoleToMSBuild="true"
       StandardOutputImportance="low"

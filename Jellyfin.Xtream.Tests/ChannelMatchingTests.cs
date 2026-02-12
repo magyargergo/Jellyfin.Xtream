@@ -159,7 +159,7 @@ public sealed class ChannelMatchingTests(ITestOutputHelper output)
             var norm2 = _normalizer.Normalize(target);
             var similarity = StringSimilarity.CalculateSimilarity(norm1, norm2);
             _output.WriteLine(
-                $"{(shouldMatch ? "MATCH" : "NO-MATCH"),-10} {similarity,3}% : '{source}' vs '{target}' ({norm1} vs {norm2})"
+                $"{(shouldMatch ? "MATCH" : "NO-MATCH"), -10} {similarity, 3}% : '{source}' vs '{target}' ({norm1} vs {norm2})"
             );
         }
 
