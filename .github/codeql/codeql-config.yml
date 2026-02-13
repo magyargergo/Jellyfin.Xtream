@@ -1,0 +1,17 @@
+name: "Jellyfin.Xtream CodeQL Config"
+
+paths:
+  - Jellyfin.Xtream/
+  - native/tsduck_interop/src/
+  - native/tsduck_interop/include/
+
+paths-ignore:
+  - "**/*.test.*"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/bin/**"
+  - "**/obj/**"
+  - "**/output/**"
+  - "**/build/**"
+  - "**/third_party/**"
+  - native/tsduck_interop/output/

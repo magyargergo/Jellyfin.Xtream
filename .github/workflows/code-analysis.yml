@@ -43,13 +43,6 @@ jobs:
           dotnet format style --verify-no-changes --verbosity diagnostic
           dotnet format analyzers --verify-no-changes --verbosity diagnostic
 
-      - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: Jellyfin.Xtream/bin/Release/CodeAnalysis.sarif
-        continue-on-error: true
-
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest

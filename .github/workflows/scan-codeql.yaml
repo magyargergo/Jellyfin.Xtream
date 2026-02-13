@@ -1,13 +1,66 @@
-name: "🔬 Run CodeQL"
+name: "CodeQL"
 
 on:
   push:
+    branches: [master]
   pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+  packages: read
+
 jobs:
-  call:
-    uses: jellyfin/jellyfin-meta-plugins/.github/workflows/scan-codeql.yaml@master
-    with:
-      dotnet-version: "8.0.*"
-      repository-name: Kevinjil/Jellyfin.Xtream
+  analyze-csharp:
+    name: Analyze C#
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          config-file: ./.github/codeql/codeql-config.yml
+          queries: security-and-quality
+
+      - name: Build C# (skip native library)
+        run: dotnet build -p:BuildNativeLibrary=false
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:csharp"
+
+  analyze-cpp:
+    name: Analyze C/C++
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+          queries: security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:c-cpp"
