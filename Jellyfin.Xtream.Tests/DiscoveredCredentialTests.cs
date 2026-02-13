@@ -250,7 +250,7 @@ public sealed class DiscoveredCredentialTests
             Password = "pass",
         };
 
-        Assert.False(credential.Equals("not a credential"));
+        Assert.False(credential.Equals(new object()));
     }
 
     /// <summary>

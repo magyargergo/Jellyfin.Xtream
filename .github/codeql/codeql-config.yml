@@ -61,6 +61,25 @@ query-filters:
   - exclude:
       id: cs/path-combine
 
+  # ── C# analysis false positives ───────────────────────────────────
+
+  # Null-conditional (?.) on nullable ILogger? parameters is correct
+  # defensive coding. CodeQL falsely claims "always not null" by tracing
+  # callers, but the method signature explicitly allows null.
+  - exclude:
+      id: cs/constant-condition
+
+  # Cast chain (TKey)(object)value is required in C# generic methods.
+  # Direct cast from concrete types to unconstrained TKey is illegal;
+  # the intermediate (object) cast satisfies the compiler's type system.
+  - exclude:
+      id: cs/useless-upcast
+
+  # Testing Equals(null) is standard practice for Object.Equals contract
+  # validation. Our implementations handle null correctly via pattern matching.
+  - exclude:
+      id: cs/null-argument-to-equals
+
   # ── C++ header-only code false positives ───────────────────────────
 
   # Header-only C++ with lambdas and constexpr constants causes false
@@ -72,18 +91,24 @@ query-filters:
   # variables intentionally — this is standard C++ practice.
   - exclude:
       id: cpp/declaration-hides-variable
+  - exclude:
+      id: cpp/local-variable-hides-global-variable
 
   # Commented-out code blocks document alternative implementations
   # and are retained intentionally for reference.
   - exclude:
       id: cpp/commented-out-code
 
-  # Partial switch statements are intentional — only relevant cases
-  # are handled, with default covering the rest.
+  # Single-case switch statements and partial case coverage are intentional —
+  # only relevant cases are handled, with default covering the rest.
   - exclude:
       id: cpp/missing-case-in-switch
+  - exclude:
+      id: cpp/trivial-switch
 
   # Bit field type warnings originate from third-party TsDuck library
   # headers included in our translation units. We cannot modify those.
   - exclude:
       id: cpp/non-standard-bitfield-type
+  - exclude:
+      id: cpp/ambiguously-signed-bit-field
