@@ -740,8 +740,9 @@ private:
 
         // Apply PMT stream types to PID tracker (overrides PES stream_id guesses)
         int32_t prog_count = psi.get_program_count();
-        std::int64_t first_video_pid = -1;
-        std::int64_t first_audio_pid = -1;
+        constexpr std::int64_t NO_PID = -1;
+        std::int64_t first_video_pid = NO_PID;
+        std::int64_t first_audio_pid = NO_PID;
         for (int32_t p = 0; p < prog_count; p++) {
             const auto& prog = psi.programs[p];
             if (!prog.active || !prog.pmt_received)
@@ -767,7 +768,7 @@ private:
                 if (es.is_video) {
                     slot.is_video.store(true, std::memory_order_release);
                     slot.is_audio.store(false, std::memory_order_release);
-                    if (first_video_pid < 0) {
+                    if (first_video_pid == NO_PID) {
                         first_video_pid = static_cast<std::int64_t>(es.pid);
                     }
 
@@ -778,7 +779,7 @@ private:
                 } else if (es.is_audio) {
                     slot.is_audio.store(true, std::memory_order_release);
                     slot.is_video.store(false, std::memory_order_release);
-                    if (first_audio_pid < 0) {
+                    if (first_audio_pid == NO_PID) {
                         first_audio_pid = static_cast<std::int64_t>(es.pid);
                     }
                 }
@@ -794,7 +795,7 @@ private:
         }
 
         // PMT stream mapping is authoritative, use first discovered A/V PIDs as primary restamp targets.
-        if (restamper && (first_video_pid >= 0 || first_audio_pid >= 0)) {
+        if (restamper && (first_video_pid != NO_PID || first_audio_pid != NO_PID)) {
             restamper->set_target_pids(first_video_pid, first_audio_pid);
         }
 
@@ -839,7 +840,8 @@ private:
 
         // Extract PTS/DTS via TsDuck
         if (is_video || is_audio || is_private) {
-            int64_t pts = -1, dts = -1;
+            constexpr int64_t INVALID_TS = -1;
+            int64_t pts = INVALID_TS, dts = INVALID_TS;
             if (pkt.hasPTS()) {
                 uint64_t pts_val = pkt.getPTS();
                 if (pts_val != ts::INVALID_PTS) {
@@ -853,7 +855,7 @@ private:
                 }
             }
 
-            if (pts >= 0) {
+            if (pts != INVALID_TS) {
                 // TR 101 290: PTS repetition check (max 700ms between PTS)
                 tr101290.check_pts_repetition(pid, now_ns());
 

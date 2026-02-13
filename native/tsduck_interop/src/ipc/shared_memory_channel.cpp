@@ -94,6 +94,8 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
     LOG_INFO(kLogComponent, "Creating shared memory '%s': %zu slots x %zu bytes = %zu total",
              producer->name_.c_str(), slot_count, slot_size, producer->total_size_);
 
+    void* mapped_base = nullptr;
+
 #ifdef _WIN32
     // Windows implementation using CreateFileMapping
     std::wstring wname(name.begin(), name.end());
@@ -136,6 +138,7 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
     }
     producer->signal_semaphore_ = h_sem;
 
+    mapped_base = ptr;
     producer->header_ = static_cast<SharedMemoryHeader*>(ptr);
 
 #else
@@ -169,6 +172,7 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
         store_error(out_error, std::error_code(err, std::generic_category()));
         return nullptr;
     }
+    mapped_base = ptr;
     producer->mapping_ = ptr;
     producer->header_ = static_cast<SharedMemoryHeader*>(ptr);
 
@@ -186,9 +190,8 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
     producer->signal_semaphore_ = sem;
 #endif
 
-    // Byte-level offset from header to data region
-    auto* base = static_cast<std::byte*>(static_cast<void*>(producer->header_));
-    producer->data_region_ = base + SHM_HEADER_SIZE;
+    // Byte-level offset from mapped base to data region
+    producer->data_region_ = static_cast<std::byte*>(mapped_base) + SHM_HEADER_SIZE;
 
     // Zero the entire region (SIMD-optimized for large shared memory regions ~1MB+)
     platform::simd_memset(producer->header_, 0, producer->total_size_);

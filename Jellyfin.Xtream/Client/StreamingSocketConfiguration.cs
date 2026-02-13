@@ -133,6 +133,7 @@ public static class StreamingSocketConfiguration
         }
         catch (SocketException ex)
         {
+            // Null-conditional is required: logger parameter is optional (nullable)
             logger?.LogDebugIfEnabled(
                 ex,
                 "Could not set ReceiveBufferSize to {Size}. OS may limit maximum.",
@@ -148,6 +149,7 @@ public static class StreamingSocketConfiguration
         }
         catch (SocketException ex)
         {
+            // Null-conditional is required: logger parameter is optional (nullable)
             logger?.LogDebugIfEnabled(
                 ex,
                 "Could not set SendBufferSize to {Size}. OS may limit maximum.",
@@ -239,6 +241,7 @@ public static class StreamingSocketConfiguration
         }
         catch (SocketException ex)
         {
+            // Null-conditional is required: logger parameter is optional (nullable)
             logger?.LogDebugIfEnabled(ex, "Could not disable Nagle's algorithm. Latency may be slightly higher.");
         }
     }

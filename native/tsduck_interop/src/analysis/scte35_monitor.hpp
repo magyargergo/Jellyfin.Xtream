@@ -393,11 +393,13 @@ private:
         switch (cmd_type) {
             case SpliceCommand::SPLICE_INSERT:
                 parse_splice_insert_cmd(data + offset, size - offset, evt);
-                break;
+                record_event(evt);
+                return;
 
             case SpliceCommand::TIME_SIGNAL:
                 parse_time_signal_cmd(data + offset, size - offset, evt);
-                break;
+                record_event(evt);
+                return;
 
             case SpliceCommand::SPLICE_NULL:
                 // Heartbeat - don't record
@@ -405,10 +407,9 @@ private:
 
             default:
                 // Record unknown commands
-                break;
+                record_event(evt);
+                return;
         }
-
-        record_event(evt);
     }
 
     // splice_insert() {

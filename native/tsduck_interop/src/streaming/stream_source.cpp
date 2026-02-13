@@ -283,7 +283,7 @@ int StreamSource::perform_multi() noexcept {
     // If there are still running transfers, wait for activity
     // Use SHORT timeout (10ms) to allow responsive stop detection
     // The trade-off: more CPU wakeups vs faster shutdown response
-    if (still_running > 0) {
+    if (still_running != 0) {
         // Check stop flag again before blocking
         if (stop_requested_.load(std::memory_order_acquire)) {
             return 0;

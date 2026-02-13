@@ -120,7 +120,9 @@ public sealed class DiscoveryOptions
             DiscoveryTimeRange.Last3Months => today.AddDays(-90),
             DiscoveryTimeRange.Last6Months => today.AddDays(-180),
             DiscoveryTimeRange.ThisYear => new DateTime(today.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-            DiscoveryTimeRange.LastYear => new DateTime(today.Year - 1, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            DiscoveryTimeRange.LastYear => today.AddYears(-1).Date is var lastYearDate
+                ? new DateTime(lastYearDate.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+                : today.AddDays(-365),
             DiscoveryTimeRange.Custom => CustomStartDate?.Date ?? today.AddDays(-30),
             _ => today.AddDays(-30),
         };
@@ -135,7 +137,9 @@ public sealed class DiscoveryOptions
         var today = DateTime.UtcNow.Date;
         return TimeRange switch
         {
-            DiscoveryTimeRange.LastYear => new DateTime(today.Year - 1, 12, 31, 23, 59, 59, DateTimeKind.Utc),
+            DiscoveryTimeRange.LastYear => today.AddYears(-1).Date is var lastYearEnd
+                ? new DateTime(lastYearEnd.Year, 12, 31, 23, 59, 59, DateTimeKind.Utc)
+                : today.AddDays(-1),
             DiscoveryTimeRange.Custom => CustomEndDate?.Date ?? today,
             _ => today,
         };

@@ -405,14 +405,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             );
             _buffer.Reset();
 
-            if (_tokenSource?.IsCancellationRequested ?? false)
+            if (_tokenSource.IsCancellationRequested)
             {
-                _tokenSource?.Dispose();
+                _tokenSource.Dispose();
                 _tokenSource = new CancellationTokenSource();
-            }
-            else
-            {
-                _tokenSource ??= new CancellationTokenSource();
             }
 
             _broadcastTask = BroadcastFromSourceAsync(_tokenSource.Token);
@@ -1027,8 +1023,14 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             {
                 await _broadcastTask.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { }
-            catch (ObjectDisposedException) { }
+            catch (OperationCanceledException)
+            {
+                // Expected: broadcast task was cancelled during Close()
+            }
+            catch (ObjectDisposedException)
+            {
+                // Expected: resources were disposed before broadcast task completed
+            }
 
             _broadcastTask = null;
         }

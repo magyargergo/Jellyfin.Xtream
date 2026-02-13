@@ -2002,7 +2002,8 @@ public class XtreamController(
             _ = ReceiveWebSocketMessagesAsync(webSocket, cts);
 
             // Send progress updates with heartbeat
-            var lastProgressTime = DateTime.UtcNow;
+            // Initialized by the first successful SendAsync before any read
+            var lastProgressTime = default(DateTime);
             const int HeartbeatIntervalSeconds = 15;
 
             await foreach (var progress in discoveryService.GetProgressUpdatesAsync(cts.Token).ConfigureAwait(false))

@@ -163,19 +163,20 @@ public sealed class ExternalXmltvEpgProvider(
             }
 
             // Try to find the channel ID using the display-name mapping
-            if (channelMap.TryGetValue(normalizedName, out var channelId))
+            if (
+                channelMap.TryGetValue(normalizedName, out var channelId)
+                && programs.TryGetValue(channelId, out var programList)
+                && programList.Count > 0
+            )
             {
-                if (programs.TryGetValue(channelId, out var programList) && programList.Count > 0)
-                {
-                    _logger.LogDebugIfEnabled(
-                        "{Provider} returned {Count} programs for channel '{ChannelName}' (matched to '{ChannelId}')",
-                        Name,
-                        programList.Count,
-                        channelName,
-                        channelId
-                    );
-                    return programList;
-                }
+                _logger.LogDebugIfEnabled(
+                    "{Provider} returned {Count} programs for channel '{ChannelName}' (matched to '{ChannelId}')",
+                    Name,
+                    programList.Count,
+                    channelName,
+                    channelId
+                );
+                return programList;
             }
 
             // Also try direct channel ID lookup (in case the XMLTV uses names as IDs)

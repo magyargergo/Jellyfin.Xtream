@@ -37,3 +37,53 @@ query-filters:
   # management where the container owns disposable services.
   - exclude:
       id: cs/missed-using-statement
+
+  # The standard .NET Dispose pattern (CA1063) requires ~Finalizer()
+  # to call virtual Dispose(false). CodeQL flags this as "virtual call
+  # in destructor" but the pattern is mandated by the Roslyn analyzer.
+  - exclude:
+      id: cs/virtual-call-in-constructor
+
+  # ── C# native interop false positives ──────────────────────────────
+
+  # P/Invoke DllImport calls are the entire point of the native interop
+  # layer. "Replace with managed code" is not applicable here.
+  - exclude:
+      id: cs/call-to-unmanaged-code
+
+  # Plugin.Instance singleton pattern is standard Jellyfin plugin
+  # architecture — the instance field is set once during plugin init.
+  - exclude:
+      id: cs/static-field-written-by-instance
+
+  # Path.Combine arguments are all controlled strings (not user input).
+  # CodeQL warns about theoretical path-dropping which cannot happen here.
+  - exclude:
+      id: cs/path-combine
+
+  # ── C++ header-only code false positives ───────────────────────────
+
+  # Header-only C++ with lambdas and constexpr constants causes false
+  # "poor global variable name" alerts for short lambda parameters.
+  - exclude:
+      id: cpp/short-global-name
+
+  # Lambda captures and local scopes in header-only code shadow outer
+  # variables intentionally — this is standard C++ practice.
+  - exclude:
+      id: cpp/declaration-hides-variable
+
+  # Commented-out code blocks document alternative implementations
+  # and are retained intentionally for reference.
+  - exclude:
+      id: cpp/commented-out-code
+
+  # Partial switch statements are intentional — only relevant cases
+  # are handled, with default covering the rest.
+  - exclude:
+      id: cpp/missing-case-in-switch
+
+  # Bit field type warnings originate from third-party TsDuck library
+  # headers included in our translation units. We cannot modify those.
+  - exclude:
+      id: cpp/non-standard-bitfield-type

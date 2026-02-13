@@ -1113,7 +1113,7 @@ extern "C" {
     // quality monitoring, and failover decisions internally.
 
     // Opaque handle
-    typedef struct ChannelRegistry* ChannelRegistryHandle;
+    typedef struct ChannelRegistryOpaque* ChannelRegistryHandle;
 
     // Provider information (blittable, for registration)
     typedef struct {

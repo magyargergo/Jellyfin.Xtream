@@ -96,7 +96,7 @@ public sealed class XtreamClient(IHttpClientFactory httpClientFactory, ILogger<X
                 {
                     _logger?.LogDebugIfEnabled(
                         "Xtream credentials validated successfully. Expires: {Expiry}",
-                        result?.UserInfo?.ExpDate?.ToString("yyyy-MM-dd HH:mm:ss")
+                        result!.UserInfo!.ExpDate?.ToString("yyyy-MM-dd HH:mm:ss")
                     );
                 }
 

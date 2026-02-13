@@ -1379,6 +1379,9 @@ TSDUCK_API ChannelRegistryHandle tsduck_registry_create(void) {
 
 TSDUCK_API void tsduck_registry_destroy(ChannelRegistryHandle registry) {
     auto* impl = toImpl(registry);
+    if (impl == nullptr) {
+        return;
+    }
     LOG_DEBUG(kRegistry, "tsduck_registry_destroy handle=%p", static_cast<void*>(impl));
     delete impl;
 }

@@ -1016,17 +1016,14 @@ public class LiveTvService(
             s.TunerHostId == "Xtream-Restream" && s.MediaSource.Id == mediaSourceInfo.Id
         );
 
-        if (existingStream != null)
+        if (existingStream != null && (existingStream is not Restream restream || !restream.IsDisposed))
         {
-            if (existingStream is not Restream restream || !restream.IsDisposed)
-            {
-                _logger.LogDebugIfEnabled(
-                    "Reusing existing Restream instance for stream {StreamId}, current consumers: {ConsumerCount}",
-                    primaryStreamId,
-                    existingStream.ConsumerCount
-                );
-                return existingStream;
-            }
+            _logger.LogDebugIfEnabled(
+                "Reusing existing Restream instance for stream {StreamId}, current consumers: {ConsumerCount}",
+                primaryStreamId,
+                existingStream.ConsumerCount
+            );
+            return existingStream;
         }
 
         var config = Plugin.Instance.Configuration;

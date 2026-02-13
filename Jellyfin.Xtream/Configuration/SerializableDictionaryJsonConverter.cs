@@ -103,6 +103,9 @@ public class SerializableDictionaryJsonConverter<TKey, TValue> : JsonConverter<S
             return (TKey)(object)long.Parse(keyString, System.Globalization.CultureInfo.InvariantCulture);
         }
 
+        // Cast chain (TKey)(object) is required: C# generics don't allow direct cast from
+        // concrete types (string, Guid) to unconstrained TKey. The intermediate cast to object
+        // is necessary to satisfy the compiler's type system.
         return keyType == typeof(string) ? (TKey)(object)keyString
             : keyType == typeof(Guid) ? (TKey)(object)Guid.Parse(keyString)
             : throw new JsonException($"Unsupported key type: {keyType}");

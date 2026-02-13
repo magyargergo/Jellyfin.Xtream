@@ -332,20 +332,17 @@ public sealed partial class ExternalXmltvEpgProviderTests(ITestOutputHelper outp
                     System.Globalization.DateTimeStyles.None,
                     out var dt
                 )
+                && tzPart.Length >= 4
             )
             {
-                if (tzPart.Length >= 4)
+                var sign = tzPart[0] == '-' ? -1 : 1;
+                var offsetStr = tzPart.TrimStart('+', '-');
+                if (
+                    int.TryParse(offsetStr[..2], out var hours) && int.TryParse(offsetStr.AsSpan(2, 2), out var minutes)
+                )
                 {
-                    var sign = tzPart[0] == '-' ? -1 : 1;
-                    var offsetStr = tzPart.TrimStart('+', '-');
-                    if (
-                        int.TryParse(offsetStr[..2], out var hours)
-                        && int.TryParse(offsetStr.AsSpan(2, 2), out var minutes)
-                    )
-                    {
-                        var offset = new TimeSpan(sign * hours, sign * minutes, 0);
-                        return DateTime.SpecifyKind(dt.Add(-offset), DateTimeKind.Utc);
-                    }
+                    var offset = new TimeSpan(sign * hours, sign * minutes, 0);
+                    return DateTime.SpecifyKind(dt.Add(-offset), DateTimeKind.Utc);
                 }
             }
         }

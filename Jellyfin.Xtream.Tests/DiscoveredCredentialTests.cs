@@ -233,7 +233,7 @@ public sealed class DiscoveredCredentialTests
             Password = "pass",
         };
 
-        Assert.False(credential.Equals((object?)null));
+        Assert.False(credential.Equals(null));
     }
 
     /// <summary>
@@ -250,7 +250,7 @@ public sealed class DiscoveredCredentialTests
             Password = "pass",
         };
 
-        Assert.False(credential.Equals((object)"not a credential"));
+        Assert.False(credential.Equals("not a credential"));
     }
 
     /// <summary>
