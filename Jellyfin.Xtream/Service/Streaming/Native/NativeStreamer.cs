@@ -63,7 +63,7 @@ public sealed class NativeStreamer : IDisposable
     // Network configuration (keep copy for diagnostics)
     private NetworkConfigNative? _networkConfig;
 
-    private bool _disposed;
+    private volatile bool _disposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NativeStreamer"/> class.
@@ -197,6 +197,7 @@ public sealed class NativeStreamer : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        // Diagnostic-only: TOCTOU race acceptable
         return TsDuckNativeMethods.StreamerGetUrlScore(_streamer.DangerousGetHandle(), urlIndex);
     }
 
@@ -257,6 +258,7 @@ public sealed class NativeStreamer : IDisposable
                 return false;
             }
 
+            // Diagnostic-only: TOCTOU race acceptable
             return TsDuckNativeMethods.StreamerIsSharedMemoryMode(_streamer.DangerousGetHandle()) != 0;
         }
     }
@@ -370,6 +372,7 @@ public sealed class NativeStreamer : IDisposable
             return DnsErrorType.None;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         return (DnsErrorType)TsDuckNativeMethods.StreamerGetLastDnsError(_streamer.DangerousGetHandle());
     }
 
@@ -430,18 +433,24 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>True if started successfully; false if already running or no URLs configured.</returns>
     public bool Start()
     {
-        if (_disposed)
-        {
-            return false;
-        }
+        ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var started = TsDuckNativeMethods.StreamerStart(_streamer.DangerousGetHandle());
-        if (started)
+        bool success = false;
+        _streamer.DangerousAddRef(ref success);
+        try
         {
-            _logger?.LogDebugIfEnabled("NativeStreamer started");
-        }
+            var started = TsDuckNativeMethods.StreamerStart(_streamer.DangerousGetHandle());
+            if (started)
+            {
+                _logger?.LogDebugIfEnabled("NativeStreamer started");
+            }
 
-        return started;
+            return started;
+        }
+        finally
+        {
+            _streamer.DangerousRelease();
+        }
     }
 
     /// <summary>
@@ -455,8 +464,17 @@ public sealed class NativeStreamer : IDisposable
             return;
         }
 
-        TsDuckNativeMethods.StreamerStop(_streamer.DangerousGetHandle());
-        _logger?.LogDebugIfEnabled("NativeStreamer stopped");
+        bool success = false;
+        _streamer.DangerousAddRef(ref success);
+        try
+        {
+            TsDuckNativeMethods.StreamerStop(_streamer.DangerousGetHandle());
+            _logger?.LogDebugIfEnabled("NativeStreamer stopped");
+        }
+        finally
+        {
+            _streamer.DangerousRelease();
+        }
     }
 
     /// <summary>
@@ -471,6 +489,7 @@ public sealed class NativeStreamer : IDisposable
             return;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         TsDuckNativeMethods.StreamerRequestSwitch(_streamer.DangerousGetHandle());
         _logger?.LogDebugIfEnabled("NativeStreamer switch requested");
     }
@@ -487,12 +506,21 @@ public sealed class NativeStreamer : IDisposable
             return default;
         }
 
-        if (TsDuckNativeMethods.StreamerGetStatus(_streamer.DangerousGetHandle(), out var native))
+        bool success = false;
+        _streamer.DangerousAddRef(ref success);
+        try
         {
-            return native.ToManaged();
-        }
+            if (TsDuckNativeMethods.StreamerGetStatus(_streamer.DangerousGetHandle(), out var native))
+            {
+                return native.ToManaged();
+            }
 
-        return default;
+            return default;
+        }
+        finally
+        {
+            _streamer.DangerousRelease();
+        }
     }
 
     /// <summary>
@@ -507,6 +535,7 @@ public sealed class NativeStreamer : IDisposable
             return null;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(_streamer.DangerousGetHandle());
         if (analyzerHandle == 0)
         {
@@ -532,6 +561,7 @@ public sealed class NativeStreamer : IDisposable
             return null;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(_streamer.DangerousGetHandle());
         if (analyzerHandle == 0)
         {
@@ -592,6 +622,7 @@ public sealed class NativeStreamer : IDisposable
             return null;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(_streamer.DangerousGetHandle());
         if (analyzerHandle == 0)
         {
@@ -619,6 +650,7 @@ public sealed class NativeStreamer : IDisposable
             return ProviderState.Ejected;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         var state = TsDuckNativeMethods.StreamerGetProviderState(_streamer.DangerousGetHandle(), providerIndex);
         return state < 0 ? ProviderState.Ejected : (ProviderState)state;
     }
@@ -635,6 +667,7 @@ public sealed class NativeStreamer : IDisposable
             return null;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         if (
             TsDuckNativeMethods.StreamerGetProviderHealth(_streamer.DangerousGetHandle(), providerIndex, out var native)
         )
@@ -657,6 +690,7 @@ public sealed class NativeStreamer : IDisposable
             return -1;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         return TsDuckNativeMethods.StreamerGetIsolatedTimes(_streamer.DangerousGetHandle(), providerIndex);
     }
 
@@ -685,6 +719,7 @@ public sealed class NativeStreamer : IDisposable
             return 0;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         return TsDuckNativeMethods.StreamerGetProviderCount(_streamer.DangerousGetHandle());
     }
 
@@ -738,6 +773,7 @@ public sealed class NativeStreamer : IDisposable
             return 0;
         }
 
+        // Diagnostic-only: TOCTOU race acceptable
         return TsDuckNativeMethods.StreamerGetDnsFailureCount(_streamer.DangerousGetHandle(), providerIndex);
     }
 
@@ -801,26 +837,39 @@ public sealed class NativeStreamer : IDisposable
             return;
         }
 
-        // CRITICAL: Clear native callback registration FIRST to prevent new callbacks.
-        // This ensures the native worker thread will stop invoking our delegate
-        // before we mark ourselves as disposed or free resources.
+        // Use DangerousAddRef/DangerousRelease to prevent the SafeHandle from being
+        // released while we are still making P/Invoke calls during teardown.
         if (!_streamer.IsInvalid)
         {
-            TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), 0, 0);
+            bool success = false;
+            _streamer.DangerousAddRef(ref success);
+            try
+            {
+                // CRITICAL: Clear native callback registration FIRST to prevent new callbacks.
+                // This ensures the native worker thread will stop invoking our delegate
+                // before we mark ourselves as disposed or free resources.
+                TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), 0, 0);
+
+                // Memory barrier ensures native side sees the cleared callback before we proceed
+                Thread.MemoryBarrier();
+
+                // Now safe to mark as disposed - any in-flight callback will complete
+                // but no new callbacks will start
+                _disposed = true;
+                _eventCallback = null;
+
+                // Stop streaming before disposing handle
+                TsDuckNativeMethods.StreamerStop(_streamer.DangerousGetHandle());
+            }
+            finally
+            {
+                _streamer.DangerousRelease();
+            }
         }
-
-        // Memory barrier ensures native side sees the cleared callback before we proceed
-        Thread.MemoryBarrier();
-
-        // Now safe to mark as disposed - any in-flight callback will complete
-        // but no new callbacks will start
-        _disposed = true;
-        _eventCallback = null;
-
-        // Stop streaming before disposing handle
-        if (!_streamer.IsInvalid)
+        else
         {
-            TsDuckNativeMethods.StreamerStop(_streamer.DangerousGetHandle());
+            _disposed = true;
+            _eventCallback = null;
         }
 
         // Free GCHandle for event callback (safe now since native callback is cleared)

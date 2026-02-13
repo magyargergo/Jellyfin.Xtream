@@ -1116,12 +1116,16 @@ extern "C" {
     typedef struct ChannelRegistryOpaque* ChannelRegistryHandle;
 
     // Provider information (blittable, for registration)
+    //
+    // Security note: The username and password fields exist only in process memory
+    // for the duration of provider registration. They are copied into the C++ registry
+    // and are not persisted to disk, logged, or shared across security boundaries.
     typedef struct {
         char id[16];            // Provider ID (null-terminated)
         char name[64];          // Provider display name
         char base_url[512];     // Base URL for API
-        char username[128];     // Username for auth
-        char password[128];     // Password for auth
+        char username[128];     // Username for auth (process memory only, not persisted)
+        char password[128];     // Password for auth (process memory only, not persisted)
         int32_t priority;       // 0=highest priority
         int32_t id_hash;        // Hash for GUID generation
         double initial_health;  // Starting health score (0-100)

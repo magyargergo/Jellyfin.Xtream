@@ -53,17 +53,59 @@ public sealed class SharedMemoryConsumer : IDisposable
     /// <summary>TS packet size.</summary>
     private const int TsPacketSize = 188;
 
-    // Field offsets in shared memory (must match C++ layout exactly)
+    /// <summary>Maximum length of error messages stored in shared memory (matches C++ error_message[48]).</summary>
+    private const int ErrorMessageMaxLength = 48;
+
+    // Field offsets in shared memory (must match C++ layout exactly).
+    // Validated at startup by the static constructor against SharedMemoryHeader field offsets.
     private const int WritePositionOffset = 0x48;
     private const int ProducerStateOffset = 0x50;
+    private const int TotalBytesWrittenOffset = 0x60;
+    private const int TotalPacketsWrittenOffset = 0x68;
+    private const int WriteWrapCountOffset = 0x70;
     private const int ReadPositionOffset = 0x88;
     private const int ConsumerStateOffset = 0x90;
     private const int LastReadTimestampOffset = 0x98;
     private const int TotalBytesReadOffset = 0xA0;
     private const int TotalPacketsReadOffset = 0xA8;
+    private const int ReadWrapCountOffset = 0xB0;
     private const int FlagsOffset = 0xC0;
     private const int ErrorCodeOffset = 0xC4;
     private const int ErrorMessageOffset = 0xD0;
+
+    /// <summary>
+    /// Validates that hardcoded offsets match the SharedMemoryHeader struct layout.
+    /// Catches layout drift at startup rather than silently corrupting shared memory reads.
+    /// </summary>
+    static SharedMemoryConsumer()
+    {
+        AssertOffset(nameof(SharedMemoryHeader.WritePosition), WritePositionOffset);
+        AssertOffset(nameof(SharedMemoryHeader.ProducerStateValue), ProducerStateOffset);
+        AssertOffset(nameof(SharedMemoryHeader.TotalBytesWritten), TotalBytesWrittenOffset);
+        AssertOffset(nameof(SharedMemoryHeader.TotalPacketsWritten), TotalPacketsWrittenOffset);
+        AssertOffset(nameof(SharedMemoryHeader.WriteWrapCount), WriteWrapCountOffset);
+        AssertOffset(nameof(SharedMemoryHeader.ReadPosition), ReadPositionOffset);
+        AssertOffset(nameof(SharedMemoryHeader.ConsumerStateValue), ConsumerStateOffset);
+        AssertOffset(nameof(SharedMemoryHeader.LastReadTimestamp), LastReadTimestampOffset);
+        AssertOffset(nameof(SharedMemoryHeader.TotalBytesRead), TotalBytesReadOffset);
+        AssertOffset(nameof(SharedMemoryHeader.TotalPacketsRead), TotalPacketsReadOffset);
+        AssertOffset(nameof(SharedMemoryHeader.ReadWrapCount), ReadWrapCountOffset);
+        AssertOffset(nameof(SharedMemoryHeader.Flags), FlagsOffset);
+        AssertOffset(nameof(SharedMemoryHeader.ErrorCode), ErrorCodeOffset);
+    }
+
+    private static void AssertOffset(string fieldName, int expectedOffset)
+    {
+        int actualOffset = (int)Marshal.OffsetOf<SharedMemoryHeader>(fieldName);
+        if (actualOffset != expectedOffset)
+        {
+            throw new InvalidOperationException(
+                $"SharedMemoryHeader layout mismatch: field '{fieldName}' is at offset 0x{actualOffset:X2} "
+                    + $"but SharedMemoryConsumer expects 0x{expectedOffset:X2}. "
+                    + "Update the hardcoded offset constants to match the struct layout."
+            );
+        }
+    }
 
     private readonly MemoryMappedFile _mmf;
     private readonly MemoryMappedViewAccessor _accessor;
@@ -223,8 +265,7 @@ public sealed class SharedMemoryConsumer : IDisposable
         get
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            // Buffer size matches C++ error_message[48] in SharedMemoryHeader
-            Span<byte> buffer = stackalloc byte[48];
+            Span<byte> buffer = stackalloc byte[ErrorMessageMaxLength];
             ReadBytes(ErrorMessageOffset, buffer);
             int nullIndex = buffer.IndexOf((byte)0);
             if (nullIndex >= 0)
@@ -543,12 +584,12 @@ public sealed class SharedMemoryConsumer : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        ulong bytesWritten = ReadUInt64Volatile(0x60);
-        ulong packetsWritten = ReadUInt64Volatile(0x68);
-        ulong bytesRead = ReadUInt64Volatile(0xA0);
-        ulong packetsRead = ReadUInt64Volatile(0xA8);
-        ulong writeWrap = ReadUInt64Volatile(0x70);
-        ulong readWrap = ReadUInt64Volatile(0xB0);
+        ulong bytesWritten = ReadUInt64Volatile(TotalBytesWrittenOffset);
+        ulong packetsWritten = ReadUInt64Volatile(TotalPacketsWrittenOffset);
+        ulong bytesRead = ReadUInt64Volatile(TotalBytesReadOffset);
+        ulong packetsRead = ReadUInt64Volatile(TotalPacketsReadOffset);
+        ulong writeWrap = ReadUInt64Volatile(WriteWrapCountOffset);
+        ulong readWrap = ReadUInt64Volatile(ReadWrapCountOffset);
 
         return new SharedMemoryStatistics(
             TotalBytesWritten: bytesWritten,
@@ -618,165 +659,44 @@ public sealed class SharedMemoryConsumer : IDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private ulong ReadUInt64Volatile(int offset)
+    private unsafe ulong ReadUInt64Volatile(int offset)
     {
-        // Use Volatile.Read for acquire semantics
-        unsafe
-        {
-            byte* ptr = null;
-            try
-            {
-                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-                return Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + offset));
-            }
-            finally
-            {
-                if (ptr != null)
-                {
-                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                }
-            }
-        }
+        return Volatile.Read(ref Unsafe.AsRef<ulong>(_basePtr + offset));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void WriteUInt64Volatile(int offset, ulong value)
+    private unsafe void WriteUInt64Volatile(int offset, ulong value)
     {
-        // Use Volatile.Write for release semantics
-        unsafe
-        {
-            byte* ptr = null;
-            try
-            {
-                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-                Volatile.Write(ref Unsafe.AsRef<ulong>(ptr + offset), value);
-            }
-            finally
-            {
-                if (ptr != null)
-                {
-                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                }
-            }
-        }
+        Volatile.Write(ref Unsafe.AsRef<ulong>(_basePtr + offset), value);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private uint ReadUInt32Volatile(int offset)
+    private unsafe uint ReadUInt32Volatile(int offset)
     {
-        unsafe
-        {
-            byte* ptr = null;
-            try
-            {
-                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-                return Volatile.Read(ref Unsafe.AsRef<uint>(ptr + offset));
-            }
-            finally
-            {
-                if (ptr != null)
-                {
-                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                }
-            }
-        }
+        return Volatile.Read(ref Unsafe.AsRef<uint>(_basePtr + offset));
     }
 
-    private void UpdateReadStatistics(ulong bytesRead, ulong packetsRead)
+    private unsafe bool HasFlag(SharedMemoryStatusFlags flag)
     {
-        // Update statistics (non-atomic, best-effort)
-        unsafe
-        {
-            byte* ptr = null;
-            try
-            {
-                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-
-                // Update total bytes read
-                ref ulong totalBytesRef = ref Unsafe.AsRef<ulong>(ptr + TotalBytesReadOffset);
-                Volatile.Write(ref totalBytesRef, Volatile.Read(ref totalBytesRef) + bytesRead);
-
-                // Update total packets read
-                ref ulong totalPacketsRef = ref Unsafe.AsRef<ulong>(ptr + TotalPacketsReadOffset);
-                Volatile.Write(ref totalPacketsRef, Volatile.Read(ref totalPacketsRef) + packetsRead);
-
-                // Update last read timestamp
-                ref ulong timestampRef = ref Unsafe.AsRef<ulong>(ptr + LastReadTimestampOffset);
-                Volatile.Write(ref timestampRef, (ulong)DateTime.UtcNow.Ticks * 100); // Convert to ns
-            }
-            finally
-            {
-                if (ptr != null)
-                {
-                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                }
-            }
-        }
-    }
-
-    private bool HasFlag(SharedMemoryStatusFlags flag)
-    {
-        uint flags = ReadUInt32Volatile(FlagsOffset);
+        uint flags = Volatile.Read(ref Unsafe.AsRef<uint>(_basePtr + FlagsOffset));
         return (flags & (uint)flag) != 0;
     }
 
-    private void SetFlag(SharedMemoryStatusFlags flag)
+    private unsafe void SetFlag(SharedMemoryStatusFlags flag)
     {
-        unsafe
-        {
-            byte* ptr = null;
-            try
-            {
-                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-                ref int flagsRef = ref Unsafe.AsRef<int>(ptr + FlagsOffset);
-                Interlocked.Or(ref flagsRef, (int)flag);
-            }
-            finally
-            {
-                if (ptr != null)
-                {
-                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                }
-            }
-        }
+        ref int flagsRef = ref Unsafe.AsRef<int>(_basePtr + FlagsOffset);
+        Interlocked.Or(ref flagsRef, (int)flag);
     }
 
-    private void ClearFlag(SharedMemoryStatusFlags flag)
+    private unsafe void ClearFlag(SharedMemoryStatusFlags flag)
     {
-        unsafe
-        {
-            byte* ptr = null;
-            try
-            {
-                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-                ref int flagsRef = ref Unsafe.AsRef<int>(ptr + FlagsOffset);
-                Interlocked.And(ref flagsRef, ~(int)flag);
-            }
-            finally
-            {
-                if (ptr != null)
-                {
-                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                }
-            }
-        }
+        ref int flagsRef = ref Unsafe.AsRef<int>(_basePtr + FlagsOffset);
+        Interlocked.And(ref flagsRef, ~(int)flag);
     }
 
     private unsafe void ReadBytes(long position, Span<byte> destination)
     {
-        byte* ptr = null;
-        try
-        {
-            _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-            new ReadOnlySpan<byte>(ptr + position, destination.Length).CopyTo(destination);
-        }
-        finally
-        {
-            if (ptr != null)
-            {
-                _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-            }
-        }
+        new ReadOnlySpan<byte>(_basePtr + position, destination.Length).CopyTo(destination);
     }
 
     // ========================================================================

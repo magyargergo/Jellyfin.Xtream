@@ -14,21 +14,16 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service.Streaming.Native;
-using Jellyfin.Xtream.Service.Streaming.SharedMemory;
 using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
-using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging;
 
@@ -40,10 +35,12 @@ namespace Jellyfin.Xtream.Service;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is a thin layer that:
+/// This is a thin orchestrator that:
 /// 1. Sets up providers with URLs and initial health scores
-/// 2. Reads buffer data from shared memory (C++ writes to it)
-/// 3. Serves bytes to Jellyfin consumers
+/// 2. Delegates shared memory reading to <see cref="RestreamSharedMemoryCoordinator"/>
+/// 3. Delegates health monitoring to <see cref="RestreamHealthMonitor"/>
+/// 4. Delegates stream registry operations to <see cref="RestreamActiveStreamRegistry"/>
+/// 5. Serves bytes to Jellyfin consumers
 /// </para>
 /// <para>
 /// C++ handles all decision making: URL selection, failover, health tracking, outcome recording.
@@ -56,26 +53,15 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     public const string TunerHost = "Xtream-Restream";
 
-    // Buffer sizes based on stream quality
-    private const int SdBufferSize = 33554432;
-    private const int HdBufferSize = 67108864;
-    private const int UhdBufferSize = 134217728;
-
     // Timeout defaults (can be overridden via constructor)
     private const int DefaultStreamOpenTimeoutMs = 15000;
     private const int DefaultFirstByteTimeoutMs = 15000;
 
     // Cleanup and timing constants
     private const int FirstBytePollIntervalMs = 50;
-    private const int HealthCheckIntervalSeconds = 30;
 
     // Data flow synchronization
     private volatile bool _receivingData;
-
-    /// <summary>
-    /// Global registry of all active Restream instances for monitoring and management.
-    /// </summary>
-    private static readonly ConcurrentDictionary<string, Restream> _activeStreams = new(StringComparer.Ordinal);
 
     private readonly ILogger<Restream> _logger;
     private readonly ILoggerFactory _loggerFactory;
@@ -89,28 +75,27 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     private readonly DateTime _startTime = DateTime.UtcNow;
     private readonly int _streamOpenTimeoutMs;
     private readonly int _firstByteTimeoutMs;
-
-    // Cached buffer threshold values from plugin configuration (used in hot paths)
-    private readonly double _bufferUnderrunThresholdPercent;
-    private readonly double _bufferNearFullThresholdPercent;
-    private readonly int _bufferUnderrunNotificationThreshold;
     private readonly int _consumerDisconnectGraceSeconds;
+    private readonly IReadOnlyList<double>? _initialScores;
+
+    // Extracted collaborators
+    private readonly RestreamHealthMonitor _healthMonitor;
+    private readonly string _sharedMemoryName;
+    private RestreamSharedMemoryCoordinator? _shmCoordinator;
 
     private CancellationTokenSource _tokenSource;
     private Task? _broadcastTask;
     private int _consumerCount;
     private volatile bool _isDisposed;
-    private int _bufferUnderrunCount;
-    private int _bufferHealthWarnings;
     private string? _killReason;
     private CancellationTokenSource? _cleanupCts;
 
     // Native HTTP streamer with failover and mid-stream switching
     private NativeStreamer? _nativeStreamer;
 
-    // Shared memory for data transfer from native streamer
-    private readonly string _sharedMemoryName;
-    private SharedMemoryConsumer? _shmConsumer;
+    // Registry-based streaming (Phase 4: single source of truth)
+    private readonly NativeChannelRegistry? _registry;
+    private readonly Guid _channelGuid;
 
     /// <inheritdoc />
     public int ConsumerCount
@@ -141,6 +126,11 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     public bool IsDisposed => _isDisposed;
 
     /// <summary>
+    /// Gets the native streamer instance for use by <see cref="RestreamActiveStreamRegistry"/>.
+    /// </summary>
+    internal NativeStreamer? NativeStreamer => _nativeStreamer;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="Restream"/> class.
     /// </summary>
     /// <param name="appHost">Instance of the <see cref="IServerApplicationHost"/> interface.</param>
@@ -168,21 +158,27 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _loggerFactory = loggerFactory;
         _discordService = discordService;
         _urls = urls;
+        _initialScores = initialScores;
         MediaSource = mediaSource;
         _streamOpenTimeoutMs = streamOpenTimeoutMs;
         _firstByteTimeoutMs = firstByteTimeoutMs;
         _tokenSource = new CancellationTokenSource();
-        _streamQuality = DetectStreamQuality(mediaSource);
-        var bufferSize = GetBufferSize(_streamQuality);
+        _streamQuality = RestreamConfiguration.DetectStreamQuality(mediaSource);
+        var bufferSize = RestreamConfiguration.GetBufferSize(_streamQuality);
 
         _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory);
 
         // Cache buffer threshold settings from plugin configuration for use in hot paths
-        var pluginConfig = GetPluginConfiguration();
-        _bufferUnderrunThresholdPercent = pluginConfig?.BufferUnderrunThresholdPercent ?? 10.0;
-        _bufferNearFullThresholdPercent = pluginConfig?.BufferNearFullThresholdPercent ?? 90.0;
-        _bufferUnderrunNotificationThreshold = pluginConfig?.BufferUnderrunNotificationThreshold ?? 5;
+        var pluginConfig = RestreamConfiguration.GetPluginConfiguration();
         _consumerDisconnectGraceSeconds = pluginConfig?.ConsumerDisconnectGraceSeconds ?? 5;
+
+        _healthMonitor = new RestreamHealthMonitor(
+            _logger,
+            _discordService,
+            pluginConfig?.BufferUnderrunThresholdPercent ?? 10.0,
+            pluginConfig?.BufferNearFullThresholdPercent ?? 90.0,
+            pluginConfig?.BufferUnderrunNotificationThreshold ?? 5
+        );
 
         _logger.PluginLogInformation(
             "Initialized stream {StreamId} ({Quality}) with automatic quality-based buffering ({BufferSizeMB}MB buffer)",
@@ -199,22 +195,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         MediaSource.EncoderPath = appHost.GetApiUrlForLocalAccess() + path;
         MediaSource.Protocol = MediaProtocol.Http;
         _readerPool = new RefCountedResourcePool<CircularBufferReadStream>(CreateReaderStream, OnConsumerCountChanged);
-        _ = _activeStreams.TryAdd(MediaSource.Id, this);
+        _ = RestreamActiveStreamRegistry.Register(MediaSource.Id, this);
         _logger.LogDebugIfEnabled(
             "Registered Restream {StreamId} (total active: {Count})",
             MediaSource.Id,
-            _activeStreams.Count
+            RestreamActiveStreamRegistry.GetActiveStreamCount()
         );
-
-        // Store initial scores for use when creating native streamer
-        _initialScores = initialScores;
     }
-
-    private readonly IReadOnlyList<double>? _initialScores;
-
-    // Registry-based streaming (Phase 4: single source of truth)
-    private readonly NativeChannelRegistry? _registry;
-    private readonly Guid _channelGuid;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Restream"/> class using a native channel registry.
@@ -251,16 +238,21 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _streamOpenTimeoutMs = streamOpenTimeoutMs;
         _firstByteTimeoutMs = firstByteTimeoutMs;
         _tokenSource = new CancellationTokenSource();
-        _streamQuality = DetectStreamQuality(mediaSource);
-        var bufferSize = GetBufferSize(_streamQuality);
+        _streamQuality = RestreamConfiguration.DetectStreamQuality(mediaSource);
+        var bufferSize = RestreamConfiguration.GetBufferSize(_streamQuality);
 
         _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory);
 
-        var pluginConfig = GetPluginConfiguration();
-        _bufferUnderrunThresholdPercent = pluginConfig?.BufferUnderrunThresholdPercent ?? 10.0;
-        _bufferNearFullThresholdPercent = pluginConfig?.BufferNearFullThresholdPercent ?? 90.0;
-        _bufferUnderrunNotificationThreshold = pluginConfig?.BufferUnderrunNotificationThreshold ?? 5;
+        var pluginConfig = RestreamConfiguration.GetPluginConfiguration();
         _consumerDisconnectGraceSeconds = pluginConfig?.ConsumerDisconnectGraceSeconds ?? 5;
+
+        _healthMonitor = new RestreamHealthMonitor(
+            _logger,
+            _discordService,
+            pluginConfig?.BufferUnderrunThresholdPercent ?? 10.0,
+            pluginConfig?.BufferNearFullThresholdPercent ?? 90.0,
+            pluginConfig?.BufferUnderrunNotificationThreshold ?? 5
+        );
 
         _logger.PluginLogInformation(
             "Initialized registry-based stream for {StreamId} ({Quality}, GUID: {Guid}) with {BufferSizeMB}MB buffer",
@@ -278,7 +270,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         MediaSource.EncoderPath = appHost.GetApiUrlForLocalAccess() + path;
         MediaSource.Protocol = MediaProtocol.Http;
         _readerPool = new RefCountedResourcePool<CircularBufferReadStream>(CreateReaderStream, OnConsumerCountChanged);
-        _ = _activeStreams.TryAdd(MediaSource.Id, this);
+        _ = RestreamActiveStreamRegistry.Register(MediaSource.Id, this);
     }
 
     /// <summary>
@@ -288,6 +280,129 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     ~Restream()
     {
         Dispose(disposing: false);
+    }
+
+    /// <summary>
+    /// Sets the kill reason for this stream. Used by <see cref="RestreamActiveStreamRegistry"/>
+    /// when a stream is killed via the management API.
+    /// </summary>
+    /// <param name="reason">The reason the stream is being killed.</param>
+    internal void SetKillReason(string reason)
+    {
+        _killReason = reason;
+    }
+
+    /// <summary>
+    /// Creates a <see cref="StreamInfoSnapshot"/> for the current stream state.
+    /// Used by <see cref="RestreamActiveStreamRegistry"/> for API/UI reporting.
+    /// </summary>
+    /// <returns>A snapshot of the current stream state.</returns>
+    internal StreamInfoSnapshot CreateSnapshot()
+    {
+        long bufferSize = _buffer.BufferSize;
+        var totalWritten = _buffer.TotalBytesWritten;
+        var currentPosition = totalWritten % bufferSize;
+        var fillPct = bufferSize > 0 ? (double)currentPosition * 100.0 / (double)bufferSize : 0.0;
+        var hasWrapped = totalWritten >= bufferSize;
+        string status;
+
+        if (_broadcastTask == null)
+        {
+            status = "Stopped";
+        }
+        else if (!hasWrapped)
+        {
+            var initialFillPct = (double)totalWritten * 100.0 / (double)bufferSize;
+            status = initialFillPct > 75.0 ? "Filling" : "Buffering";
+            fillPct = initialFillPct;
+        }
+        else
+        {
+            status = "Streaming";
+        }
+
+        // Get discontinuity/reconnection info
+        var reconnectionCount = _buffer.DiscontinuityCount;
+        var lastDiscontinuityOffset = _buffer.LastDiscontinuityOffset;
+        var lastDiscontinuityTime = _buffer.LastDiscontinuityTime;
+        double? secondsSinceLastReconnection = lastDiscontinuityTime.HasValue
+            ? (DateTime.UtcNow - lastDiscontinuityTime.Value).TotalSeconds
+            : null;
+
+        // Query native streamer for real-time status and quality metrics
+        var nativeStreamer = _nativeStreamer;
+        var streamerStatus = nativeStreamer?.GetStatus();
+        var metrics = nativeStreamer?.GetMetrics();
+        var avSync = nativeStreamer?.GetAvSyncAnalysis();
+        var providerCount = nativeStreamer?.GetProviderCount() ?? 0;
+
+        // Populate quality metrics from native analyzer
+        long packetErrors = 0L;
+        long continuityErrors = 0L;
+        long syncErrors = 0L;
+        long patViolations = 0L;
+        long crcErrors = 0L;
+        long tsBitrate = 0L;
+
+        if (metrics != null)
+        {
+            packetErrors = metrics.Priority2.TransportError;
+            continuityErrors = metrics.Priority1.ContinuityCountError;
+            syncErrors = metrics.Priority1.SyncByteError + metrics.Priority1.SyncLoss;
+            patViolations = metrics.Priority1.PatError + metrics.Priority1.PatError2;
+            crcErrors = metrics.Priority2.CrcError;
+            tsBitrate = metrics.TsBitrate;
+        }
+
+        double avDriftMs = avSync?.VideoAudioDriftMs ?? 0.0;
+        string syncStatus = avSync?.Status.ToString() ?? "Unknown";
+        bool hasQualityIssues = packetErrors > 0 || continuityErrors > 10 || syncErrors > 0;
+        string qualityLevel = hasQualityIssues
+            ? (syncErrors > 0 || packetErrors > 100 ? "Critical" : "Warning")
+            : "None";
+
+        return new StreamInfoSnapshot
+        {
+            StreamId = MediaSource.Id,
+            ChannelName = MediaSource.Name ?? "Unknown",
+            StartTime = _startTime,
+            BufferSizeBytes = bufferSize,
+            TotalBytesWritten = totalWritten,
+            TotalBytesRead = 0L,
+            CurrentGapBytes = 0L,
+            GapPercentage = 100.0 - fillPct,
+            OverflowCount = 0,
+            OverflowBytes = 0L,
+            Status = status,
+            IsAligned = true,
+            // Quality metrics from native analyzer
+            PacketErrors = packetErrors,
+            ContinuityErrors = continuityErrors,
+            SyncErrors = syncErrors,
+            PatViolations = patViolations,
+            CrcErrors = crcErrors,
+            AvDriftMs = avDriftMs,
+            SyncStatus = syncStatus,
+            HasQualityIssues = hasQualityIssues,
+            QualityLevel = qualityLevel,
+            QualityIssues = hasQualityIssues ? $"TEI:{packetErrors} CC:{continuityErrors} Sync:{syncErrors}" : null,
+            // Native streamer status
+            StreamerState = streamerStatus?.State.ToString() ?? "Unknown",
+            CurrentUrlIndex = streamerStatus?.CurrentUrlIndex ?? 0,
+            UrlCount = streamerStatus?.UrlCount ?? 0,
+            BytesReceived = streamerStatus?.BytesReceived ?? 0L,
+            PacketsOutput = streamerStatus?.PacketsOutput ?? 0L,
+            SwitchesCompleted = streamerStatus?.SwitchesCompleted ?? 0L,
+            QualitySwitches = streamerStatus?.QualitySwitches ?? 0L,
+            TsBitrate = tsBitrate,
+            LastHttpStatus = streamerStatus?.LastHttpStatus ?? 0,
+            LastCurlError = streamerStatus?.LastCurlError ?? 0,
+            ProviderCount = providerCount,
+            // Reconnection metrics
+            ReconnectionCount = reconnectionCount,
+            LastDiscontinuityOffset = lastDiscontinuityOffset,
+            SecondsSinceLastReconnection = secondsSinceLastReconnection,
+        };
     }
 
     /// <summary>
@@ -527,7 +642,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// </summary>
     private async Task BroadcastFromSourceAsync(CancellationToken cancellationToken)
     {
-        var streamerConfig = BuildStreamerConfig();
+        var streamerConfig = RestreamConfiguration.BuildStreamerConfig();
         var analyzerConfig = TsDuckConfigNative.FromManaged(TsDuckConfiguration.Default);
 
         _nativeStreamer?.Dispose();
@@ -543,40 +658,20 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             return;
         }
 
+        _shmCoordinator?.Dispose();
+        _shmCoordinator = new RestreamSharedMemoryCoordinator(
+            _logger,
+            _sharedMemoryName,
+            MediaSource.Id,
+            MediaSource.Name ?? "Unknown",
+            _buffer,
+            _healthMonitor,
+            () => ConsumerCount
+        );
+
         try
         {
-            // Registry-based path: C++ uses registry for URL lookup + health-based provider selection
-            if (_registry != null)
-            {
-                _nativeStreamer.SetRegistry(_registry);
-                _nativeStreamer.SetChannelGuid(_channelGuid);
-            }
-            else
-            {
-                // Legacy path: Add all URLs with initial health scores
-                // C++ handles ongoing health tracking and URL selection
-                for (int i = 0; i < _urls.Count; i++)
-                {
-                    var url = _urls[i];
-                    var healthScore = _initialScores != null && i < _initialScores.Count ? _initialScores[i] : 50.0; // Neutral score for unknown providers
-
-                    _nativeStreamer.AddUrlWithScore(url, healthScore);
-                }
-            }
-
-            // Apply network configuration (DNS, TCP keepalive, timeouts) from plugin settings
-            var networkConfig = BuildNetworkConfig();
-            if (networkConfig != null)
-            {
-                _nativeStreamer.SetNetworkConfig(networkConfig);
-            }
-
-            // Configure shared memory output (replaces callback-based data transfer)
-            // Slot count 2048 for ~2.5MB buffer, slot size 1316 (7 TS packets)
-            _nativeStreamer.SetSharedMemoryOutput(_sharedMemoryName, slotCount: 2048, slotSize: 1316);
-
-            // Set up event callback for stream events (connected, disconnected, switched, etc.)
-            _nativeStreamer.SetEventCallback(OnNativeEvent);
+            ConfigureNativeStreamer();
 
             if (!_nativeStreamer.Start())
             {
@@ -592,7 +687,14 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             _buffer.SignalSourceConnected();
 
             // Connect to shared memory and read data in a loop
-            await ConnectAndReadSharedMemoryAsync(cancellationToken).ConfigureAwait(false);
+            await _shmCoordinator
+                .ConnectAndReadAsync(
+                    _nativeStreamer,
+                    () => _receivingData,
+                    reason => _killReason = reason,
+                    cancellationToken
+                )
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -611,222 +713,52 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 streamer.Stop();
             }
 
-            _shmConsumer?.Dispose();
-            _shmConsumer = null;
+            _shmCoordinator?.Dispose();
+            _shmCoordinator = null;
             _buffer.SignalSourceDisconnected();
         }
     }
 
     /// <summary>
-    /// Builds a <see cref="TsDuckStreamerConfigNative"/> from the plugin configuration,
-    /// mapping user-configured timeouts and resilience settings to native struct fields.
-    /// Falls back to <see cref="TsDuckStreamerConfigNative.Default"/> values when the
-    /// plugin instance is not available.
+    /// Configures the native streamer with URLs, registry, network settings, shared memory,
+    /// and the event callback.
     /// </summary>
-    /// <returns>A configured native streamer configuration struct.</returns>
-    private static TsDuckStreamerConfigNative BuildStreamerConfig()
+    private void ConfigureNativeStreamer()
     {
-        var streamerConfig = TsDuckStreamerConfigNative.Default;
-        var pluginConfig = GetPluginConfiguration();
+        var streamer = _nativeStreamer!;
 
-        if (pluginConfig == null)
+        // Registry-based path: C++ uses registry for URL lookup + health-based provider selection
+        if (_registry != null)
         {
-            return streamerConfig;
+            streamer.SetRegistry(_registry);
+            streamer.SetChannelGuid(_channelGuid);
         }
-
-        // Map user-configured timeouts (seconds to milliseconds)
-        streamerConfig.ConnectTimeoutMs = pluginConfig.StreamConnectTimeoutSeconds * 1000;
-        streamerConfig.ResponseTimeoutMs = pluginConfig.StreamResponseHeadersTimeoutSeconds * 1000;
-        streamerConfig.StallTimeoutMs = pluginConfig.StreamDataStallTimeoutSeconds * 1000;
-
-        // Map resilience settings
-        streamerConfig.MaxRetries = pluginConfig.MaxFailoverAttempts;
-        streamerConfig.QuarantineDurationMs = pluginConfig.ProviderBlacklistSeconds * 1000;
-
-        // Map load balancer settings
-        streamerConfig.EnableP2C = pluginConfig.EnableP2CLoadBalancing ? 1 : 0;
-        streamerConfig.EnableOutlierDetection = pluginConfig.EnableOutlierDetection ? 1 : 0;
-        streamerConfig.OutlierStddevFactor = pluginConfig.OutlierStddevFactor;
-        streamerConfig.ProbationSuccessThreshold = pluginConfig.ProbationSuccessThreshold;
-
-        return streamerConfig;
-    }
-
-    /// <summary>
-    /// Builds a <see cref="NetworkConfig"/> from the plugin configuration,
-    /// mapping user-configured network and timeout settings to the native network layer.
-    /// </summary>
-    /// <returns>A configured network configuration, or null if plugin is unavailable.</returns>
-    private static NetworkConfig? BuildNetworkConfig()
-    {
-        var pluginConfig = GetPluginConfiguration();
-        if (pluginConfig == null)
+        else
         {
-            return null;
-        }
-
-        var networkConfig = new NetworkConfig
-        {
-            TcpConnectTimeoutMs = pluginConfig.StreamConnectTimeoutSeconds * 1000,
-            FirstByteTimeoutMs = pluginConfig.StreamFirstByteTimeoutSeconds * 1000,
-            DnsTimeoutMs = pluginConfig.DnsTimeoutSeconds * 1000,
-            TcpKeepaliveEnabled = pluginConfig.TcpKeepaliveEnabled,
-        };
-
-        return networkConfig;
-    }
-
-    /// <summary>
-    /// Safely retrieves the plugin configuration, returning null if the plugin is not yet initialized.
-    /// This allows Restream to be used in test environments where the plugin may not be registered.
-    /// </summary>
-    /// <returns>The current plugin configuration, or null if unavailable.</returns>
-    private static PluginConfiguration? GetPluginConfiguration()
-    {
-        try
-        {
-            return Plugin.Instance.Configuration;
-        }
-        catch (InvalidOperationException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Connects to shared memory and reads data in a loop, writing to the circular buffer.
-    /// Handles discontinuity, overflow, end-of-stream, and error flags from the producer.
-    /// Uses exponential backoff for initial shared memory connection.
-    /// </summary>
-    private async Task ConnectAndReadSharedMemoryAsync(CancellationToken cancellationToken)
-    {
-        // Wait for producer to initialize shared memory with exponential backoff.
-        // The C++ worker creates the /dev/shm file on startup, but thread scheduling
-        // can delay this. Retry avoids the race condition where C# opens before C++ creates.
-        const int maxRetries = 6;
-        var retryDelayMs = 100;
-        var connected = false;
-
-        for (int attempt = 0; attempt < maxRetries && !cancellationToken.IsCancellationRequested; attempt++)
-        {
-            await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-
-            try
+            // Legacy path: Add all URLs with initial health scores
+            // C++ handles ongoing health tracking and URL selection
+            for (int i = 0; i < _urls.Count; i++)
             {
-                _shmConsumer?.Dispose();
-                _shmConsumer = new SharedMemoryConsumer(_sharedMemoryName);
-                connected = true;
-                break;
-            }
-            catch (FileNotFoundException) when (attempt < maxRetries - 1)
-            {
-                _logger.PluginLogInformation(
-                    "Shared memory not ready (attempt {Attempt}/{Max}), retrying in {Delay}ms",
-                    attempt + 1,
-                    maxRetries,
-                    retryDelayMs
-                );
-                retryDelayMs = Math.Min(retryDelayMs * 2, 1600);
-            }
-            catch (Exception ex)
-            {
-                _logger.PluginLogError(ex, "Failed to connect to shared memory: {Name}", _sharedMemoryName);
-                _killReason = "Shared memory connection failed";
-                return;
+                var url = _urls[i];
+                var healthScore = _initialScores != null && i < _initialScores.Count ? _initialScores[i] : 50.0; // Neutral score for unknown providers
+
+                streamer.AddUrlWithScore(url, healthScore);
             }
         }
 
-        if (!connected)
+        // Apply network configuration (DNS, TCP keepalive, timeouts) from plugin settings
+        var networkConfig = RestreamConfiguration.BuildNetworkConfig();
+        if (networkConfig != null)
         {
-            _logger.PluginLogWarning(
-                "Shared memory not available after {Max} retries for channel {ChannelId}: {Name}",
-                maxRetries,
-                MediaSource.Id,
-                _sharedMemoryName
-            );
-            _killReason = "Shared memory connection failed after retries";
-            return;
+            streamer.SetNetworkConfig(networkConfig);
         }
 
-        _logger.PluginLogInformation("Connected to shared memory: {Name}", _sharedMemoryName);
+        // Configure shared memory output (replaces callback-based data transfer)
+        // Slot count 2048 for ~2.5MB buffer, slot size 1316 (7 TS packets)
+        streamer.SetSharedMemoryOutput(_sharedMemoryName, slotCount: 2048, slotSize: 1316);
 
-        var consumer = _shmConsumer;
-        if (consumer == null)
-        {
-            _killReason = "Shared memory consumer unexpectedly null";
-            return;
-        }
-
-        var lastHealthCheckTime = DateTime.UtcNow;
-        var lastDataTime = DateTime.UtcNow;
-        const int noDataTimeoutSeconds = 30;
-
-        while (!cancellationToken.IsCancellationRequested && _receivingData)
-        {
-            // Wait for data with timeout
-            if (!consumer.WaitForData(TimeSpan.FromMilliseconds(100), cancellationToken))
-            {
-                // Check for terminal conditions
-                if (consumer.IsEndOfStream && consumer.AvailableBytes == 0)
-                {
-                    _logger.PluginLogInformation("Shared memory end of stream for {ChannelId}", MediaSource.Id);
-                    _killReason = "Stream ended";
-                    break;
-                }
-
-                if (consumer.HasError)
-                {
-                    _logger.PluginLogWarning(
-                        "Shared memory error {Code}: {Message}",
-                        consumer.ErrorCode,
-                        consumer.ErrorMessage
-                    );
-                    _killReason = $"Shared memory error: {consumer.ErrorCode}";
-                    break;
-                }
-
-                // No-data timeout: if no data arrives for 30s, the stream is dead
-                if ((DateTime.UtcNow - lastDataTime).TotalSeconds >= noDataTimeoutSeconds)
-                {
-                    _logger.PluginLogWarning(
-                        "No data from shared memory for {Timeout}s for channel {ChannelId}",
-                        noDataTimeoutSeconds,
-                        MediaSource.Id
-                    );
-                    _killReason = "No data timeout";
-                    break;
-                }
-
-                continue;
-            }
-
-            // Data received - reset no-data timer
-            lastDataTime = DateTime.UtcNow;
-
-            // Handle discontinuity (URL switch in native streamer)
-            if (consumer.ConsumeDiscontinuity())
-            {
-                _logger.LogDebugIfEnabled("Discontinuity detected for {ChannelId}", MediaSource.Id);
-                _buffer.MarkDiscontinuityAligned();
-            }
-
-            // Handle overflow (slow consumer - data was dropped)
-            if (consumer.ConsumeOverflow())
-            {
-                _logger.PluginLogWarning("Shared memory overflow for {ChannelId}", MediaSource.Id);
-            }
-
-            // Read directly from shared memory to circular buffer (zero-copy)
-            consumer.ReadTo(_buffer);
-
-            // Periodic health check
-            var now = DateTime.UtcNow;
-            if ((now - lastHealthCheckTime).TotalSeconds >= HealthCheckIntervalSeconds)
-            {
-                lastHealthCheckTime = now;
-                PerformHealthCheck();
-            }
-        }
+        // Set up event callback for stream events (connected, disconnected, switched, etc.)
+        streamer.SetEventCallback(OnNativeEvent);
     }
 
     /// <summary>
@@ -858,7 +790,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                     detail,
                     MediaSource.Id
                 );
-                // Note: Discontinuity is handled via shared memory flag in ConnectAndReadSharedMemoryAsync
+                // Note: Discontinuity is handled via shared memory flag in RestreamSharedMemoryCoordinator
                 break;
 
             case StreamerEvent.Stalled:
@@ -882,116 +814,6 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 _logger.PluginLogWarning("Quality degraded for channel {ChannelId}, switching URL", MediaSource.Id);
                 break;
         }
-    }
-
-    /// <summary>
-    /// Performs periodic health checks on the stream.
-    /// </summary>
-    private void PerformHealthCheck()
-    {
-        if (!TryGetStreamerStatus(out var status))
-        {
-            return;
-        }
-
-        if (status.IsTerminal)
-        {
-            _logger.PluginLogWarning(
-                "Native streamer reached terminal state {State} for channel {ChannelId}",
-                status.State,
-                MediaSource.Id
-            );
-            _killReason = $"Streamer: {status.State}";
-            Dispose();
-            return;
-        }
-
-        // Buffer health checks based on actual reader-writer gap (not write position).
-        // The old metric used TotalBytesWritten % BufferSize which is the physical write
-        // position in the circular buffer, NOT the amount of unread data. This produced
-        // false underrun warnings (e.g., "9.5% filled" when the buffer had plenty of data).
-        var readerSnapshots = CircularBufferReadStream
-            .GetActiveStreamSnapshots()
-            .Where(s => string.Equals(s.StreamId, MediaSource.Id, StringComparison.Ordinal))
-            .ToList();
-
-        // Use the minimum gap across all readers as the effective buffer fill
-        var minReaderGapBytes =
-            readerSnapshots.Count > 0 ? readerSnapshots.Min(s => s.CurrentGapBytes) : _buffer.TotalBytesWritten; // No readers = full buffer available
-
-        var bufferFillPct =
-            _buffer.BufferSize > 0
-                ? Math.Min(100.0, (double)minReaderGapBytes * 100.0 / (double)_buffer.BufferSize)
-                : 0.0;
-
-        if (bufferFillPct < _bufferUnderrunThresholdPercent && readerSnapshots.Count > 0)
-        {
-            _bufferUnderrunCount++;
-
-            if (_bufferUnderrunCount % 3 == 1)
-            {
-                _logger.PluginLogWarning(
-                    "Buffer underrun #{Count} for channel {ChannelId}. Slowest reader only {GapKB}KB ({FillPct:F1}%) behind live.",
-                    _bufferUnderrunCount,
-                    MediaSource.Id,
-                    minReaderGapBytes / 1024,
-                    bufferFillPct
-                );
-
-                if (_bufferUnderrunCount >= _bufferUnderrunNotificationThreshold)
-                {
-                    var fillPct = bufferFillPct;
-                    var count = _bufferUnderrunCount;
-                    _discordService.SendFireAndForget(svc =>
-                        svc.NotifyBufferHealthIssueAsync(
-                            MediaSource.Id,
-                            MediaSource.Name ?? "Unknown",
-                            count,
-                            fillPct,
-                            0.0
-                        )
-                    );
-                }
-            }
-        }
-        else if (bufferFillPct > _bufferNearFullThresholdPercent && readerSnapshots.Count > 0)
-        {
-            _bufferHealthWarnings++;
-            _logger.LogDebugIfEnabled(
-                "Buffer for channel {ChannelId} is {FillPct:F1}% full. Consumers: {Consumers}",
-                MediaSource.Id,
-                bufferFillPct,
-                ConsumerCount
-            );
-        }
-
-        // Progress logging
-        _logger.PluginLogInformation(
-            "Broadcast progress for channel {ChannelId}: {TotalMB} MB written, {Consumers} consumers, reader gap {GapKB}KB ({FillPct:F1}%)",
-            MediaSource.Id,
-            _buffer.TotalBytesWritten / 1048576,
-            ConsumerCount,
-            minReaderGapBytes / 1024,
-            bufferFillPct
-        );
-    }
-
-    /// <summary>
-    /// Safely retrieves the current streamer status in a thread-safe manner.
-    /// </summary>
-    /// <param name="status">The streamer status if available.</param>
-    /// <returns>True if status was retrieved, false if streamer is null or disposed.</returns>
-    private bool TryGetStreamerStatus(out StreamerStatus status)
-    {
-        var streamer = _nativeStreamer;
-        if (streamer == null)
-        {
-            status = default;
-            return false;
-        }
-
-        status = streamer.GetStatus();
-        return true;
     }
 
     /// <inheritdoc />
@@ -1092,12 +914,12 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
 
         // Only remove from registry during proper disposal (not finalizer)
         // This prevents zombie streams that are still broadcasting but not trackable
-        if (disposing && _activeStreams.TryRemove(MediaSource.Id, out _))
+        if (disposing && RestreamActiveStreamRegistry.Unregister(MediaSource.Id))
         {
             _logger.PluginLogInformation(
                 "Unregistered Restream {StreamId} (remaining active: {Count})",
                 MediaSource.Id,
-                _activeStreams.Count
+                RestreamActiveStreamRegistry.GetActiveStreamCount()
             );
         }
 
@@ -1184,93 +1006,13 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         }
 
         _buffer.Dispose();
-        _shmConsumer?.Dispose();
-        _shmConsumer = null;
+        _shmCoordinator?.Dispose();
+        _shmCoordinator = null;
         Interlocked.Exchange(ref _nativeStreamer, value: null)?.Dispose();
         _openLock.Dispose();
         _readerPool.Dispose();
 
         _logger.PluginLogInformation("Restream for channel {ChannelId} disposed", MediaSource.Id);
-    }
-
-    /// <summary>
-    /// Detects stream quality (SD/HD/FHD/UHD) based on name and metadata.
-    /// </summary>
-    private static string DetectStreamQuality(MediaSourceInfo mediaSource)
-    {
-        var name = mediaSource.Name?.ToLowerInvariant() ?? string.Empty;
-
-        if (
-            name.Contains("4k", StringComparison.Ordinal)
-            || name.Contains("uhd", StringComparison.Ordinal)
-            || name.Contains("ultra hd", StringComparison.Ordinal)
-            || name.Contains("2160", StringComparison.Ordinal)
-        )
-        {
-            return "UHD/4K";
-        }
-
-        if (
-            name.Contains("fhd", StringComparison.Ordinal)
-            || name.Contains("full hd", StringComparison.Ordinal)
-            || name.Contains("1080", StringComparison.Ordinal)
-        )
-        {
-            return "Full HD";
-        }
-
-        if (name.Contains("hd", StringComparison.Ordinal) || name.Contains("720", StringComparison.Ordinal))
-        {
-            return "HD";
-        }
-
-        if (mediaSource.MediaStreams != null)
-        {
-            foreach (var stream in mediaSource.MediaStreams)
-            {
-                if (stream.Type == MediaStreamType.Video)
-                {
-                    // Width/Height are nullable and may be null before FFprobe runs.
-                    // Only classify as SD if we have confirmed low resolution.
-                    // When resolution is unknown (null/0), default to HD to avoid
-                    // undersized buffers that cause underruns on HD+ streams.
-                    if (stream.Width >= 3840 || stream.Height >= 2160)
-                    {
-                        return "UHD/4K";
-                    }
-
-                    if (stream.Width >= 1920 || stream.Height >= 1080)
-                    {
-                        return "Full HD";
-                    }
-
-                    if (stream.Width >= 1280 || stream.Height >= 720)
-                    {
-                        return "HD";
-                    }
-
-                    // Only classify as SD if we have actual resolution data confirming it
-                    return stream.Width > 0 && stream.Height > 0 ? "SD" : "HD";
-                }
-            }
-        }
-
-        return "HD";
-    }
-
-    /// <summary>
-    /// Gets the buffer size based on detected stream quality.
-    /// </summary>
-    private static int GetBufferSize(string quality)
-    {
-        return quality switch
-        {
-            "UHD/4K" => UhdBufferSize,
-            "Full HD" => HdBufferSize,
-            "HD" => HdBufferSize,
-            "SD" => SdBufferSize,
-            _ => HdBufferSize,
-        };
     }
 
     /// <inheritdoc />
@@ -1280,142 +1022,22 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         GC.SuppressFinalize(this);
     }
 
+    // ========================================================================
+    // Static API delegates — preserve public surface, forward to registry
+    // ========================================================================
+
     /// <summary>
     /// Gets the count of active Restream instances.
     /// </summary>
     /// <returns>The number of active streams.</returns>
-    public static int GetActiveStreamCount() => _activeStreams.Count;
+    public static int GetActiveStreamCount() => RestreamActiveStreamRegistry.GetActiveStreamCount();
 
     /// <summary>
     /// Gets information about all active streams for API/UI purposes.
     /// </summary>
     /// <returns>A list of stream information objects.</returns>
-    public static IReadOnlyList<StreamInfoSnapshot> GetActiveStreamSnapshots()
-    {
-        List<StreamInfoSnapshot> result = [];
-
-        foreach (var activeStream in _activeStreams)
-        {
-            var stream = activeStream.Value;
-            try
-            {
-                long bufferSize = stream._buffer.BufferSize;
-                var totalWritten = stream._buffer.TotalBytesWritten;
-                var currentPosition = totalWritten % bufferSize;
-                var fillPct = bufferSize > 0 ? (double)currentPosition * 100.0 / (double)bufferSize : 0.0;
-                var hasWrapped = totalWritten >= bufferSize;
-                string status;
-
-                if (stream._broadcastTask == null)
-                {
-                    status = "Stopped";
-                }
-                else if (!hasWrapped)
-                {
-                    var initialFillPct = (double)totalWritten * 100.0 / (double)bufferSize;
-                    status = initialFillPct > 75.0 ? "Filling" : "Buffering";
-                    fillPct = initialFillPct;
-                }
-                else
-                {
-                    status = "Streaming";
-                }
-
-                // Get discontinuity/reconnection info
-                var reconnectionCount = stream._buffer.DiscontinuityCount;
-                var lastDiscontinuityOffset = stream._buffer.LastDiscontinuityOffset;
-                var lastDiscontinuityTime = stream._buffer.LastDiscontinuityTime;
-                double? secondsSinceLastReconnection = lastDiscontinuityTime.HasValue
-                    ? (DateTime.UtcNow - lastDiscontinuityTime.Value).TotalSeconds
-                    : null;
-
-                // Query native streamer for real-time status and quality metrics
-                var nativeStreamer = stream._nativeStreamer;
-                var streamerStatus = nativeStreamer?.GetStatus();
-                var metrics = nativeStreamer?.GetMetrics();
-                var avSync = nativeStreamer?.GetAvSyncAnalysis();
-                var providerCount = nativeStreamer?.GetProviderCount() ?? 0;
-
-                // Populate quality metrics from native analyzer
-                long packetErrors = 0L;
-                long continuityErrors = 0L;
-                long syncErrors = 0L;
-                long patViolations = 0L;
-                long crcErrors = 0L;
-                long tsBitrate = 0L;
-
-                if (metrics != null)
-                {
-                    packetErrors = metrics.Priority2.TransportError;
-                    continuityErrors = metrics.Priority1.ContinuityCountError;
-                    syncErrors = metrics.Priority1.SyncByteError + metrics.Priority1.SyncLoss;
-                    patViolations = metrics.Priority1.PatError + metrics.Priority1.PatError2;
-                    crcErrors = metrics.Priority2.CrcError;
-                    tsBitrate = metrics.TsBitrate;
-                }
-
-                double avDriftMs = avSync?.VideoAudioDriftMs ?? 0.0;
-                string syncStatus = avSync?.Status.ToString() ?? "Unknown";
-                bool hasQualityIssues = packetErrors > 0 || continuityErrors > 10 || syncErrors > 0;
-                string qualityLevel = hasQualityIssues
-                    ? (syncErrors > 0 || packetErrors > 100 ? "Critical" : "Warning")
-                    : "None";
-
-                result.Add(
-                    new StreamInfoSnapshot
-                    {
-                        StreamId = stream.MediaSource.Id,
-                        ChannelName = stream.MediaSource.Name ?? "Unknown",
-                        StartTime = stream._startTime,
-                        BufferSizeBytes = bufferSize,
-                        TotalBytesWritten = totalWritten,
-                        TotalBytesRead = 0L,
-                        CurrentGapBytes = 0L,
-                        GapPercentage = 100.0 - fillPct,
-                        OverflowCount = 0,
-                        OverflowBytes = 0L,
-                        Status = status,
-                        IsAligned = true,
-                        // Quality metrics from native analyzer
-                        PacketErrors = packetErrors,
-                        ContinuityErrors = continuityErrors,
-                        SyncErrors = syncErrors,
-                        PatViolations = patViolations,
-                        CrcErrors = crcErrors,
-                        AvDriftMs = avDriftMs,
-                        SyncStatus = syncStatus,
-                        HasQualityIssues = hasQualityIssues,
-                        QualityLevel = qualityLevel,
-                        QualityIssues = hasQualityIssues
-                            ? $"TEI:{packetErrors} CC:{continuityErrors} Sync:{syncErrors}"
-                            : null,
-                        // Native streamer status
-                        StreamerState = streamerStatus?.State.ToString() ?? "Unknown",
-                        CurrentUrlIndex = streamerStatus?.CurrentUrlIndex ?? 0,
-                        UrlCount = streamerStatus?.UrlCount ?? 0,
-                        BytesReceived = streamerStatus?.BytesReceived ?? 0L,
-                        PacketsOutput = streamerStatus?.PacketsOutput ?? 0L,
-                        SwitchesCompleted = streamerStatus?.SwitchesCompleted ?? 0L,
-                        QualitySwitches = streamerStatus?.QualitySwitches ?? 0L,
-                        TsBitrate = tsBitrate,
-                        LastHttpStatus = streamerStatus?.LastHttpStatus ?? 0,
-                        LastCurlError = streamerStatus?.LastCurlError ?? 0,
-                        ProviderCount = providerCount,
-                        // Reconnection metrics
-                        ReconnectionCount = reconnectionCount,
-                        LastDiscontinuityOffset = lastDiscontinuityOffset,
-                        SecondsSinceLastReconnection = secondsSinceLastReconnection,
-                    }
-                );
-            }
-            catch
-            {
-                // Ignore errors for individual streams
-            }
-        }
-
-        return result;
-    }
+    public static IReadOnlyList<StreamInfoSnapshot> GetActiveStreamSnapshots() =>
+        RestreamActiveStreamRegistry.GetActiveStreamSnapshots();
 
     /// <summary>
     /// Kills (disposes) a stream by its ID.
@@ -1423,25 +1045,8 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <param name="streamId">The stream ID to kill.</param>
     /// <param name="reason">Optional reason for killing the stream (for notifications).</param>
     /// <returns>True if the stream was found and killed, false otherwise.</returns>
-    public static bool KillStream(string streamId, string? reason = null)
-    {
-        if (_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            var killReason = reason ?? "Manual termination";
-            stream._killReason = killReason;
-            stream.Dispose();
-
-            Events.PluginEventBus.Instance.Publish(
-                "stream.killed",
-                streamId,
-                new Dictionary<string, object>(StringComparer.Ordinal) { ["reason"] = killReason }
-            );
-
-            return true;
-        }
-
-        return false;
-    }
+    public static bool KillStream(string streamId, string? reason = null) =>
+        RestreamActiveStreamRegistry.KillStream(streamId, reason);
 
     /// <summary>
     /// Gets the provider health snapshot for a specific provider in a stream.
@@ -1449,108 +1054,47 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <param name="streamId">The stream ID.</param>
     /// <param name="providerIndex">The provider index (0-based).</param>
     /// <returns>The health snapshot, or null if not found.</returns>
-    public static Streaming.Native.ProviderHealthSnapshot? GetProviderHealth(string streamId, int providerIndex)
-    {
-        if (!_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            return null;
-        }
-
-        return stream._nativeStreamer?.GetProviderHealth(providerIndex);
-    }
+    public static Streaming.Native.ProviderHealthSnapshot? GetProviderHealth(string streamId, int providerIndex) =>
+        RestreamActiveStreamRegistry.GetProviderHealth(streamId, providerIndex);
 
     /// <summary>
     /// Gets all provider health snapshots for a stream.
     /// </summary>
     /// <param name="streamId">The stream ID.</param>
     /// <returns>List of provider health snapshots, or null if stream not found.</returns>
-    public static IReadOnlyList<Streaming.Native.ProviderHealthSnapshot>? GetAllProviderHealth(string streamId)
-    {
-        if (!_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            return null;
-        }
-
-        var nativeStreamer = stream._nativeStreamer;
-        if (nativeStreamer == null)
-        {
-            return null;
-        }
-
-        var count = nativeStreamer.GetProviderCount();
-        var results = new List<Streaming.Native.ProviderHealthSnapshot>(count);
-        for (int i = 0; i < count; i++)
-        {
-            var health = nativeStreamer.GetProviderHealth(i);
-            if (health != null)
-            {
-                results.Add(health.Value);
-            }
-        }
-
-        return results;
-    }
+    public static IReadOnlyList<Streaming.Native.ProviderHealthSnapshot>? GetAllProviderHealth(string streamId) =>
+        RestreamActiveStreamRegistry.GetAllProviderHealth(streamId);
 
     /// <summary>
     /// Requests a URL switch (force reconnect) for a stream.
     /// </summary>
     /// <param name="streamId">The stream ID.</param>
     /// <returns>True if the switch was requested, false if stream not found.</returns>
-    public static bool RequestSwitch(string streamId)
-    {
-        if (!_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            return false;
-        }
-
-        stream._nativeStreamer?.RequestSwitch();
-        return true;
-    }
+    public static bool RequestSwitch(string streamId) => RestreamActiveStreamRegistry.RequestSwitch(streamId);
 
     /// <summary>
     /// Gets detailed TR 101 290 metrics for a stream.
     /// </summary>
     /// <param name="streamId">The stream ID.</param>
     /// <returns>The metrics, or null if not available.</returns>
-    public static Streaming.Native.TsDuckMetrics? GetStreamMetrics(string streamId)
-    {
-        if (!_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            return null;
-        }
-
-        return stream._nativeStreamer?.GetMetrics();
-    }
+    public static Streaming.Native.TsDuckMetrics? GetStreamMetrics(string streamId) =>
+        RestreamActiveStreamRegistry.GetStreamMetrics(streamId);
 
     /// <summary>
     /// Gets A/V sync analysis for a stream.
     /// </summary>
     /// <param name="streamId">The stream ID.</param>
     /// <returns>The A/V sync analysis, or null if not available.</returns>
-    public static Streaming.Native.AvSyncAnalysis? GetStreamAvSync(string streamId)
-    {
-        if (!_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            return null;
-        }
-
-        return stream._nativeStreamer?.GetAvSyncAnalysis();
-    }
+    public static Streaming.Native.AvSyncAnalysis? GetStreamAvSync(string streamId) =>
+        RestreamActiveStreamRegistry.GetStreamAvSync(streamId);
 
     /// <summary>
     /// Gets PCR analysis for a stream.
     /// </summary>
     /// <param name="streamId">The stream ID.</param>
     /// <returns>The PCR analysis, or null if not available.</returns>
-    public static Streaming.Native.PcrAnalysis? GetStreamPcrAnalysis(string streamId)
-    {
-        if (!_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            return null;
-        }
-
-        return stream._nativeStreamer?.GetPcrAnalysis();
-    }
+    public static Streaming.Native.PcrAnalysis? GetStreamPcrAnalysis(string streamId) =>
+        RestreamActiveStreamRegistry.GetStreamPcrAnalysis(streamId);
 
     /// <summary>
     /// Force ejects a provider from a stream's health system.
@@ -1559,56 +1103,20 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     /// <param name="providerIndex">The provider index (0-based).</param>
     /// <param name="durationMs">Ejection duration in milliseconds.</param>
     /// <returns>True if the provider was ejected, false if stream not found.</returns>
-    public static bool ForceEjectProvider(string streamId, int providerIndex, int durationMs)
-    {
-        if (!_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            return false;
-        }
-
-        stream._nativeStreamer?.ForceEjectProvider(providerIndex, durationMs);
-        return true;
-    }
+    public static bool ForceEjectProvider(string streamId, int providerIndex, int durationMs) =>
+        RestreamActiveStreamRegistry.ForceEjectProvider(streamId, providerIndex, durationMs);
 
     /// <summary>
     /// Resets all providers in a stream to Active state.
     /// </summary>
     /// <param name="streamId">The stream ID.</param>
     /// <returns>True if reset, false if stream not found.</returns>
-    public static bool ResetAllProviders(string streamId)
-    {
-        if (!_activeStreams.TryGetValue(streamId, out var stream))
-        {
-            return false;
-        }
-
-        stream._nativeStreamer?.ResetAllProviders();
-        return true;
-    }
+    public static bool ResetAllProviders(string streamId) => RestreamActiveStreamRegistry.ResetAllProviders(streamId);
 
     /// <summary>
     /// Kills all active streams.
     /// </summary>
     /// <param name="reason">Optional reason for killing the streams (for notifications).</param>
     /// <returns>The number of streams killed.</returns>
-    public static int KillAllStreams(string? reason = null)
-    {
-        var count = 0;
-
-        foreach (var stream in _activeStreams.Values.ToList())
-        {
-            try
-            {
-                stream._killReason = reason ?? "Bulk termination";
-                stream.Dispose();
-                count++;
-            }
-            catch
-            {
-                // Ignore disposal errors
-            }
-        }
-
-        return count;
-    }
+    public static int KillAllStreams(string? reason = null) => RestreamActiveStreamRegistry.KillAllStreams(reason);
 }

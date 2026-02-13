@@ -18,10 +18,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
@@ -72,11 +70,6 @@ public sealed class CircularBufferReadStream : Stream
     // 10-15s with exponential backoff) without the reader prematurely returning EOF.
     private const int MaxWaitMs = 30000;
 
-    private static readonly int _simdThreshold = DetermineSimdThreshold();
-    private static readonly bool _avx512Supported = Avx512F.IsSupported;
-    private static readonly bool _avx2Supported = Avx2.IsSupported;
-    private static readonly bool _sse2Supported = Sse2.IsSupported;
-    private static readonly int _prefetchDistance = DeterminePrefetchDistance();
     private static readonly int _maxReadSpins = DetermineMaxSpins();
 
     /// <summary>
@@ -571,9 +564,9 @@ public sealed class CircularBufferReadStream : Stream
                         break;
                     }
 
-                    if (chunkSize >= _simdThreshold)
+                    if (chunkSize >= SimdMemoryCopy.SimdThreshold)
                     {
-                        CopyMemorySimd(srcBuffer + currentPosition, dstPtr + totalRead, chunkSize);
+                        SimdMemoryCopy.Copy(srcBuffer + currentPosition, dstPtr + totalRead, chunkSize);
                     }
                     else
                     {
@@ -629,111 +622,6 @@ public sealed class CircularBufferReadStream : Stream
     }
 
     /// <summary>
-    /// Hardware-accelerated memory copy using SIMD instructions.
-    /// Optimized for multi-core systems with AVX-512/AVX2/SSE support.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-    private static unsafe void CopyMemorySimd(byte* src, byte* dst, int length)
-    {
-        var offset = 0;
-
-        if (_avx512Supported && length >= 64)
-        {
-            for (var avx512Length = length & -64; offset < avx512Length; offset += 64)
-            {
-                if (offset + _prefetchDistance < length)
-                {
-                    Sse.Prefetch0(src + offset + _prefetchDistance);
-                }
-
-                var vec = Avx512F.LoadVector512(src + offset);
-                Avx512F.Store(dst + offset, vec);
-            }
-        }
-        else if (_avx2Supported && length >= 32)
-        {
-            for (var avx2Length = length & -32; offset < avx2Length; offset += 32)
-            {
-                if (Sse.IsSupported && offset + _prefetchDistance < length)
-                {
-                    Sse.Prefetch0(src + offset + _prefetchDistance);
-                }
-
-                var vec = Avx.LoadVector256(src + offset);
-                Avx.Store(dst + offset, vec);
-            }
-        }
-        else if (_sse2Supported && length >= 16)
-        {
-            for (var sse2Length = length & -16; offset < sse2Length; offset += 16)
-            {
-                if (Sse.IsSupported && offset + _prefetchDistance < length)
-                {
-                    Sse.Prefetch0(src + offset + _prefetchDistance);
-                }
-
-                var vec = Sse2.LoadVector128(src + offset);
-                Sse2.Store(dst + offset, vec);
-            }
-        }
-        else if (Vector.IsHardwareAccelerated && length >= Vector<byte>.Count)
-        {
-            for (
-                var vectorLength = length & ~(Vector<byte>.Count - 1);
-                offset < vectorLength;
-                offset += Vector<byte>.Count
-            )
-            {
-                var vec = Unsafe.ReadUnaligned<Vector<byte>>(src + offset);
-                Unsafe.WriteUnaligned(dst + offset, vec);
-            }
-        }
-
-        var remaining = length - offset;
-
-        if (remaining > 0)
-        {
-            if (remaining >= 8)
-            {
-                Unsafe.WriteUnaligned(dst + offset, Unsafe.ReadUnaligned<long>(src + offset));
-                offset += 8;
-                remaining -= 8;
-            }
-
-            if (remaining >= 4)
-            {
-                Unsafe.WriteUnaligned(dst + offset, Unsafe.ReadUnaligned<int>(src + offset));
-                offset += 4;
-                remaining -= 4;
-            }
-
-            while (remaining > 0)
-            {
-                dst[offset] = src[offset];
-                offset++;
-                remaining--;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Determines optimal SIMD threshold based on CPU capabilities.
-    /// Lower-end CPUs get higher threshold to avoid SIMD overhead.
-    /// </summary>
-    private static int DetermineSimdThreshold()
-    {
-        return Avx2.IsSupported ? 512
-            : Sse2.IsSupported ? 1024
-            : 4096;
-    }
-
-    /// <summary>
-    /// Determines optimal prefetch distance based on CPU capabilities.
-    /// Smaller caches on low-end CPUs need shorter prefetch distance to avoid cache pollution.
-    /// </summary>
-    private static int DeterminePrefetchDistance() => Avx2.IsSupported ? 256 : 128;
-
-    /// <summary>
     /// Determines maximum spinning iterations based on CPU capabilities.
     /// Lower-end CPUs get fewer spins to avoid wasting cycles.
     /// </summary>
@@ -782,9 +670,9 @@ public sealed class CircularBufferReadStream : Stream
                     )
                     .ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore notification failures
+                _logger?.LogDebug(ex, "Failed to send Discord notification");
             }
         });
 
@@ -814,7 +702,7 @@ public sealed class CircularBufferReadStream : Stream
         var overflowBytes = Volatile.Read(ref _totalOverflowBytes.Value);
         var overflowRate = totalWritten > 0 ? (double)overflowBytes * 100.0 / (double)totalWritten : 0.0;
 
-        return $"Stream {_streamId} Diagnostics:\n  Buffer Size: {_sourceBuffer.BufferSize / 1048576}MB\n  Total Written: {totalWritten / 1048576}MB\n  Total Read: {totalRead / 1048576}MB\n  Current Gap: {gap / 1024}KB ({gapPct:F1}% of buffer)\n  Buffer Overflows: {Volatile.Read(ref _overflowCount.Value)} events\n  Data Lost: {overflowBytes / 1048576}MB ({overflowRate:F2}% of total)\n  Hardware: AVX2={_avx2Supported}, SSE2={_sse2Supported}, SIMD={Vector.IsHardwareAccelerated}\n  Status: {((double)gap < (double)_sourceBuffer.BufferSize * 0.1 ? "HEALTHY" : ((double)gap > (double)_sourceBuffer.BufferSize * 0.8 ? "LAGGING" : "OK"))}";
+        return $"Stream {_streamId} Diagnostics:\n  Buffer Size: {_sourceBuffer.BufferSize / 1048576}MB\n  Total Written: {totalWritten / 1048576}MB\n  Total Read: {totalRead / 1048576}MB\n  Current Gap: {gap / 1024}KB ({gapPct:F1}% of buffer)\n  Buffer Overflows: {Volatile.Read(ref _overflowCount.Value)} events\n  Data Lost: {overflowBytes / 1048576}MB ({overflowRate:F2}% of total)\n  Hardware: AVX2={Avx2.IsSupported}, SSE2={Sse2.IsSupported}, SIMD threshold={SimdMemoryCopy.SimdThreshold}B\n  Status: {((double)gap < (double)_sourceBuffer.BufferSize * 0.1 ? "HEALTHY" : ((double)gap > (double)_sourceBuffer.BufferSize * 0.8 ? "LAGGING" : "OK"))}";
     }
 
     /// <summary>
