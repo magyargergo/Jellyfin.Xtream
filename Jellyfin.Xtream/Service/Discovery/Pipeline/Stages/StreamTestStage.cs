@@ -112,7 +112,7 @@ public sealed class StreamTestStage(IHttpClientFactory httpClientFactory, ILogge
 
             // Only add stream test results - Streams and FilteredChannels already set by CountryFilterStage
             var enrichedItem = item.WithProperties(
-                (PipelinePropertyKeys.StreamResult, (object)(status ?? "OK")),
+                (PipelinePropertyKeys.StreamResult, status ?? "OK"),
                 (PipelinePropertyKeys.StreamQuality, (object?)quality ?? DBNull.Value)
             );
 

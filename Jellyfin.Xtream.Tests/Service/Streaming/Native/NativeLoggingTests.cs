@@ -513,7 +513,6 @@ public class NativeLoggingTests
         // - The plugin's web-based log viewer
 
         // Arrange
-        var iLogger = new CapturingLogger();
         var pluginLogService = new CapturingPluginLogService();
 
         // Initialize PluginLogger (simulates what happens at plugin startup)
@@ -567,8 +566,7 @@ public class NativeLoggingTests
         Assert.False(dashboardCapturing);
 
         // If both are false, we would skip marshaling (early return in OnNativeLog)
-        var shouldMarshal = loggerEnabled || dashboardCapturing;
-        Assert.False(shouldMarshal);
+        Assert.False(loggerEnabled || dashboardCapturing);
     }
 
     [Fact]
@@ -595,8 +593,7 @@ public class NativeLoggingTests
             Assert.True(dashboardCapturing); // Dashboard is capturing
 
             // We should still marshal for the dashboard
-            var shouldMarshal = loggerEnabled || dashboardCapturing;
-            Assert.True(shouldMarshal);
+            Assert.True(loggerEnabled || dashboardCapturing);
 
             // Verify DirectLog works when only dashboard is enabled
             PluginLogger.DirectLog(LogLevel.Information, "Native.Test", "[Test] Info message");

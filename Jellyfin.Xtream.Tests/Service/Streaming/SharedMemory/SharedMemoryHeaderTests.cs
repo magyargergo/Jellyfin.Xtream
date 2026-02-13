@@ -918,7 +918,7 @@ public sealed class SharedMemoryHeaderTests
         // "TSTREAM\0" in ASCII bytes: T=0x54, S=0x53, T=0x54, R=0x52, E=0x45, A=0x41, M=0x4D, \0=0x00
         // When read as little-endian 64-bit integer, the byte order is reversed
         var magicBytes = new byte[] { 0x54, 0x53, 0x54, 0x52, 0x45, 0x41, 0x4D, 0x00 };
-        var magicAsUInt64 = BitConverter.ToUInt64(magicBytes, 0);
+        _ = BitConverter.ToUInt64(magicBytes, 0);
 
         // The expected magic in the header file is 0x5453545245414D00
         // This means the C++ code stores it differently (big-endian in the constant)

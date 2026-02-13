@@ -807,8 +807,8 @@ public sealed class TsDuckMetricsHistory
             var y = snapshots[i].CalculateQualityScore();
             sumX += x;
             sumY += y;
-            sumXY += x * y;
-            sumX2 += x * x;
+            sumXY += (double)x * y;
+            sumX2 += (double)x * x;
         }
 
         var denominator = (n * sumX2) - (sumX * sumX);

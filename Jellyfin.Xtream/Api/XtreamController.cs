@@ -1999,7 +1999,7 @@ public class XtreamController(
             using var cts = new CancellationTokenSource();
 
             // Start receiving messages (handles ping/pong and close frames)
-            var receiveTask = ReceiveWebSocketMessagesAsync(webSocket, cts);
+            _ = ReceiveWebSocketMessagesAsync(webSocket, cts);
 
             // Send progress updates with heartbeat
             var lastProgressTime = DateTime.UtcNow;

@@ -218,7 +218,7 @@ public sealed class ReaderSession(string sessionId)
     public string GetDiagnostics()
     {
         var ageMs = PositionAgeMs;
-        var ageStr = ageMs == double.MaxValue ? "N/A" : $"{ageMs:F1}ms";
+        var ageStr = ageMs >= double.MaxValue ? "N/A" : $"{ageMs:F1}ms";
 
         return $"ReaderSession[{SessionId}]:\n"
             + $"  Created: {CreatedAt:HH:mm:ss.fff}\n"

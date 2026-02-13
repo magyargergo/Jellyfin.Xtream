@@ -126,7 +126,7 @@ public class CountryFilterStage(
         }
 
         var enrichedItem = item.WithProperties(
-            (PipelinePropertyKeys.Streams, (object)streams),
+            (PipelinePropertyKeys.Streams, streams),
             (PipelinePropertyKeys.StreamCount, (object)streams.Count),
             (PipelinePropertyKeys.FilteredChannels, matchedChannels),
             (PipelinePropertyKeys.FilteredChannelCount, matchedChannels.Count),

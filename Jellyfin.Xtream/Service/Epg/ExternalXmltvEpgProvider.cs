@@ -295,8 +295,7 @@ public sealed class ExternalXmltvEpgProvider(
             && _memoryCache.TryGetValue(logoMapCacheKey, out Dictionary<string, string>? _)
             && cachedPrograms != null
             && cachedChannelMap != null
-            ? ((Dictionary<string, List<EpgProgram>>? Programs, Dictionary<string, string>? ChannelMap))
-                (cachedPrograms, cachedChannelMap)
+            ? (cachedPrograms, cachedChannelMap)
             : await LoadXmltvDataAsync(url, cancellationToken).ConfigureAwait(false);
     }
 

@@ -186,7 +186,9 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
     producer->signal_semaphore_ = sem;
 #endif
 
-    producer->data_region_ = reinterpret_cast<std::byte*>(producer->header_) + SHM_HEADER_SIZE;
+    // Byte-level offset from header to data region
+    auto* base = static_cast<std::byte*>(static_cast<void*>(producer->header_));
+    producer->data_region_ = base + SHM_HEADER_SIZE;
 
     // Zero the entire region (SIMD-optimized for large shared memory regions ~1MB+)
     platform::simd_memset(producer->header_, 0, producer->total_size_);
@@ -630,7 +632,7 @@ std::unique_ptr<SharedMemoryConsumer> SharedMemoryConsumer::open(
     }
 
     consumer->header_ = static_cast<SharedMemoryHeader*>(ptr);
-    consumer->data_region_ = reinterpret_cast<std::byte*>(ptr) + SHM_HEADER_SIZE;
+    consumer->data_region_ = static_cast<std::byte*>(ptr) + SHM_HEADER_SIZE;
 
     // Open signaling semaphore
     std::wstring sem_name = wname + L"_sem";
@@ -691,7 +693,7 @@ std::unique_ptr<SharedMemoryConsumer> SharedMemoryConsumer::open(
 
     consumer->mapping_ = ptr;
     consumer->header_ = static_cast<SharedMemoryHeader*>(ptr);
-    consumer->data_region_ = reinterpret_cast<std::byte*>(ptr) + SHM_HEADER_SIZE;
+    consumer->data_region_ = static_cast<std::byte*>(ptr) + SHM_HEADER_SIZE;
 
     // Open signaling semaphore
     std::string sem_name = shm_name + "_sem";

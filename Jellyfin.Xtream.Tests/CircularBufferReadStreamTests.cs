@@ -392,7 +392,7 @@ public sealed class CircularBufferReadStreamTests : IDisposable
     public async Task ReadAsync_CancelledToken_ReturnsZero()
     {
         await using var readStream = new CircularBufferReadStream(_writeStream);
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
         var buffer = new byte[10];
@@ -545,8 +545,8 @@ public sealed class CircularBufferReadStreamTests : IDisposable
         var buffer1 = new byte[TsPacketSize * 5]; // 940 bytes
         var buffer2 = new byte[TsPacketSize * 3]; // 564 bytes
 
-        var bytesRead1 = reader1.Read(buffer1, 0, buffer1.Length);
-        var bytesRead2 = reader2.Read(buffer2, 0, buffer2.Length);
+        _ = reader1.Read(buffer1, 0, buffer1.Length);
+        _ = reader2.Read(buffer2, 0, buffer2.Length);
 
         // Both readers should have their own position
         Assert.Equal(TsPacketSize * 5, reader1.TotalBytesRead);
@@ -724,7 +724,7 @@ public sealed class CircularBufferReadStreamTests : IDisposable
         var uniqueId = $"dispose-test-{Guid.NewGuid()}";
         int countBefore;
 
-        using (var reader = new CircularBufferReadStream(_writeStream, streamId: uniqueId))
+        using (new CircularBufferReadStream(_writeStream, streamId: uniqueId))
         {
             countBefore = CircularBufferReadStream.GetActiveStreamCount();
         }

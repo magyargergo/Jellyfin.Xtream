@@ -132,12 +132,12 @@ public sealed class ProviderTrustScore
         // Calculate weighted total
         Score = (int)
             Math.Round(
-                (Factors.StreamQuality * Weights.StreamQuality / 100.0)
-                    + (Factors.EpgAvailability * Weights.EpgAvailability / 100.0)
-                    + (Factors.ChannelCount * Weights.ChannelCount / 100.0)
-                    + (Factors.AccountLongevity * Weights.AccountLongevity / 100.0)
-                    + (Factors.ConnectionCapacity * Weights.ConnectionCapacity / 100.0)
-                    + (Factors.StreamReliability * Weights.StreamReliability / 100.0)
+                ((double)Factors.StreamQuality * Weights.StreamQuality / 100.0)
+                    + ((double)Factors.EpgAvailability * Weights.EpgAvailability / 100.0)
+                    + ((double)Factors.ChannelCount * Weights.ChannelCount / 100.0)
+                    + ((double)Factors.AccountLongevity * Weights.AccountLongevity / 100.0)
+                    + ((double)Factors.ConnectionCapacity * Weights.ConnectionCapacity / 100.0)
+                    + ((double)Factors.StreamReliability * Weights.StreamReliability / 100.0)
             );
 
         // Apply critical penalties

@@ -1133,7 +1133,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
                 }
             );
         }
-        else if (_discordService != null && !streamActuallyStarted)
+        else if (_discordService != null)
         {
             _logger.LogDebugIfEnabled(
                 "Skipping 'Stream Killed' notification for channel {ChannelId} - stream never started (0 bytes transferred)",

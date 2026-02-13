@@ -584,7 +584,7 @@ public sealed class SharedMemoryConsumerTests : IDisposable
     {
         CreateSharedMemory();
 
-        var consumer = new SharedMemoryConsumer(_testName);
+        using var consumer = new SharedMemoryConsumer(_testName);
         var flagsBefore = ReadFlags();
         Assert.True((flagsBefore & (uint)SharedMemoryStatusFlags.ConsumerReady) != 0);
 
@@ -602,7 +602,7 @@ public sealed class SharedMemoryConsumerTests : IDisposable
     {
         CreateSharedMemory();
 
-        var consumer = new SharedMemoryConsumer(_testName);
+        using var consumer = new SharedMemoryConsumer(_testName);
         consumer.Dispose();
 
         var state = ReadConsumerState();
@@ -617,7 +617,7 @@ public sealed class SharedMemoryConsumerTests : IDisposable
     {
         CreateSharedMemory();
 
-        var consumer = new SharedMemoryConsumer(_testName);
+        using var consumer = new SharedMemoryConsumer(_testName);
         consumer.Dispose();
         consumer.Dispose(); // Should not throw
     }

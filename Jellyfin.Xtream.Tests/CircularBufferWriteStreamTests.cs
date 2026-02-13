@@ -482,7 +482,7 @@ public sealed class CircularBufferWriteStreamTests
     public async Task WriteAsync_CancelledToken_ThrowsOperationCanceled()
     {
         await using var stream = new CircularBufferWriteStream(1024 * 1024);
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
         var data = CreateTsPacket(0x1FFF);
 
@@ -496,7 +496,7 @@ public sealed class CircularBufferWriteStreamTests
     public async Task WriteAsyncMemory_CancelledToken_ThrowsOperationCanceled()
     {
         await using var stream = new CircularBufferWriteStream(1024 * 1024);
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
         var data = CreateTsPacket(0x1FFF);
 
@@ -775,7 +775,7 @@ public sealed class CircularBufferWriteStreamTests
     public async Task TotalBytesWritten_ThreadSafeReading()
     {
         await using var stream = new CircularBufferWriteStream(10 * 1024 * 1024);
-        var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource();
         var data = CreateTsDataChunk(TsPacketSize * 10); // 1880 bytes per iteration
         var readerErrors = new System.Collections.Concurrent.ConcurrentBag<Exception>();
         long maxSeen = 0;
@@ -947,7 +947,7 @@ public sealed class CircularBufferWriteStreamTests
         stream.Write(providerAData, 0, providerAData.Length);
 
         // Perform aligned switch
-        var paddingBytes = stream.MarkDiscontinuityAligned();
+        _ = stream.MarkDiscontinuityAligned();
 
         // Provider B starts writing
         var providerBData = CreateTsDataChunk(TsPacketSize * 5);

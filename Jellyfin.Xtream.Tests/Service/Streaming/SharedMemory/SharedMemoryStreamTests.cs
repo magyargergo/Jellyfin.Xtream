@@ -599,7 +599,7 @@ public sealed class SharedMemoryStreamTests : IDisposable
     {
         CreateSharedMemory();
         using var consumer = new SharedMemoryConsumer(_testName);
-        var stream = new SharedMemoryStream(consumer);
+        using var stream = new SharedMemoryStream(consumer);
 
         stream.Dispose();
         stream.Dispose(); // Should not throw

@@ -50,17 +50,25 @@ internal sealed class SharedMemoryTestFixture : IDisposable
             var shmPath = GetShmPath(name);
 
             var fileStream = new FileStream(shmPath, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite);
-            fileStream.SetLength(totalSize);
+            try
+            {
+                fileStream.SetLength(totalSize);
 
-            // leaveOpen: false transfers ownership of the FileStream to the MMF
-            Mmf = MemoryMappedFile.CreateFromFile(
-                fileStream,
-                mapName: null,
-                capacity: 0,
-                access: MemoryMappedFileAccess.ReadWrite,
-                inheritability: HandleInheritability.None,
-                leaveOpen: false
-            );
+                // leaveOpen: false transfers ownership of the FileStream to the MMF
+                Mmf = MemoryMappedFile.CreateFromFile(
+                    fileStream,
+                    mapName: null,
+                    capacity: 0,
+                    access: MemoryMappedFileAccess.ReadWrite,
+                    inheritability: HandleInheritability.None,
+                    leaveOpen: false
+                );
+            }
+            catch
+            {
+                fileStream.Dispose();
+                throw;
+            }
         }
 
         Accessor = Mmf.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);

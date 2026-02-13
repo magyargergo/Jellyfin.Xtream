@@ -58,27 +58,27 @@ constexpr const char* kStreamer = "Streamer";
 namespace {
 
 inline context::TsDuckContext* toImpl(TsDuckContextHandle h) {
-    return reinterpret_cast<context::TsDuckContext*>(h);
+    return static_cast<context::TsDuckContext*>(static_cast<void*>(h));
 }
 
 inline TsDuckContextHandle toHandle(context::TsDuckContext* p) {
-    return reinterpret_cast<TsDuckContextHandle>(p);
+    return static_cast<TsDuckContextHandle>(static_cast<void*>(p));
 }
 
 inline context::TsDuckAnalyzer* toImpl(TsDuckAnalyzerHandle h) {
-    return reinterpret_cast<context::TsDuckAnalyzer*>(h);
+    return static_cast<context::TsDuckAnalyzer*>(static_cast<void*>(h));
 }
 
 inline TsDuckAnalyzerHandle toHandle(context::TsDuckAnalyzer* p) {
-    return reinterpret_cast<TsDuckAnalyzerHandle>(p);
+    return static_cast<TsDuckAnalyzerHandle>(static_cast<void*>(p));
 }
 
 inline streaming::StreamPipeline* toImpl(TsDuckStreamerHandle h) {
-    return reinterpret_cast<streaming::StreamPipeline*>(h);
+    return static_cast<streaming::StreamPipeline*>(static_cast<void*>(h));
 }
 
 inline TsDuckStreamerHandle toHandle(streaming::StreamPipeline* p) {
-    return reinterpret_cast<TsDuckStreamerHandle>(p);
+    return static_cast<TsDuckStreamerHandle>(static_cast<void*>(p));
 }
 
 }  // namespace
@@ -1352,11 +1352,11 @@ namespace {
 constexpr const char* kRegistry = "Registry";
 
 inline registry::ChannelRegistry* toImpl(ChannelRegistryHandle h) {
-    return reinterpret_cast<registry::ChannelRegistry*>(h);
+    return static_cast<registry::ChannelRegistry*>(static_cast<void*>(h));
 }
 
 inline ChannelRegistryHandle toHandle(registry::ChannelRegistry* p) {
-    return reinterpret_cast<ChannelRegistryHandle>(p);
+    return static_cast<ChannelRegistryHandle>(static_cast<void*>(p));
 }
 }  // namespace
 

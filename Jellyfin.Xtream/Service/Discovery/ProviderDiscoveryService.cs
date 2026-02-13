@@ -282,7 +282,6 @@ public sealed class ProviderDiscoveryService : IProviderDiscoveryService, IDispo
                 )
                 {
                     // Map pipeline progress to discovery progress
-                    var stageStats = pipelineProgress.StageStats;
                     var dp = new DiscoveryProgress
                     {
                         Phase = DiscoveryPhase.Testing,

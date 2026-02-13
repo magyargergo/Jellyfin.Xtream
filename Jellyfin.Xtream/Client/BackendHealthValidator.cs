@@ -560,8 +560,6 @@ public class BackendHealthValidator
         catch (HttpRequestException ex)
         {
             // Connection refused, DNS failure, etc.
-            var elapsedMs = (DateTime.UtcNow - startTime).TotalMilliseconds;
-
             _logger?.PluginLogWarning(
                 ex,
                 "Backend health check FAILED for {Host}:{Port} [attempt {Attempt}]: {Error}, InnerException: {InnerType}",

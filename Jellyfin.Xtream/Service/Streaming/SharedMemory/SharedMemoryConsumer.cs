@@ -96,52 +96,58 @@ public sealed class SharedMemoryConsumer : IDisposable
         // Open shared memory (platform-specific)
         _mmf = OpenSharedMemory(name);
 
-        // Create view accessor for the header first to read configuration
-        using var headerView = _mmf.CreateViewAccessor(0, HeaderSize, MemoryMappedFileAccess.ReadWrite);
+        try
+        {
+            // Create view accessor for the header first to read configuration
+            using var headerView = _mmf.CreateViewAccessor(0, HeaderSize, MemoryMappedFileAccess.ReadWrite);
 
-        // Read and validate header
-        headerView.Read(0, out SharedMemoryHeader header);
+            // Read and validate header
+            headerView.Read(0, out SharedMemoryHeader header);
 
-        if (header.Magic != ExpectedMagic)
+            if (header.Magic != ExpectedMagic)
+            {
+                throw new InvalidOperationException(
+                    $"Invalid shared memory magic: 0x{header.Magic:X16}, expected 0x{ExpectedMagic:X16}"
+                );
+            }
+
+            if (header.Version != ExpectedVersion)
+            {
+                throw new InvalidOperationException(
+                    $"Protocol version mismatch: got {header.Version}, expected {ExpectedVersion}"
+                );
+            }
+
+            _slotCount = header.SlotCount;
+            _slotSize = header.SlotSize;
+            _slotMask = _slotCount - 1;
+            _dataOffset = HeaderSize;
+            _totalSize = HeaderSize + (long)header.BufferCapacity;
+
+            // Create full view accessor
+            _accessor = _mmf.CreateViewAccessor(0, _totalSize, MemoryMappedFileAccess.ReadWrite);
+
+            // Acquire and cache the base pointer for the lifetime of this consumer.
+            // This eliminates repeated AcquirePointer/ReleasePointer overhead in hot paths.
+            unsafe
+            {
+                byte* ptr = null;
+                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+                _basePtr = ptr;
+            }
+
+            // Open signaling semaphore (optional - may not exist on all platforms)
+            _semaphore = TryOpenSemaphore(name);
+
+            // Set consumer ready flag
+            SetFlag(SharedMemoryStatusFlags.ConsumerReady);
+            WriteConsumerState(ConsumerState.Attached);
+        }
+        catch
         {
             _mmf.Dispose();
-            throw new InvalidOperationException(
-                $"Invalid shared memory magic: 0x{header.Magic:X16}, expected 0x{ExpectedMagic:X16}"
-            );
+            throw;
         }
-
-        if (header.Version != ExpectedVersion)
-        {
-            _mmf.Dispose();
-            throw new InvalidOperationException(
-                $"Protocol version mismatch: got {header.Version}, expected {ExpectedVersion}"
-            );
-        }
-
-        _slotCount = header.SlotCount;
-        _slotSize = header.SlotSize;
-        _slotMask = _slotCount - 1;
-        _dataOffset = HeaderSize;
-        _totalSize = HeaderSize + (long)header.BufferCapacity;
-
-        // Create full view accessor
-        _accessor = _mmf.CreateViewAccessor(0, _totalSize, MemoryMappedFileAccess.ReadWrite);
-
-        // Acquire and cache the base pointer for the lifetime of this consumer.
-        // This eliminates repeated AcquirePointer/ReleasePointer overhead in hot paths.
-        unsafe
-        {
-            byte* ptr = null;
-            _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-            _basePtr = ptr;
-        }
-
-        // Open signaling semaphore (optional - may not exist on all platforms)
-        _semaphore = TryOpenSemaphore(name);
-
-        // Set consumer ready flag
-        SetFlag(SharedMemoryStatusFlags.ConsumerReady);
-        WriteConsumerState(ConsumerState.Attached);
     }
 
     /// <summary>
@@ -887,15 +893,22 @@ public sealed class SharedMemoryConsumer : IDisposable
         }
 
         var fs = new FileStream(shmPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
-
-        return MemoryMappedFile.CreateFromFile(
-            fs,
-            mapName: null,
-            capacity: 0,
-            access: MemoryMappedFileAccess.ReadWrite,
-            inheritability: HandleInheritability.None,
-            leaveOpen: false
-        );
+        try
+        {
+            return MemoryMappedFile.CreateFromFile(
+                fs,
+                mapName: null,
+                capacity: 0,
+                access: MemoryMappedFileAccess.ReadWrite,
+                inheritability: HandleInheritability.None,
+                leaveOpen: false
+            );
+        }
+        catch
+        {
+            fs.Dispose();
+            throw;
+        }
     }
 
     private static Semaphore? TryOpenSemaphore(string name)
