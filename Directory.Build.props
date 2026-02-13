@@ -20,7 +20,7 @@
 
     <!-- Code analysis output -->
     <CodeAnalysisLogFile>$(MSBuildProjectDirectory)/bin/$(Configuration)/CodeAnalysis.sarif</CodeAnalysisLogFile>
-    <ErrorLog>$(CodeAnalysisLogFile)</ErrorLog>
+    <ErrorLog>$(CodeAnalysisLogFile),version=2</ErrorLog>
 
     <!-- Enforce code style on build -->
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
