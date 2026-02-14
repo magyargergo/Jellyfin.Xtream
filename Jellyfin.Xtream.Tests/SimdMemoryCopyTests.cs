@@ -234,6 +234,44 @@ public sealed class SimdMemoryCopyTests
 
     #endregion
 
+    #region CopyRemainder While-Loop Fix
+
+    /// <summary>
+    /// Tests CopyRemainder while-loop fix for sizes that leave 16-31 byte remainders
+    /// after SIMD vector processing. The bug was using <c>if (remaining >= 8)</c> instead
+    /// of <c>while (remaining >= 8)</c>, causing remainders between 16-31 bytes to only
+    /// process the first 8 bytes.
+    /// </summary>
+    [Theory]
+    [InlineData(17)] // 1 byte after 16-byte SSE vector - exercises 8-byte while loop
+    [InlineData(23)] // 7 bytes after 16-byte SSE vector
+    [InlineData(24)] // 8 bytes after 16-byte SSE vector - exactly one 8-byte iteration
+    [InlineData(47)] // 15 bytes after 32-byte AVX2 vector
+    [InlineData(48)] // 16 bytes after 32-byte AVX2 vector - two 8-byte iterations
+    [InlineData(55)] // 23 bytes after 32-byte AVX2 vector
+    [InlineData(127)] // Tests remainder after multiple vectors
+    [InlineData(188)] // MPEG-TS packet size - real-world remainder scenario
+    [InlineData(255)] // Max single-byte value - stress remainder path
+    [InlineData(376)] // 2x MPEG-TS packets - real-world streaming size
+    [InlineData(1316)] // 7x MPEG-TS packets - typical streaming chunk
+    public void Copy_RemainderSizes_AllBytesCorrectAfterWhileLoopFix(int length)
+    {
+        AssertCopyCorrectness(length, useNonTemporal: false);
+    }
+
+    /// <summary>
+    /// Tests non-temporal store path with a large 512KB buffer to exercise
+    /// the non-temporal code path and its remainder handling.
+    /// </summary>
+    [Fact]
+    public void Copy_LargeNonTemporalTransfer_AllBytesCorrect()
+    {
+        const int size = 512 * 1024; // 512KB - forces non-temporal path
+        AssertCopyCorrectness(size, useNonTemporal: true);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void AssertCopyCorrectness(int length, bool useNonTemporal)

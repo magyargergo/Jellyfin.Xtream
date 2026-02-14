@@ -15,7 +15,9 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Xtream.Service.Streaming.SharedMemory;
 using Xunit;
 
@@ -662,6 +664,131 @@ public sealed class SharedMemoryConsumerTests : IDisposable
         consumer.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() => consumer.GetStatistics());
+    }
+
+    #endregion
+
+    #region ErrorMessage Mapping Tests
+
+    /// <summary>
+    /// Verifies all error codes map to expected human-readable strings.
+    /// </summary>
+    [Theory]
+    [InlineData(SharedMemoryErrorCode.None, "")]
+    [InlineData(SharedMemoryErrorCode.InvalidMagic, "Invalid shared memory magic number")]
+    [InlineData(SharedMemoryErrorCode.VersionMismatch, "Protocol version mismatch")]
+    [InlineData(SharedMemoryErrorCode.MapFailed, "Failed to map shared memory")]
+    [InlineData(SharedMemoryErrorCode.SemaphoreCreateFailed, "Failed to create semaphore")]
+    [InlineData(SharedMemoryErrorCode.ProducerDisconnected, "Producer disconnected")]
+    [InlineData(SharedMemoryErrorCode.ConsumerDisconnected, "Consumer disconnected")]
+    [InlineData(SharedMemoryErrorCode.BufferOverflow, "Buffer overflow")]
+    [InlineData(SharedMemoryErrorCode.NetworkError, "Network error")]
+    [InlineData(SharedMemoryErrorCode.InternalError, "Internal error")]
+    public void ErrorMessage_AllCodes_MapToExpectedStrings(SharedMemoryErrorCode code, string expected)
+    {
+        CreateSharedMemory();
+        SetErrorCode(code);
+
+        using var consumer = new SharedMemoryConsumer(_testName);
+
+        Assert.Equal(expected, consumer.ErrorMessage);
+    }
+
+    /// <summary>
+    /// Verifies unknown error code returns a descriptive message.
+    /// </summary>
+    [Fact]
+    public void ErrorMessage_UnknownCode_ReturnsDescriptiveMessage()
+    {
+        CreateSharedMemory();
+        SetErrorCode((SharedMemoryErrorCode)99);
+
+        using var consumer = new SharedMemoryConsumer(_testName);
+
+        Assert.StartsWith("Unknown error", consumer.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    #endregion
+
+    #region Concurrent Flag Consumption Tests
+
+    /// <summary>
+    /// Verifies that when multiple threads race to consume the overflow flag,
+    /// exactly one succeeds due to atomic test-and-clear semantics.
+    /// </summary>
+    [Fact]
+    public async Task ConsumeOverflow_ConcurrentChecks_ExactlyOneSucceeds()
+    {
+        CreateSharedMemory();
+        SetFlag(SharedMemoryStatusFlags.Overflow);
+
+        var consumer = new SharedMemoryConsumer(_testName);
+        try
+        {
+            var tasks = Enumerable.Range(0, 10).Select(_ => Task.Run(() => consumer.ConsumeOverflow())).ToArray();
+
+            await Task.WhenAll(tasks);
+
+            var trueCount = tasks.Count(t => t.Result);
+
+            Assert.Equal(1, trueCount);
+        }
+        finally
+        {
+            consumer.Dispose();
+        }
+    }
+
+    #endregion
+
+    #region Disposal Guard Tests
+
+    /// <summary>
+    /// Verifies ConsumeOverflow throws ObjectDisposedException after Dispose.
+    /// </summary>
+    [Fact]
+    public void ConsumeOverflow_AfterDisposal_ThrowsObjectDisposedException()
+    {
+#pragma warning disable IDISP016, IDISP017
+        CreateSharedMemory();
+
+        var consumer = new SharedMemoryConsumer(_testName);
+        consumer.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() => consumer.ConsumeOverflow());
+#pragma warning restore IDISP016, IDISP017
+    }
+
+    /// <summary>
+    /// Verifies ConsumeDiscontinuity throws ObjectDisposedException after Dispose.
+    /// </summary>
+    [Fact]
+    public void ConsumeDiscontinuity_AfterDisposal_ThrowsObjectDisposedException()
+    {
+#pragma warning disable IDISP016, IDISP017
+        CreateSharedMemory();
+
+        var consumer = new SharedMemoryConsumer(_testName);
+        consumer.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() => consumer.ConsumeDiscontinuity());
+#pragma warning restore IDISP016, IDISP017
+    }
+
+    /// <summary>
+    /// Verifies ErrorMessage throws ObjectDisposedException after Dispose.
+    /// </summary>
+    [Fact]
+    public void ErrorMessage_AfterDisposal_ThrowsObjectDisposedException()
+    {
+#pragma warning disable IDISP016, IDISP017
+        CreateSharedMemory();
+
+        var consumer = new SharedMemoryConsumer(_testName);
+        consumer.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() => _ = consumer.ErrorMessage);
+#pragma warning restore IDISP016, IDISP017
     }
 
     #endregion

@@ -884,6 +884,168 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
     }
 
     // =========================================================================
+    // Test 7: Error Code Mapping via Native Producer
+    // =========================================================================
+
+    /// <summary>
+    /// Verifies that every <see cref="SharedMemoryErrorCode"/> value (0-9) set by
+    /// the native C++ producer maps to the expected fixed string on the managed side.
+    /// This is the E2E counterpart of the unit test that validates the §2.15 fix
+    /// for torn reads on the non-atomic char[48] error_message field.
+    /// </summary>
+    [SkippableFact]
+    public async Task ErrorCodeMapping_AllCodesViaNative_MapToFixedStrings()
+    {
+        // Arrange
+        var name = GenerateUniqueName();
+        var producer = TryCreateNativeProducer(name);
+        SkipIfNativeUnavailable(producer);
+
+        using var consumer = new SharedMemoryConsumer(name);
+        _disposables.Add(consumer);
+
+        var expectedMappings = new (SharedMemoryErrorCode Code, string Message)[]
+        {
+            (SharedMemoryErrorCode.None, string.Empty),
+            (SharedMemoryErrorCode.InvalidMagic, "Invalid shared memory magic number"),
+            (SharedMemoryErrorCode.VersionMismatch, "Protocol version mismatch"),
+            (SharedMemoryErrorCode.MapFailed, "Failed to map shared memory"),
+            (SharedMemoryErrorCode.SemaphoreCreateFailed, "Failed to create semaphore"),
+            (SharedMemoryErrorCode.ProducerDisconnected, "Producer disconnected"),
+            (SharedMemoryErrorCode.ConsumerDisconnected, "Consumer disconnected"),
+            (SharedMemoryErrorCode.BufferOverflow, "Buffer overflow"),
+            (SharedMemoryErrorCode.NetworkError, "Network error"),
+            (SharedMemoryErrorCode.InternalError, "Internal error"),
+        };
+
+        // Act & Assert - set each error code via native producer and verify consumer mapping
+        foreach (var (code, expectedMessage) in expectedMappings)
+        {
+            producer!.SetError((uint)code, "ignored_by_consumer");
+            await Task.Delay(10); // Allow atomic write to propagate
+
+            var actualCode = consumer.ErrorCode;
+            var actualMessage = consumer.ErrorMessage;
+
+            _output.WriteLine(
+                $"Code {(uint)code} ({code}): expected=\"{expectedMessage}\", actual=\"{actualMessage}\""
+            );
+
+            Assert.Equal(code, actualCode);
+            Assert.True(
+                string.Equals(expectedMessage, actualMessage, StringComparison.Ordinal),
+                $"Error code {code}: expected \"{expectedMessage}\" but got \"{actualMessage}\""
+            );
+        }
+
+        _output.WriteLine("All 10 error codes mapped correctly via native producer");
+    }
+
+    /// <summary>
+    /// Verifies that concurrent error code changes from the native C++ producer
+    /// never produce torn reads on the managed consumer side. The consumer should
+    /// always observe a valid fixed string, never a partial or corrupted message.
+    /// </summary>
+    [SkippableFact]
+    public async Task ErrorCodeMapping_ConcurrentNativeChanges_NoTornReads()
+    {
+        // Arrange
+        var name = GenerateUniqueName();
+        var producer = TryCreateNativeProducer(name);
+        SkipIfNativeUnavailable(producer);
+
+        using var consumer = new SharedMemoryConsumer(name);
+        _disposables.Add(consumer);
+
+        var validMessages = new HashSet<string>(StringComparer.Ordinal)
+        {
+            string.Empty,
+            "Invalid shared memory magic number",
+            "Protocol version mismatch",
+            "Failed to map shared memory",
+            "Failed to create semaphore",
+            "Producer disconnected",
+            "Consumer disconnected",
+            "Buffer overflow",
+            "Network error",
+            "Internal error",
+        };
+
+        var errorCodes = Enum.GetValues<SharedMemoryErrorCode>();
+        const int durationMs = 2000;
+        const int producerIntervalMs = 1;
+
+        int messagesRead = 0;
+        int invalidMessages = 0;
+        string? firstInvalidMessage = null;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(durationMs + 5000));
+
+        // Act - producer cycles through error codes rapidly
+        var producerTask = Task.Run(
+            async () =>
+            {
+                int iteration = 0;
+                var sw = Stopwatch.StartNew();
+
+                while (sw.ElapsedMilliseconds < durationMs && !cts.Token.IsCancellationRequested)
+                {
+                    var code = errorCodes[iteration % errorCodes.Length];
+                    producer!.SetError((uint)code, "ignored");
+                    iteration++;
+                    await Task.Delay(producerIntervalMs, cts.Token);
+                }
+
+                return iteration;
+            },
+            cts.Token
+        );
+
+        // Consumer reads messages concurrently
+        var consumerTask = Task.Run(
+            async () =>
+            {
+                var sw = Stopwatch.StartNew();
+
+                while (sw.ElapsedMilliseconds < durationMs && !cts.Token.IsCancellationRequested)
+                {
+                    var message = consumer.ErrorMessage;
+                    Interlocked.Increment(ref messagesRead);
+
+                    if (!validMessages.Contains(message))
+                    {
+                        Interlocked.Increment(ref invalidMessages);
+                        Interlocked.CompareExchange(ref firstInvalidMessage, message, null);
+                    }
+
+                    await Task.Yield();
+                }
+            },
+            cts.Token
+        );
+
+        await Task.WhenAll(producerTask, consumerTask);
+
+        int producerIterations = await producerTask;
+
+        // Assert
+        _output.WriteLine($"Producer iterations: {producerIterations}");
+        _output.WriteLine($"Consumer messages read: {messagesRead}");
+        _output.WriteLine($"Invalid messages: {invalidMessages}");
+
+        if (firstInvalidMessage is not null)
+        {
+            _output.WriteLine($"First invalid message: \"{firstInvalidMessage}\"");
+        }
+
+        Assert.True(messagesRead > 0, "Consumer should have read at least one message");
+        Assert.True(producerIterations > 0, "Producer should have written at least one error code");
+        Assert.Equal(0, invalidMessages);
+
+        _output.WriteLine("No torn reads detected during concurrent native error code changes");
+    }
+
+    // =========================================================================
     // Helper Methods
     // =========================================================================
 

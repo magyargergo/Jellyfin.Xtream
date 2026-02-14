@@ -1015,6 +1015,281 @@ public sealed class SharedMemoryTests : IDisposable
         int expectedMinimum = largeData.Length - smallBuffer.Length;
         Assert.True(read2 >= expectedMinimum, $"Second read {read2} should be at least {expectedMinimum}");
     }
+
+    // =========================================================================
+    // PR #1 Remediation Regression Tests
+    // =========================================================================
+
+    /// <summary>
+    /// Regression test for section 2.15: verifies that concurrent error code changes
+    /// never produce torn or garbled error messages. The consumer maps atomic error_code
+    /// values to fixed strings, so every read must return a known message.
+    /// </summary>
+    [Fact]
+    public async Task ErrorCodeMapping_ConcurrentChanges_NoTornReads()
+    {
+        // Arrange
+        using var producer = CreateProducer();
+        using var consumer = new SharedMemoryConsumer(producer.Name);
+
+        var validMessages = new HashSet<string>(StringComparer.Ordinal)
+        {
+            string.Empty,
+            "Invalid shared memory magic number",
+            "Protocol version mismatch",
+            "Failed to map shared memory",
+            "Failed to create semaphore",
+            "Producer disconnected",
+            "Consumer disconnected",
+            "Buffer overflow",
+            "Network error",
+            "Internal error",
+        };
+
+        var allErrorCodes = Enum.GetValues<SharedMemoryErrorCode>();
+        var invalidMessages = new List<string>();
+        long readCount = 0;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+        // Act - producer rapidly cycles through error codes
+        var writerTask = Task.Run(
+            () =>
+            {
+                int index = 0;
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    producer.SetErrorCodeDirect(allErrorCodes[index % allErrorCodes.Length]);
+                    index++;
+                }
+            },
+            cts.Token
+        );
+
+        // Consumer reads ErrorMessage concurrently
+        var readerTask = Task.Run(
+            () =>
+            {
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    string message = consumer.ErrorMessage;
+                    Interlocked.Increment(ref readCount);
+
+                    bool isValid =
+                        validMessages.Contains(message)
+                        || message.StartsWith("Unknown error", StringComparison.Ordinal);
+
+                    if (!isValid)
+                    {
+                        lock (invalidMessages)
+                        {
+                            invalidMessages.Add(message);
+                        }
+                    }
+                }
+            },
+            cts.Token
+        );
+
+        try
+        {
+            await Task.WhenAll(writerTask, readerTask);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when CTS fires
+        }
+
+        // Assert
+        _output.WriteLine($"Total reads: {Interlocked.Read(ref readCount)}");
+        _output.WriteLine($"Invalid messages: {invalidMessages.Count}");
+
+        foreach (var msg in invalidMessages.Take(10))
+        {
+            _output.WriteLine($"  Invalid: \"{msg}\"");
+        }
+
+        Assert.True(
+            Interlocked.Read(ref readCount) > 100,
+            $"Should have performed many reads, got {Interlocked.Read(ref readCount)}"
+        );
+        Assert.Empty(invalidMessages);
+    }
+
+    /// <summary>
+    /// Verifies the SPSC (single-producer, single-consumer) contract: the consumer
+    /// advances read_position, and the producer never modifies it during normal operation.
+    /// </summary>
+    [Fact]
+    public async Task SpscContract_ReadPositionUpdatedByConsumer_NotProducer()
+    {
+        // Arrange
+        using var producer = CreateProducer();
+        var sourceData = CreateGenerator().GenerateChunk(50);
+
+        // Act - write data
+        producer.Write(sourceData);
+        producer.SignalDataAvailable();
+
+        using var consumer = new SharedMemoryConsumer(producer.Name);
+
+        // Read position before consumer reads
+        ulong readPosBefore = producer.ReadReadPosition();
+        _output.WriteLine($"Read position before consumer read: {readPosBefore}");
+
+        // Consumer reads data
+        var buffer = new byte[sourceData.Length];
+        int bytesRead = consumer.Read(buffer);
+
+        // Read position after consumer reads
+        ulong readPosAfter = producer.ReadReadPosition();
+        _output.WriteLine($"Read position after consumer read: {readPosAfter}");
+        _output.WriteLine($"Bytes read: {bytesRead}");
+
+        Assert.True(
+            readPosAfter > readPosBefore,
+            $"Read position should advance after consumer read: before={readPosBefore}, after={readPosAfter}"
+        );
+
+        // Write more data - producer should NOT touch read_position
+        ulong readPosBeforeSecondWrite = producer.ReadReadPosition();
+        var moreData = CreateGenerator().GenerateChunk(50);
+        producer.Write(moreData);
+        producer.SignalDataAvailable();
+
+        // Small delay to ensure write completes
+        await Task.Delay(10);
+
+        ulong readPosAfterSecondWrite = producer.ReadReadPosition();
+        _output.WriteLine($"Read position before second write: {readPosBeforeSecondWrite}");
+        _output.WriteLine($"Read position after second write: {readPosAfterSecondWrite}");
+
+        Assert.Equal(readPosBeforeSecondWrite, readPosAfterSecondWrite);
+    }
+
+    /// <summary>
+    /// Verifies section 2.6 fix: semaphore wait with a short timeout returns promptly
+    /// rather than blocking for the full duration, enabling lower-latency streaming.
+    /// </summary>
+    [Fact]
+    public async Task SemaphoreWait_ShortTimeout_ReturnsPromptly()
+    {
+        // Arrange - create consumer with no producer writing data
+        using var producer = CreateProducer();
+        using var consumer = new SharedMemoryConsumer(producer.Name);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+
+        // Act - WaitForData should return false when timeout expires
+        var sw = Stopwatch.StartNew();
+        bool result = await Task.Run(() => consumer.WaitForData(TimeSpan.FromMilliseconds(200), cts.Token));
+        sw.Stop();
+
+        // Assert
+        _output.WriteLine($"WaitForData returned: {result} in {sw.ElapsedMilliseconds}ms");
+
+        Assert.False(result, "WaitForData should return false when no data and timeout expires");
+        Assert.True(
+            sw.ElapsedMilliseconds < 500,
+            $"WaitForData should return within 500ms, took {sw.ElapsedMilliseconds}ms"
+        );
+    }
+
+    /// <summary>
+    /// Verifies that after a buffer overflow, the consumer can recover and continue
+    /// reading valid data with proper MPEG-TS sync bytes.
+    /// </summary>
+    [Fact]
+    public void OverflowRecovery_AfterOverflow_DataIntegrityMaintained()
+    {
+        // Arrange - small buffer to easily cause overflow
+        const int slotCount = 16;
+        const int slotSize = TsPacketSize * 7; // 1316 bytes per slot
+        using var producer = CreateProducer(slotCount: slotCount, slotSize: slotSize);
+        using var consumer = new SharedMemoryConsumer(producer.Name);
+
+        int bufferCapacity = (slotCount - 1) * slotSize;
+
+        // Act - write enough data to overflow without consumer reading
+        var generator = CreateGenerator();
+        int packetsToOverflow = ((bufferCapacity / TsPacketSize) + 1) * 3;
+        var overflowData = generator.GenerateChunk(packetsToOverflow);
+        producer.Write(overflowData);
+
+        // Consume overflow flag
+        bool overflowOccurred = consumer.ConsumeOverflow();
+        _output.WriteLine($"Overflow occurred: {overflowOccurred}");
+        Assert.True(overflowOccurred, "Should have detected overflow");
+
+        // Write fresh data after overflow
+        var freshData = CreateGenerator().GenerateChunk(50);
+        producer.Write(freshData);
+        producer.SignalDataAvailable();
+
+        // Read all available data
+        var readBuffer = new byte[bufferCapacity + slotSize];
+        int totalRead = 0;
+        int read;
+        while ((read = consumer.Read(readBuffer.AsSpan(totalRead, readBuffer.Length - totalRead))) > 0)
+        {
+            totalRead += read;
+        }
+
+        _output.WriteLine($"Total read after recovery: {totalRead}");
+
+        // Assert - verify MPEG-TS sync byte integrity
+        int packetCount = totalRead / TsPacketSize;
+        int invalidSyncCount = 0;
+        for (int i = 0; i < packetCount; i++)
+        {
+            byte syncByte = readBuffer[i * TsPacketSize];
+            if (syncByte != 0x47 && syncByte != 0xFF)
+            {
+                invalidSyncCount++;
+                _output.WriteLine($"Invalid sync byte 0x{syncByte:X2} at packet {i}");
+            }
+        }
+
+        _output.WriteLine($"Packets read: {packetCount}, Invalid sync: {invalidSyncCount}");
+        Assert.True(totalRead > 0, "Should have read data after overflow recovery");
+        Assert.Equal(0, invalidSyncCount);
+    }
+
+    /// <summary>
+    /// Verifies that overflow and discontinuity flags can be set simultaneously
+    /// and consumed independently without interfering with each other.
+    /// </summary>
+    [Fact]
+    public void MultipleFlags_SetSimultaneously_AllConsumedIndependently()
+    {
+        // Arrange
+        using var producer = CreateProducer();
+        using var consumer = new SharedMemoryConsumer(producer.Name);
+
+        // Act - set both flags simultaneously
+        producer.SetOverflowFlag();
+        producer.SetDiscontinuity();
+
+        // Assert - each flag consumed independently
+        bool overflowFirst = consumer.ConsumeOverflow();
+        bool discontinuityFirst = consumer.ConsumeDiscontinuity();
+
+        _output.WriteLine($"Overflow consumed: {overflowFirst}");
+        _output.WriteLine($"Discontinuity consumed: {discontinuityFirst}");
+
+        Assert.True(overflowFirst, "Overflow flag should be set and consumable");
+        Assert.True(discontinuityFirst, "Discontinuity flag should be set and consumable");
+
+        // Subsequent calls should return false - flags were cleared
+        bool overflowSecond = consumer.ConsumeOverflow();
+        bool discontinuitySecond = consumer.ConsumeDiscontinuity();
+
+        _output.WriteLine($"Overflow second consume: {overflowSecond}");
+        _output.WriteLine($"Discontinuity second consume: {discontinuitySecond}");
+
+        Assert.False(overflowSecond, "Overflow should be cleared after first consume");
+        Assert.False(discontinuitySecond, "Discontinuity should be cleared after first consume");
+    }
 }
 
 /// <summary>
@@ -1302,6 +1577,78 @@ internal sealed class SharedMemoryTestProducer : IDisposable
             {
                 _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
                 Interlocked.Or(ref Unsafe.AsRef<int>(ptr + FlagsOffset), (int)FlagDiscontinuity);
+            }
+            finally
+            {
+                if (ptr != null)
+                {
+                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Directly writes the error code without setting the Error flag or message.
+    /// Used for concurrency regression testing of the torn-read fix (section 2.15).
+    /// </summary>
+    public void SetErrorCodeDirect(SharedMemoryErrorCode code)
+    {
+        unsafe
+        {
+            byte* ptr = null;
+            try
+            {
+                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+                Volatile.Write(ref Unsafe.AsRef<uint>(ptr + ErrorCodeOffset), (uint)code);
+            }
+            finally
+            {
+                if (ptr != null)
+                {
+                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads the current read_position from the shared memory header.
+    /// Used to verify SPSC contract: only the consumer should advance this value.
+    /// </summary>
+    public ulong ReadReadPosition()
+    {
+        unsafe
+        {
+            byte* ptr = null;
+            try
+            {
+                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+                return Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
+            }
+            finally
+            {
+                if (ptr != null)
+                {
+                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Directly sets the overflow flag without writing data.
+    /// Used for testing independent flag consumption.
+    /// </summary>
+    public void SetOverflowFlag()
+    {
+        unsafe
+        {
+            byte* ptr = null;
+            try
+            {
+                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+                Interlocked.Or(ref Unsafe.AsRef<int>(ptr + FlagsOffset), (int)FlagOverflow);
             }
             finally
             {
