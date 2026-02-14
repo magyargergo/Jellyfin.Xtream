@@ -53,8 +53,8 @@ public sealed class SharedMemoryConsumer : IDisposable
     /// <summary>TS packet size.</summary>
     private const int TsPacketSize = 188;
 
-    /// <summary>Maximum length of error messages stored in shared memory (matches C++ error_message[48]).</summary>
-    private const int ErrorMessageMaxLength = 48;
+    // ErrorMessageMaxLength removed — error messages are now derived from atomic error_code,
+    // avoiding torn reads from the non-atomic char[48] field in shared memory.
 
     // Field offsets in shared memory (must match C++ layout exactly).
     // Validated at startup by the static constructor against SharedMemoryHeader field offsets.
@@ -71,7 +71,8 @@ public sealed class SharedMemoryConsumer : IDisposable
     private const int ReadWrapCountOffset = 0xB0;
     private const int FlagsOffset = 0xC0;
     private const int ErrorCodeOffset = 0xC4;
-    private const int ErrorMessageOffset = 0xD0;
+
+    // ErrorMessageOffset (0xD0) removed — no longer reading raw error_message from shared memory.
 
     /// <summary>
     /// Validates that hardcoded offsets match the SharedMemoryHeader struct layout.
@@ -187,6 +188,16 @@ public sealed class SharedMemoryConsumer : IDisposable
         }
         catch
         {
+            // Release pointer if it was acquired before the failure
+            unsafe
+            {
+                if (_basePtr != null)
+                {
+                    _accessor?.SafeMemoryMappedViewHandle.ReleasePointer();
+                }
+            }
+
+            _accessor?.Dispose();
             _mmf.Dispose();
             throw;
         }
@@ -258,22 +269,29 @@ public sealed class SharedMemoryConsumer : IDisposable
     }
 
     /// <summary>
-    /// Gets the current error message.
+    /// Gets a human-readable error message derived from the atomic error code.
+    /// This avoids torn reads from the non-atomic char[48] error_message field
+    /// in shared memory by mapping the error code to a string on the managed side.
     /// </summary>
     public string ErrorMessage
     {
         get
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            Span<byte> buffer = stackalloc byte[ErrorMessageMaxLength];
-            ReadBytes(ErrorMessageOffset, buffer);
-            int nullIndex = buffer.IndexOf((byte)0);
-            if (nullIndex >= 0)
+            return ErrorCode switch
             {
-                buffer = buffer[..nullIndex];
-            }
-
-            return Encoding.UTF8.GetString(buffer);
+                SharedMemoryErrorCode.None => string.Empty,
+                SharedMemoryErrorCode.InvalidMagic => "Invalid shared memory magic number",
+                SharedMemoryErrorCode.VersionMismatch => "Protocol version mismatch",
+                SharedMemoryErrorCode.MapFailed => "Failed to map shared memory",
+                SharedMemoryErrorCode.SemaphoreCreateFailed => "Failed to create semaphore",
+                SharedMemoryErrorCode.ProducerDisconnected => "Producer disconnected",
+                SharedMemoryErrorCode.ConsumerDisconnected => "Consumer disconnected",
+                SharedMemoryErrorCode.BufferOverflow => "Buffer overflow",
+                SharedMemoryErrorCode.NetworkError => "Network error",
+                SharedMemoryErrorCode.InternalError => "Internal error",
+                _ => $"Unknown error (code={ErrorCode})",
+            };
         }
     }
 
@@ -722,7 +740,7 @@ public sealed class SharedMemoryConsumer : IDisposable
             while (!cts.Token.IsCancellationRequested)
             {
                 // Try to acquire semaphore with short timeout
-                if (_semaphore!.WaitOne(100))
+                if (_semaphore!.WaitOne(20))
                 {
                     return true;
                 }
@@ -846,8 +864,13 @@ public sealed class SharedMemoryConsumer : IDisposable
                 return Semaphore.OpenExisting(name + "_sem");
             }
 
-            // On Linux/macOS, named semaphores work differently
-            // For now, fall back to spin-wait on non-Windows
+            // On Linux/macOS, .NET's Semaphore class doesn't support POSIX named semaphores.
+            // Fall back to spin-wait. The SpinWaitForData method uses SpinWait + Thread.Sleep(1)
+            // which provides reasonable latency (~1-2ms) for streaming workloads.
+            //
+            // A future optimization could use P/Invoke to sem_open/sem_timedwait for sub-ms
+            // wake-up latency, but the current approach avoids platform-specific native interop
+            // complexity in the managed consumer.
             return null;
         }
         catch

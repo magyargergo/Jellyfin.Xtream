@@ -482,9 +482,9 @@ void SharedMemoryProducer::set_error(SharedMemoryError code, std::string_view me
     header_->error_code.store(static_cast<std::uint32_t>(code), std::memory_order_release);
     header_->error_timestamp.store(get_timestamp_ns(), std::memory_order_release);
 
-    std::size_t len = std::min(message.size(), sizeof(header_->error_message) - 1);
-    std::memcpy(header_->error_message, message.data(), len);
-    header_->error_message[len] = '\0';
+    // NOTE: error_message field is kept for ABI stability but no longer written.
+    // The consumer maps error_code to a human-readable string on the C# side,
+    // avoiding torn reads from non-atomic memcpy of char[48].
 
     header_->flags.fetch_or(
         static_cast<std::uint32_t>(SharedMemoryFlags::Error),
