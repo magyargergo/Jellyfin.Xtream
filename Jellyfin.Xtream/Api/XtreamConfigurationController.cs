@@ -35,6 +35,7 @@ namespace Jellyfin.Xtream.Api;
 [Produces("application/json")]
 public class XtreamConfigurationController(ILogger<XtreamConfigurationController> logger) : ControllerBase
 {
+    private static readonly object ConfigLock = new();
     private readonly ILogger<XtreamConfigurationController> _logger = logger;
 
     // =========================================================================
@@ -72,20 +73,24 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Proxy")]
     public ActionResult<object> UpdateProxyConfig([FromBody] ProxyConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.EnableProxy = request.Enabled;
-        config.ProxyAddress = request.Address;
-        config.ProxyPort = request.Port;
-        config.ProxyUsername = request.Username;
-        config.ProxyPassword = request.Password;
-        config.ProxyBypassLocal = request.BypassLocal;
-
-        if (Enum.TryParse<Configuration.ProxyType>(request.Type, ignoreCase: true, out var proxyType))
+        lock (ConfigLock)
         {
-            config.ProxyType = proxyType;
+            var config = Plugin.Instance.Configuration;
+            config.EnableProxy = request.Enabled;
+            config.ProxyAddress = request.Address;
+            config.ProxyPort = request.Port;
+            config.ProxyUsername = request.Username;
+            config.ProxyPassword = request.Password;
+            config.ProxyBypassLocal = request.BypassLocal;
+
+            if (Enum.TryParse<Configuration.ProxyType>(request.Type, ignoreCase: true, out var proxyType))
+            {
+                config.ProxyType = proxyType;
+            }
+
+            Plugin.Instance.SaveConfiguration();
         }
 
-        Plugin.Instance.SaveConfiguration();
         _logger.PluginLogInformation("Proxy configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Proxy");
         return Ok(new { success = true, message = "Proxy configuration updated" });
@@ -124,13 +129,17 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Epg")]
     public ActionResult<object> UpdateEpgConfig([FromBody] EpgConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.EnableExternalEpg = request.EnableExternalEpg;
-        config.ExternalEpgUrl = request.ExternalEpgUrl;
-        config.ExternalEpgLogoBaseUrl = request.ExternalEpgLogoBaseUrl;
-        config.UseExternalLogoFallback = request.UseExternalLogoFallback;
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.EnableExternalEpg = request.EnableExternalEpg;
+            config.ExternalEpgUrl = request.ExternalEpgUrl;
+            config.ExternalEpgLogoBaseUrl = request.ExternalEpgLogoBaseUrl;
+            config.UseExternalLogoFallback = request.UseExternalLogoFallback;
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("EPG configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Epg");
         return Ok(new { success = true, message = "EPG configuration updated" });
@@ -153,7 +162,7 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
             new
             {
                 enabled = config.EnableDiscordNotifications,
-                webhookUrl = config.DiscordWebhookUrl,
+                webhookConfigured = !string.IsNullOrWhiteSpace(config.DiscordWebhookUrl),
                 notifyOnBufferOverflow = config.NotifyOnBufferOverflow,
                 notifyOnStreamStart = config.NotifyOnStreamStart,
                 notifyOnStreamError = config.NotifyOnStreamError,
@@ -182,21 +191,32 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
             return BadRequest(XtreamControllerHelpers.CreateError(ErrorCodes.ValidationFailed, urlError));
         }
 
-        var config = Plugin.Instance.Configuration;
-        config.EnableDiscordNotifications = request.Enabled;
-        config.DiscordWebhookUrl = request.WebhookUrl;
-        config.NotifyOnBufferOverflow = request.NotifyOnBufferOverflow;
-        config.NotifyOnStreamStart = request.NotifyOnStreamStart;
-        config.NotifyOnStreamError = request.NotifyOnStreamError;
-        config.NotifyOnStreamKilled = request.NotifyOnStreamKilled;
-        config.NotifyOnStreamQualityViolation = request.NotifyOnStreamQualityViolation;
-        config.NotifyOnAVDrift = request.NotifyOnAVDrift;
-        config.NotifyOnAudioSyncCorrection = request.NotifyOnAudioSyncCorrection;
-        config.NotifyOnEpgRefresh = request.NotifyOnEpgRefresh;
-        config.NotifyOnConnectionLimitChange = request.NotifyOnConnectionLimitChange;
-        config.NotifyOnProviderBlacklist = request.NotifyOnProviderBlacklist;
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.EnableDiscordNotifications = request.Enabled;
 
-        Plugin.Instance.SaveConfiguration();
+            // Only update webhook URL if a new one is provided — prevents
+            // GET/PUT round-trip from overwriting the stored URL with empty/null.
+            if (!string.IsNullOrWhiteSpace(request.WebhookUrl))
+            {
+                config.DiscordWebhookUrl = request.WebhookUrl;
+            }
+
+            config.NotifyOnBufferOverflow = request.NotifyOnBufferOverflow;
+            config.NotifyOnStreamStart = request.NotifyOnStreamStart;
+            config.NotifyOnStreamError = request.NotifyOnStreamError;
+            config.NotifyOnStreamKilled = request.NotifyOnStreamKilled;
+            config.NotifyOnStreamQualityViolation = request.NotifyOnStreamQualityViolation;
+            config.NotifyOnAVDrift = request.NotifyOnAVDrift;
+            config.NotifyOnAudioSyncCorrection = request.NotifyOnAudioSyncCorrection;
+            config.NotifyOnEpgRefresh = request.NotifyOnEpgRefresh;
+            config.NotifyOnConnectionLimitChange = request.NotifyOnConnectionLimitChange;
+            config.NotifyOnProviderBlacklist = request.NotifyOnProviderBlacklist;
+
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Discord configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Discord");
         return Ok(new { success = true, message = "Discord configuration updated" });
@@ -238,18 +258,22 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Timeouts")]
     public ActionResult<object> UpdateTimeoutConfig([FromBody] TimeoutConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.StreamConnectTimeoutSeconds = Math.Clamp(request.ConnectTimeoutSeconds, 1, 30);
-        config.StreamFirstByteTimeoutSeconds = Math.Clamp(request.FirstByteTimeoutSeconds, 1, 30);
-        config.StreamResponseHeadersTimeoutSeconds = Math.Clamp(request.ResponseHeadersTimeoutSeconds, 5, 30);
-        config.StreamDataStallTimeoutSeconds = Math.Clamp(request.DataStallTimeoutSeconds, 5, 60);
-        config.FailoverBudgetSeconds = Math.Clamp(request.FailoverBudgetSeconds, 5, 30);
-        config.ProviderBlacklistSeconds = Math.Clamp(request.ProviderBlacklistSeconds, 10, 300);
-        config.MaxFailoverAttempts = Math.Clamp(request.MaxFailoverAttempts, 1, 10);
-        config.DnsTimeoutSeconds = Math.Clamp(request.DnsTimeoutSeconds, 1, 30);
-        config.TcpKeepaliveEnabled = request.TcpKeepaliveEnabled;
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.StreamConnectTimeoutSeconds = Math.Clamp(request.ConnectTimeoutSeconds, 1, 30);
+            config.StreamFirstByteTimeoutSeconds = Math.Clamp(request.FirstByteTimeoutSeconds, 1, 30);
+            config.StreamResponseHeadersTimeoutSeconds = Math.Clamp(request.ResponseHeadersTimeoutSeconds, 5, 30);
+            config.StreamDataStallTimeoutSeconds = Math.Clamp(request.DataStallTimeoutSeconds, 5, 60);
+            config.FailoverBudgetSeconds = Math.Clamp(request.FailoverBudgetSeconds, 5, 30);
+            config.ProviderBlacklistSeconds = Math.Clamp(request.ProviderBlacklistSeconds, 10, 300);
+            config.MaxFailoverAttempts = Math.Clamp(request.MaxFailoverAttempts, 1, 10);
+            config.DnsTimeoutSeconds = Math.Clamp(request.DnsTimeoutSeconds, 1, 30);
+            config.TcpKeepaliveEnabled = request.TcpKeepaliveEnabled;
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Timeout configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Timeouts");
         return Ok(new { success = true, message = "Timeout configuration updated" });
@@ -288,13 +312,17 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Health")]
     public ActionResult<object> UpdateHealthConfig([FromBody] HealthConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.EnableP2CLoadBalancing = request.EnableP2C;
-        config.EnableOutlierDetection = request.EnableOutlierDetection;
-        config.OutlierStddevFactor = Math.Clamp(request.OutlierStddevFactor, 0.5, 5.0);
-        config.ProbationSuccessThreshold = Math.Clamp(request.ProbationSuccessThreshold, 1, 10);
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.EnableP2CLoadBalancing = request.EnableP2C;
+            config.EnableOutlierDetection = request.EnableOutlierDetection;
+            config.OutlierStddevFactor = Math.Clamp(request.OutlierStddevFactor, 0.5, 5.0);
+            config.ProbationSuccessThreshold = Math.Clamp(request.ProbationSuccessThreshold, 1, 10);
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Health configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Health");
         return Ok(new { success = true, message = "Health configuration updated" });
@@ -332,12 +360,16 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/UserAgent")]
     public ActionResult<object> UpdateUserAgentConfig([FromBody] UserAgentConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.CustomUserAgent = request.CustomUserAgent;
-        config.EnableUserAgentRotation = request.EnableRotation;
-        config.UseRandomUserAgent = request.UseRandom;
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.CustomUserAgent = request.CustomUserAgent;
+            config.EnableUserAgentRotation = request.EnableRotation;
+            config.UseRandomUserAgent = request.UseRandom;
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("User-Agent configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("UserAgent");
         return Ok(new { success = true, message = "User-Agent configuration updated" });
@@ -375,12 +407,16 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/RateLimiting")]
     public ActionResult<object> UpdateRateLimitConfig([FromBody] RateLimitConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.EnableRateLimiting = request.Enabled;
-        config.RequestsPerSecond = Math.Clamp(request.RequestsPerSecond, 1, 50);
-        config.BurstSize = Math.Clamp(request.BurstSize, 1, 100);
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.EnableRateLimiting = request.Enabled;
+            config.RequestsPerSecond = Math.Clamp(request.RequestsPerSecond, 1, 50);
+            config.BurstSize = Math.Clamp(request.BurstSize, 1, 100);
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Rate limiting configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("RateLimiting");
         return Ok(new { success = true, message = "Rate limiting configuration updated" });
@@ -419,13 +455,17 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Visibility")]
     public ActionResult<object> UpdateVisibilityConfig([FromBody] VisibilityConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.IsCatchupVisible = request.IsCatchupVisible;
-        config.IsSeriesVisible = request.IsSeriesVisible;
-        config.IsVodVisible = request.IsVodVisible;
-        config.IsTmdbVodOverride = request.IsTmdbVodOverride;
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.IsCatchupVisible = request.IsCatchupVisible;
+            config.IsSeriesVisible = request.IsSeriesVisible;
+            config.IsVodVisible = request.IsVodVisible;
+            config.IsTmdbVodOverride = request.IsTmdbVodOverride;
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Visibility configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Visibility");
         return Ok(new { success = true, message = "Visibility configuration updated" });
@@ -464,13 +504,17 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Failover")]
     public ActionResult<object> UpdateFailoverConfig([FromBody] FailoverConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.MergeDuplicateChannels = request.MergeDuplicateChannels;
-        config.EnableProviderFailover = request.EnableProviderFailover;
-        config.SkipUnavailableProviders = request.SkipUnavailableProviders;
-        config.ProviderCheckIntervalSeconds = Math.Clamp(request.ProviderCheckIntervalSeconds, 15, 300);
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.MergeDuplicateChannels = request.MergeDuplicateChannels;
+            config.EnableProviderFailover = request.EnableProviderFailover;
+            config.SkipUnavailableProviders = request.SkipUnavailableProviders;
+            config.ProviderCheckIntervalSeconds = Math.Clamp(request.ProviderCheckIntervalSeconds, 15, 300);
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Failover configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Failover");
         return Ok(new { success = true, message = "Failover configuration updated" });
@@ -509,13 +553,17 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/ConnectionLimits")]
     public ActionResult<object> UpdateConnectionLimitConfig([FromBody] ConnectionLimitConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.EnforceConnectionLimit = request.EnforceConnectionLimit;
-        config.MaxConcurrentStreams = Math.Clamp(request.MaxConcurrentStreams, 0, 100);
-        config.AutoKillOldestStream = request.AutoKillOldestStream;
-        config.FilterChannelsByCapacity = request.FilterChannelsByCapacity;
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.EnforceConnectionLimit = request.EnforceConnectionLimit;
+            config.MaxConcurrentStreams = Math.Clamp(request.MaxConcurrentStreams, 0, 100);
+            config.AutoKillOldestStream = request.AutoKillOldestStream;
+            config.FilterChannelsByCapacity = request.FilterChannelsByCapacity;
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Connection limit configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("ConnectionLimits");
         return Ok(new { success = true, message = "Connection limit configuration updated" });
@@ -553,12 +601,16 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Hedging")]
     public ActionResult<object> UpdateHedgingConfig([FromBody] HedgingConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.EnableHedging = request.Enabled;
-        config.HedgingDelayMs = Math.Clamp(request.DelayMs, 50, 2000);
-        config.MaxHedgedAttempts = Math.Clamp(request.MaxAttempts, 1, 5);
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.EnableHedging = request.Enabled;
+            config.HedgingDelayMs = Math.Clamp(request.DelayMs, 50, 2000);
+            config.MaxHedgedAttempts = Math.Clamp(request.MaxAttempts, 1, 5);
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Hedging configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Hedging");
         return Ok(new { success = true, message = "Hedging configuration updated" });
@@ -597,13 +649,17 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Buffer")]
     public ActionResult<object> UpdateBufferConfig([FromBody] BufferConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.BufferUnderrunThresholdPercent = Math.Clamp(request.UnderrunThresholdPercent, 1.0, 50.0);
-        config.BufferNearFullThresholdPercent = Math.Clamp(request.NearFullThresholdPercent, 50.0, 99.0);
-        config.BufferUnderrunNotificationThreshold = Math.Clamp(request.UnderrunNotificationThreshold, 1, 50);
-        config.ConsumerDisconnectGraceSeconds = Math.Clamp(request.ConsumerDisconnectGraceSeconds, 1, 60);
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.BufferUnderrunThresholdPercent = Math.Clamp(request.UnderrunThresholdPercent, 1.0, 50.0);
+            config.BufferNearFullThresholdPercent = Math.Clamp(request.NearFullThresholdPercent, 50.0, 99.0);
+            config.BufferUnderrunNotificationThreshold = Math.Clamp(request.UnderrunNotificationThreshold, 1, 50);
+            config.ConsumerDisconnectGraceSeconds = Math.Clamp(request.ConsumerDisconnectGraceSeconds, 1, 60);
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Buffer configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Buffer");
         return Ok(new { success = true, message = "Buffer configuration updated" });
@@ -642,13 +698,17 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Logging")]
     public ActionResult<object> UpdateLoggingConfig([FromBody] LoggingConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.EnableDebugLogging = request.EnableDebugLogging;
-        config.LogViewerMaxEntries = Math.Clamp(request.LogViewerMaxEntries, 100, 50000);
-        config.EnablePeriodicHealthReports = request.EnablePeriodicHealthReports;
-        config.HealthReportIntervalMinutes = Math.Clamp(request.HealthReportIntervalMinutes, 5, 1440);
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.EnableDebugLogging = request.EnableDebugLogging;
+            config.LogViewerMaxEntries = Math.Clamp(request.LogViewerMaxEntries, 100, 50000);
+            config.EnablePeriodicHealthReports = request.EnablePeriodicHealthReports;
+            config.HealthReportIntervalMinutes = Math.Clamp(request.HealthReportIntervalMinutes, 5, 1440);
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Logging configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("Logging");
         return Ok(new { success = true, message = "Logging configuration updated" });
@@ -679,10 +739,14 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/StreamProcessing")]
     public ActionResult<object> UpdateStreamProcessingConfig([FromBody] StreamProcessingConfigRequest request)
     {
-        var config = Plugin.Instance.Configuration;
-        config.ForceRemux = request.ForceRemux;
+        lock (ConfigLock)
+        {
+            var config = Plugin.Instance.Configuration;
+            config.ForceRemux = request.ForceRemux;
 
-        Plugin.Instance.SaveConfiguration();
+            Plugin.Instance.SaveConfiguration();
+        }
+
         _logger.PluginLogInformation("Stream processing configuration updated via API");
         XtreamControllerHelpers.PublishConfigChanged("StreamProcessing");
         return Ok(new { success = true, message = "Stream processing configuration updated" });
