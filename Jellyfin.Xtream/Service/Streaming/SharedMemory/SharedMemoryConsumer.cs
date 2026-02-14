@@ -523,13 +523,8 @@ public sealed class SharedMemoryConsumer : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (HasFlag(SharedMemoryStatusFlags.Discontinuity))
-        {
-            ClearFlag(SharedMemoryStatusFlags.Discontinuity);
-            return true;
-        }
-
-        return false;
+        // Atomic test-and-clear: no TOCTOU race between check and clear.
+        return TestAndClearFlag(SharedMemoryStatusFlags.Discontinuity);
     }
 
     /// <summary>
@@ -542,38 +537,38 @@ public sealed class SharedMemoryConsumer : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (HasFlag(SharedMemoryStatusFlags.Overflow))
+        // Atomic test-and-clear: no TOCTOU race between check and clear.
+        if (!TestAndClearFlag(SharedMemoryStatusFlags.Overflow))
         {
-            // Overflow occurred - producer has overwritten old data.
-            // We need to sync our read position to catch up with the producer.
-            // Leave a small margin (quarter of buffer) to avoid immediate re-overflow.
-            byte* ptr = _basePtr;
-            ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
-            ulong currentReadPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
-
-            // Calculate how far behind we are
-            ulong slotsUsed = writePos - currentReadPos;
-            ulong bufferCapacity = _slotCount - 1; // One slot reserved for full/empty distinction
-
-            // If we're behind by more than the buffer, sync to (writePos - quarter buffer)
-            // This leaves room for continued streaming without immediate overflow
-            if (slotsUsed >= bufferCapacity)
-            {
-                ulong margin = _slotCount / 4; // Keep 25% buffer margin
-                ulong newReadPos = writePos > margin ? writePos - margin : 0;
-
-                // Only advance, never go backwards
-                if (newReadPos > currentReadPos)
-                {
-                    Volatile.Write(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset), newReadPos);
-                }
-            }
-
-            ClearFlag(SharedMemoryStatusFlags.Overflow);
-            return true;
+            return false;
         }
 
-        return false;
+        // Overflow occurred - producer has overwritten old data.
+        // We need to sync our read position to catch up with the producer.
+        // Leave a small margin (quarter of buffer) to avoid immediate re-overflow.
+        byte* ptr = _basePtr;
+        ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
+        ulong currentReadPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
+
+        // Calculate how far behind we are
+        ulong slotsUsed = writePos - currentReadPos;
+        ulong bufferCapacity = _slotCount - 1; // One slot reserved for full/empty distinction
+
+        // If we're behind by more than the buffer, sync to (writePos - quarter buffer)
+        // This leaves room for continued streaming without immediate overflow
+        if (slotsUsed >= bufferCapacity)
+        {
+            ulong margin = _slotCount / 4; // Keep 25% buffer margin
+            ulong newReadPos = writePos > margin ? writePos - margin : 0;
+
+            // Only advance, never go backwards
+            if (newReadPos > currentReadPos)
+            {
+                Volatile.Write(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset), newReadPos);
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -692,6 +687,17 @@ public sealed class SharedMemoryConsumer : IDisposable
     {
         ref int flagsRef = ref Unsafe.AsRef<int>(_basePtr + FlagsOffset);
         Interlocked.And(ref flagsRef, ~(int)flag);
+    }
+
+    /// <summary>
+    /// Atomically clears the specified flag and returns whether it was previously set.
+    /// This avoids the TOCTOU race of separate HasFlag()+ClearFlag() calls.
+    /// </summary>
+    private unsafe bool TestAndClearFlag(SharedMemoryStatusFlags flag)
+    {
+        ref int flagsRef = ref Unsafe.AsRef<int>(_basePtr + FlagsOffset);
+        int previousFlags = Interlocked.And(ref flagsRef, ~(int)flag);
+        return (previousFlags & (int)flag) != 0;
     }
 
     private unsafe void ReadBytes(long position, Span<byte> destination)
