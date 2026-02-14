@@ -740,17 +740,17 @@ public sealed class SharedMemoryTests : IDisposable
     {
         // Arrange
         using var producer = CreateProducer();
-        const string errorMessage = "Test error message for E2E testing";
 
-        // Act
-        producer.SetError(SharedMemoryErrorCode.NetworkError, errorMessage);
+        // Act — error_message field is no longer read from shared memory;
+        // consumer maps error_code to a fixed string to avoid torn reads (§2.15)
+        producer.SetError(SharedMemoryErrorCode.NetworkError, "ignored");
 
         using var consumer = new SharedMemoryConsumer(producer.Name);
 
         // Assert
         Assert.True(consumer.HasError);
         Assert.Equal(SharedMemoryErrorCode.NetworkError, consumer.ErrorCode);
-        Assert.Equal(errorMessage, consumer.ErrorMessage);
+        Assert.Equal("Network error", consumer.ErrorMessage);
 
         _output.WriteLine($"Error detected: {consumer.HasError}");
         _output.WriteLine($"Error code: {consumer.ErrorCode}");
@@ -798,24 +798,23 @@ public sealed class SharedMemoryTests : IDisposable
     }
 
     [Fact]
-    public void ErrorHandling_ErrorMessage_TruncatedCorrectly()
+    public void ErrorHandling_ErrorCode_MapsToFixedMessage()
     {
         // Arrange
         using var producer = CreateProducer();
-        var longMessage = new string('X', 100); // Longer than 64-byte limit
 
-        // Act
-        producer.SetError(SharedMemoryErrorCode.InternalError, longMessage);
+        // Act — error_message field is no longer read from shared memory;
+        // consumer maps error_code to a fixed string to avoid torn reads (§2.15)
+        producer.SetError(SharedMemoryErrorCode.InternalError, "ignored");
 
         using var consumer = new SharedMemoryConsumer(producer.Name);
 
-        // Assert
-        _output.WriteLine($"Original length: {longMessage.Length}");
-        _output.WriteLine($"Retrieved length: {consumer.ErrorMessage.Length}");
-        _output.WriteLine($"Retrieved message: {consumer.ErrorMessage}");
+        // Assert — verify the error code maps to the expected fixed string
+        _output.WriteLine($"Error code: {consumer.ErrorCode}");
+        _output.WriteLine($"Error message: {consumer.ErrorMessage}");
 
-        Assert.True(consumer.ErrorMessage.Length <= 63, "Error message should be truncated");
-        Assert.StartsWith("XXX", consumer.ErrorMessage);
+        Assert.Equal(SharedMemoryErrorCode.InternalError, consumer.ErrorCode);
+        Assert.Equal("Internal error", consumer.ErrorMessage);
     }
 
     // =========================================================================

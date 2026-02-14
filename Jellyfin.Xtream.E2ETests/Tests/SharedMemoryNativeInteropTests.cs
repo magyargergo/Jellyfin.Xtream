@@ -460,7 +460,6 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         var producer = TryCreateNativeProducer(name);
         SkipIfNativeUnavailable(producer);
 
-        const string errorMessage = "Native test error message";
         const uint errorCode = (uint)SharedMemoryErrorCode.NetworkError;
 
         // Act
@@ -471,8 +470,9 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         bool errorBefore = consumer.HasError;
         _output.WriteLine($"Error before signal: {errorBefore}");
 
-        // Set error via native producer
-        producer!.SetError(errorCode, errorMessage);
+        // Set error via native producer (error_message field is no longer read;
+        // consumer maps error_code to a fixed string to avoid torn reads)
+        producer!.SetError(errorCode, "ignored");
         Thread.Sleep(10);
 
         bool errorAfter = consumer.HasError;
@@ -487,7 +487,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         Assert.False(errorBefore, "Error should not be set before native producer signals it");
         Assert.True(errorAfter, "Error set by native producer should be detected by C# consumer");
         Assert.Equal(SharedMemoryErrorCode.NetworkError, actualErrorCode);
-        Assert.Equal(errorMessage, actualErrorMessage);
+        Assert.Equal("Network error", actualErrorMessage);
     }
 
     // =========================================================================
