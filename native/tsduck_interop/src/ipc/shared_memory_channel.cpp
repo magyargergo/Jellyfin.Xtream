@@ -145,13 +145,44 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
     // POSIX implementation using shm_open
     std::string shm_name = "/" + producer->name_;
 
-    int fd = shm_open(shm_name.c_str(), O_CREAT | O_RDWR, 0666);
+    // O_EXCL ensures we don't silently reuse a stale segment from a crashed process.
+    // 0600 restricts access to the owning user (defense-in-depth).
+    int fd = shm_open(shm_name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    if (fd < 0 && errno == EEXIST) {
+        // Stale segment exists — check if a producer is still active.
+        int stale_fd = shm_open(shm_name.c_str(), O_RDONLY, 0);
+        if (stale_fd >= 0) {
+            void* peek = mmap(nullptr, SHM_HEADER_SIZE, PROT_READ, MAP_SHARED, stale_fd, 0);
+            close(stale_fd);
+            if (peek != MAP_FAILED) {
+                auto* hdr = static_cast<const SharedMemoryHeader*>(peek);
+                auto state = static_cast<ProducerState>(
+                    hdr->producer_state.load(std::memory_order_acquire));
+                munmap(peek, SHM_HEADER_SIZE);
+                if (state != ProducerState::Stopped && state != ProducerState::Failed
+                    && state != ProducerState::Initializing) {
+                    LOG_ERROR(kLogComponent,
+                        "shm_open: segment '%s' already has an active producer (state=%llu)",
+                        shm_name.c_str(), static_cast<unsigned long long>(state));
+                    store_error(out_error, std::make_error_code(std::errc::device_or_resource_busy));
+                    return nullptr;
+                }
+            }
+        }
+        // Producer is gone or in terminal state — reclaim the segment.
+        LOG_WARNING(kLogComponent, "Unlinking stale shared memory segment '%s'", shm_name.c_str());
+        shm_unlink(shm_name.c_str());
+        fd = shm_open(shm_name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    }
     if (fd < 0) {
         auto err = errno;
         LOG_ERROR(kLogComponent, "shm_open failed: %s", strerror(err));
         store_error(out_error, std::error_code(err, std::generic_category()));
         return nullptr;
     }
+
+    // Defense-in-depth: enforce permissions even if umask was permissive.
+    fchmod(fd, 0600);
 
     if (ftruncate(fd, static_cast<off_t>(producer->total_size_)) < 0) {
         auto err = errno;
@@ -178,7 +209,7 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
 
     // Create named semaphore
     std::string sem_name = shm_name + "_sem";
-    sem_t* sem = sem_open(sem_name.c_str(), O_CREAT, 0666, 0);
+    sem_t* sem = sem_open(sem_name.c_str(), O_CREAT, 0600, 0);
     if (sem == SEM_FAILED) {
         auto err = errno;
         munmap(ptr, producer->total_size_);
@@ -336,19 +367,17 @@ WriteResult SharedMemoryProducer::write(std::span<const std::byte> data) noexcep
     std::uint64_t available_slots = slot_count_ - 1 - used_slots;
 
     if (available_slots == 0) {
-        // Buffer full - advance read position to make room (drop oldest data).
-        // This is an acceptable SPSC pattern because:
-        // 1. Producer only advances read_pos forward, never backward
-        // 2. Consumer uses acquire load and will see the new position
-        // 3. Overflow flag signals to consumer that data was lost
+        // Buffer full - signal overflow and continue writing (overwriting unread data).
+        // The consumer handles position adjustment via ConsumeOverflow().
+        // SPSC contract: only the consumer writes read_position.
         result.overflow = true;
         header_->flags.fetch_or(
             static_cast<std::uint32_t>(SharedMemoryFlags::Overflow),
             std::memory_order_release);
 
-        // Calculate how many slots we need and advance read_position to make room
+        // Calculate slots needed — producer overwrites old data, accepting bounded loss.
+        // Consumer will snap read_position to write_position when it processes the flag.
         std::uint64_t slots_needed = (packets_to_write + packets_per_slot - 1) / packets_per_slot;
-        header_->read_position.store(read_pos + slots_needed, std::memory_order_release);
         available_slots = slots_needed;
 
         LOG_WARNING(kLogComponent, "Buffer overflow, dropped %zu slots of data", slots_needed);
@@ -645,7 +674,7 @@ std::unique_ptr<SharedMemoryConsumer> SharedMemoryConsumer::open(
 #else
     std::string shm_name = "/" + consumer->name_;
 
-    int fd = shm_open(shm_name.c_str(), O_RDWR, 0666);
+    int fd = shm_open(shm_name.c_str(), O_RDWR, 0);
     if (fd < 0) {
         auto err = errno;
         store_error(out_error, std::error_code(err, std::generic_category()));
