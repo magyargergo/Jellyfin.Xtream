@@ -64,6 +64,7 @@ public sealed class NativeStreamer : IDisposable
     private NetworkConfigNative? _networkConfig;
 
     private volatile bool _disposed;
+    private int _callbackDisposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="NativeStreamer"/> class.
@@ -238,7 +239,18 @@ public sealed class NativeStreamer : IDisposable
         _eventCallbackHandle = GCHandle.Alloc(_nativeEventCallback);
 
         var callbackPtr = Marshal.GetFunctionPointerForDelegate(_nativeEventCallback);
-        TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), callbackPtr, 0);
+
+        bool success = false;
+        try
+        {
+            _streamer.DangerousAddRef(ref success);
+            TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), callbackPtr, 0);
+        }
+        finally
+        {
+            if (success)
+                _streamer.DangerousRelease();
+        }
     }
 
     /// <summary>
@@ -411,7 +423,7 @@ public sealed class NativeStreamer : IDisposable
     /// </summary>
     private void NativeEventCallbackHandler(int eventType, int detail, nint userData)
     {
-        if (_disposed || _eventCallback == null)
+        if (Volatile.Read(ref _callbackDisposed) != 0 || _eventCallback == null)
         {
             return;
         }
@@ -845,16 +857,22 @@ public sealed class NativeStreamer : IDisposable
             _streamer.DangerousAddRef(ref success);
             try
             {
-                // CRITICAL: Clear native callback registration FIRST to prevent new callbacks.
-                // This ensures the native worker thread will stop invoking our delegate
-                // before we mark ourselves as disposed or free resources.
+                // Signal managed callback handler to reject new invocations BEFORE
+                // clearing the native-side function pointer. This closes the race window
+                // where a native callback fires after StreamerSetEventCallback(0,0) but
+                // before _disposed is set.
+                Interlocked.Exchange(ref _callbackDisposed, 1);
+
+                // Clear native callback registration to prevent new callbacks from native side.
                 TsDuckNativeMethods.StreamerSetEventCallback(_streamer.DangerousGetHandle(), 0, 0);
 
                 // Memory barrier ensures native side sees the cleared callback before we proceed
                 Thread.MemoryBarrier();
 
-                // Now safe to mark as disposed - any in-flight callback will complete
-                // but no new callbacks will start
+                // Grace period for any in-flight native callbacks to complete.
+                // Native callbacks check _callbackDisposed and will early-return.
+                Thread.Sleep(10);
+
                 _disposed = true;
                 _eventCallback = null;
 
