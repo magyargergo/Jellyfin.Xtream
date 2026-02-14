@@ -367,7 +367,6 @@ public sealed class CircularBufferReadStream : Stream
 
         var currentReadHead = Volatile.Read(ref _readHead.Value);
         var totalWritten = _sourceBuffer.TotalBytesWritten;
-        Thread.MemoryBarrier();
         var gap = totalWritten - currentReadHead;
         SpinWait spinWait = default;
 

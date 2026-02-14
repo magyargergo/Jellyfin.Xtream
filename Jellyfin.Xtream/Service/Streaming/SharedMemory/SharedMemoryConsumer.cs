@@ -343,12 +343,13 @@ public sealed class SharedMemoryConsumer : IDisposable
         ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
         ulong readPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
 
-        // Calculate available slots
-        ulong availableSlots = writePos - readPos;
-        if (availableSlots == 0)
+        // Calculate available slots (guard against underflow from torn reads)
+        if (writePos <= readPos)
         {
             return 0;
         }
+
+        ulong availableSlots = writePos - readPos;
 
         // Calculate how many bytes we can read (aligned to TS packets)
         uint slotSize = _slotSize;
@@ -368,7 +369,7 @@ public sealed class SharedMemoryConsumer : IDisposable
         while (totalRead < bytesToRead)
         {
             int chunkSize = Math.Min(bytesToRead - totalRead, (int)slotSize);
-            long slotOffset = dataOffset + (long)(currentSlot * slotSize);
+            long slotOffset = dataOffset + ((long)currentSlot * slotSize);
 
             // Bounds check: ensure we don't read past the mapped memory region
             if (slotOffset < dataOffset || slotOffset + chunkSize > totalSize)
@@ -426,12 +427,13 @@ public sealed class SharedMemoryConsumer : IDisposable
         ulong writePos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + WritePositionOffset));
         ulong readPos = Volatile.Read(ref Unsafe.AsRef<ulong>(ptr + ReadPositionOffset));
 
-        // Calculate available slots
-        ulong availableSlots = writePos - readPos;
-        if (availableSlots == 0)
+        // Calculate available slots (guard against underflow from torn reads)
+        if (writePos <= readPos)
         {
             return 0;
         }
+
+        ulong availableSlots = writePos - readPos;
 
         // Calculate how many bytes we can read (aligned to TS packets)
         // Cache slot size as local for faster access
@@ -457,7 +459,7 @@ public sealed class SharedMemoryConsumer : IDisposable
             // Calculate contiguous region from current slot
             int remainingBytes = bytesToRead - totalWritten;
             int chunkSize = Math.Min(remainingBytes, (int)slotSize);
-            long slotOffset = dataOffset + (long)(currentSlot * slotSize);
+            long slotOffset = dataOffset + ((long)currentSlot * slotSize);
 
             // Bounds check: ensure we don't read past the mapped memory region
             if (slotOffset < dataOffset || slotOffset + chunkSize > totalSize)

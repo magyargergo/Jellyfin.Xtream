@@ -123,7 +123,7 @@ public sealed class DiscordNotificationService(ILogger<DiscordNotificationServic
             .WithDescription($"**Channel:** `{channelName}` ({streamId})")
             .WithColor(Color.Blue)
             .AddField("🕐 Time", $"<t:{new DateTimeOffset(now).ToUnixTimeSeconds()}:R>", inline: true)
-            .AddField("🖥️ Server", Environment.MachineName, inline: true)
+            .AddField("🖥️ Server", "Jellyfin", inline: true)
             .AddField("📡 Status", "Broadcasting", inline: true)
             .WithTimestamp(now)
             .Build();

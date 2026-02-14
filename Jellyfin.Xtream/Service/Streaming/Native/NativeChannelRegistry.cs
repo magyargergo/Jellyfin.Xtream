@@ -173,7 +173,7 @@ public sealed class NativeChannelRegistry : IDisposable
 {
     private readonly ChannelRegistrySafeHandle _handle;
     private readonly ILogger? _logger;
-    private bool _disposed;
+    private volatile bool _disposed;
     private bool _built;
 
     /// <summary>
