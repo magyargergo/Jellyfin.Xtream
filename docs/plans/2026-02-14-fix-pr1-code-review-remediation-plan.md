@@ -857,6 +857,7 @@ void StreamPipeline::worker_loop() {
 - [x] All active P2 fixes implemented and verified (§2.5 statistics removed, §2.9 AVX2 removed, §2.3 already done)
 - [x] All `ex.Message` sites enumerated and sanitized (7+ catch blocks across controllers)
 - [x] Dead code removed (~750 LOC reduction — 3 items, AVX-512 kept)
+- [x] Unit tests added for CircuitBreaker (17 tests), OverflowPredictor (10 tests), SimdMemoryCopy (16 tests)
 - [ ] No regression in existing test suite
 
 ### Non-Functional Requirements
