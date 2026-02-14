@@ -72,7 +72,8 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     private CacheLinePadded _totalBytesWritten;
     private CacheLinePadded _lastDiscontinuityOffset;
     private CacheLinePaddedInt _discontinuityCount;
-    private DateTime _lastDiscontinuityTime;
+    private long _lastDiscontinuityTimeTicks;
+    private long _lastWriteTimeTicks;
 
     // Connection state signaling for reader synchronization
     private volatile bool _isSourceConnected;
@@ -87,7 +88,6 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     private volatile bool _isDisposed;
 
     private const int TsPacketSize = 188;
-    private const byte TsSyncByte = 0x47;
 
     /// <summary>
     /// Gets the maximal size in bytes of read/write chunks.
@@ -122,7 +122,14 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     /// <summary>
     /// Gets the time of the last discontinuity (UTC), or null if no discontinuities have occurred.
     /// </summary>
-    public DateTime? LastDiscontinuityTime => _lastDiscontinuityTime == default ? null : _lastDiscontinuityTime;
+    public DateTime? LastDiscontinuityTime
+    {
+        get
+        {
+            long ticks = Volatile.Read(ref _lastDiscontinuityTimeTicks);
+            return ticks == 0 ? null : new DateTime(ticks, DateTimeKind.Utc);
+        }
+    }
 
     /// <summary>
     /// Gets a value indicating whether the source is currently connected and writing data.
@@ -144,7 +151,7 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     /// Gets the time of the last successful write (UTC).
     /// Used by readers to detect stale connections.
     /// </summary>
-    public DateTime LastWriteTime { get; private set; }
+    public DateTime LastWriteTime => new(Volatile.Read(ref _lastWriteTimeTicks), DateTimeKind.Utc);
 
     /// <summary>
     /// Gets the last known reader position for continuity between consecutive readers.
@@ -390,7 +397,7 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
         // to subsequent stores, and Interlocked.Exchange's implicit mfence provides the
         // acquire-release semantics needed for cross-thread visibility.
         _ = Interlocked.Exchange(ref _totalBytesWritten.Value, localWriteHead);
-        LastWriteTime = DateTime.UtcNow;
+        Volatile.Write(ref _lastWriteTimeTicks, DateTime.UtcNow.Ticks);
 
         // Periodic progress logging (every 10MB) to track data flow without spam
         if (localWriteHead - _lastProgressLogBytes >= ProgressLogIntervalBytes)
@@ -441,8 +448,8 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
         _ = Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, 0L);
         _ = Interlocked.Exchange(ref _discontinuityCount.Value, 0);
         _ = Interlocked.Exchange(ref _reconnectionAttempts.Value, 0);
-        _lastDiscontinuityTime = default;
-        LastWriteTime = default;
+        Volatile.Write(ref _lastDiscontinuityTimeTicks, 0L);
+        Volatile.Write(ref _lastWriteTimeTicks, 0L);
         _isSourceConnected = false;
         _isReconnecting = false;
         _lastProgressLogBytes = 0;
@@ -466,7 +473,7 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
         var currentOffset = Volatile.Read(ref _totalBytesWritten.Value);
         _ = Interlocked.Exchange(ref _lastDiscontinuityOffset.Value, currentOffset);
         var newCount = Interlocked.Increment(ref _discontinuityCount.Value);
-        _lastDiscontinuityTime = DateTime.UtcNow;
+        Volatile.Write(ref _lastDiscontinuityTimeTicks, DateTime.UtcNow.Ticks);
 
         _logger?.LogDebugIfEnabled(
             "Discontinuity #{Count} marked at offset {OffsetMB:F2}MB",
@@ -498,17 +505,13 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
 
         var paddingNeeded = TsPacketSize - remainder;
 
-        // Create a null packet for padding
-        // Null packet: sync byte (0x47), PID 0x1FFF, no adaptation field, payload all 0xFF
-        Span<byte> nullPacket = stackalloc byte[TsPacketSize];
-        nullPacket[0] = TsSyncByte; // Sync byte
-        nullPacket[1] = 0x1F; // PID high byte (0x1FFF >> 8) with TEI=0, PUSI=0, priority=0
-        nullPacket[2] = 0xFF; // PID low byte
-        nullPacket[3] = 0x10; // Adaptation field control = 01 (payload only), CC = 0
-        nullPacket[4..].Fill(0xFF); // Payload filled with 0xFF
-
-        // Write only the padding portion needed
-        WriteSpan(nullPacket[..paddingNeeded]);
+        // Fill sub-packet remainder with 0xFF (invalid sync byte).
+        // Decoders scan for 0x47 sync bytes, so 0xFF is safely skipped.
+        // We avoid writing a partial null packet because even though PID 0x1FFF
+        // packets are discarded, a truncated header could confuse some decoders.
+        Span<byte> fill = stackalloc byte[paddingNeeded];
+        fill.Fill(0xFF);
+        WriteSpan(fill);
 
         return paddingNeeded;
     }
@@ -533,7 +536,7 @@ public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? lo
     {
         _isSourceConnected = true;
         _isReconnecting = false;
-        LastWriteTime = DateTime.UtcNow;
+        Volatile.Write(ref _lastWriteTimeTicks, DateTime.UtcNow.Ticks);
 
         _logger?.LogDebugIfEnabled(
             "Source connected: totalWritten={TotalMB:F2}MB, reconnectionAttempts={Attempts}",

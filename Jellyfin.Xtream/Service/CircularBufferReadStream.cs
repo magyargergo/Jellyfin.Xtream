@@ -308,7 +308,7 @@ public sealed class CircularBufferReadStream : Stream
             // Simple polling - C++ manages connection state
             try
             {
-                await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
             }
             catch (TaskCanceledException)
             {
