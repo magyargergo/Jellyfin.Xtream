@@ -225,9 +225,17 @@ bool StreamSource::connect() noexcept {
     curl_easy_setopt(curl_handle_, CURLOPT_LOW_SPEED_TIME,
                      static_cast<long>(config_.low_speed_time_sec));
 
-    // Follow HTTP redirects
+    // Follow HTTP redirects — restrict to HTTP/HTTPS to prevent SSRF via
+    // file://, gopher://, dict:// etc. on both initial request and redirects.
     curl_easy_setopt(curl_handle_, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl_handle_, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(curl_handle_, CURLOPT_MAXREDIRS, 5L);
+#if CURL_AT_LEAST_VERSION(7, 85, 0)
+    curl_easy_setopt(curl_handle_, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl_handle_, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+#else
+    curl_easy_setopt(curl_handle_, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    curl_easy_setopt(curl_handle_, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+#endif
 
     // Thread safety: don't use signals for timeouts
     curl_easy_setopt(curl_handle_, CURLOPT_NOSIGNAL, 1L);
