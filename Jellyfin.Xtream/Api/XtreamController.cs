@@ -57,49 +57,6 @@ public class XtreamController(
 {
     private const int CacheMinutes = 5;
 
-    private static readonly string[] ConfigurationSections =
-    [
-        "Proxy",
-        "Epg",
-        "Discord",
-        "Timeouts",
-        "Health",
-        "UserAgent",
-        "RateLimiting",
-        "Visibility",
-        "Failover",
-        "ConnectionLimits",
-        "Hedging",
-        "Buffer",
-        "Logging",
-        "StreamProcessing",
-    ];
-
-    private static readonly string[] StreamOperations =
-    [
-        "GET ActiveStreams",
-        "DELETE ActiveStreams/{id}",
-        "GET ActiveStreams/{id}/Providers",
-        "GET ActiveStreams/{id}/Providers/{idx}/Health",
-        "POST ActiveStreams/{id}/ForceReconnect",
-        "POST ActiveStreams/{id}/Providers/{idx}/Eject",
-        "POST ActiveStreams/{id}/Providers/Reset",
-        "GET ActiveStreams/{id}/Metrics",
-        "GET Diagnostics/Bundle",
-        "GET Metrics/Aggregate",
-    ];
-
-    private static readonly string[] RegistryOperations =
-    [
-        "GET Providers/Status",
-        "GET Channels/Count",
-        "GET Channels/List",
-        "GET ConnectionStatus",
-        "GET ConnectionInfo",
-        "GET Events/Stream",
-        "GET Events/Recent",
-    ];
-
     private readonly ILogger<XtreamController> _logger = logger;
     private readonly ILoggerFactory _loggerFactory = loggerFactory;
     private readonly IMemoryCache _cache = cache;
@@ -841,52 +798,5 @@ public class XtreamController(
         }
 
         return Ok(response);
-    }
-
-    /// <summary>
-    /// Get machine-readable capability manifest for agent and automation discovery.
-    /// </summary>
-    /// <returns>Plugin capabilities, features, and endpoint catalog.</returns>
-    [Authorize(Policy = "RequiresElevation")]
-    [HttpGet("Capabilities")]
-    public ActionResult<object> GetCapabilities()
-    {
-        return Ok(
-            new
-            {
-                pluginVersion = Plugin.Instance.Version.ToString(),
-                apiVersion = "1.0",
-                features = new
-                {
-                    multiProvider = new
-                    {
-                        enabled = true,
-                        supportsFailover = true,
-                        supportsLoadBalancing = true,
-                    },
-                    streamQuality = new
-                    {
-                        supportsTR101290 = true,
-                        supportsPCRAnalysis = true,
-                        supportsAVSync = true,
-                    },
-                    nativeStreamer = new
-                    {
-                        enabled = true,
-                        supportsSharedMemory = true,
-                        supportsHealthTracking = true,
-                    },
-                    notifications = new { discord = true, sse = true },
-                },
-                configurationSections = ConfigurationSections,
-                streamOperations = StreamOperations,
-                registryOperations = RegistryOperations,
-                limits = new
-                {
-                    maxProviders = 10,
-                    maxConcurrentStreams = Plugin.Instance.Configuration.MaxConcurrentStreams,
-                },
-            }
-        );
     }
 }
