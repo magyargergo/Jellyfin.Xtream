@@ -416,6 +416,11 @@ public class XtreamDiscoveryController(ILogger<XtreamDiscoveryController> logger
             );
         }
 
+        if (!UrlValidator.IsValidProviderHost(provider.Server, out var hostError))
+        {
+            return BadRequest(XtreamControllerHelpers.CreateError(ErrorCodes.ValidationFailed, hostError));
+        }
+
         var config = Plugin.Instance.Configuration;
 
         // Check for duplicate

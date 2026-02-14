@@ -177,6 +177,11 @@ public class XtreamConfigurationController(ILogger<XtreamConfigurationController
     [HttpPut("Configuration/Discord")]
     public ActionResult<object> UpdateDiscordConfig([FromBody] DiscordConfigRequest request)
     {
+        if (request.Enabled && !UrlValidator.IsValidDiscordWebhookUrl(request.WebhookUrl, out var urlError))
+        {
+            return BadRequest(XtreamControllerHelpers.CreateError(ErrorCodes.ValidationFailed, urlError));
+        }
+
         var config = Plugin.Instance.Configuration;
         config.EnableDiscordNotifications = request.Enabled;
         config.DiscordWebhookUrl = request.WebhookUrl;

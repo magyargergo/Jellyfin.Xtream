@@ -243,14 +243,9 @@ public class XtreamEventsController(ILogger<XtreamEventsController> logger) : Co
         CancellationToken cancellationToken
     )
     {
-        if (string.IsNullOrWhiteSpace(webhookUrl))
+        if (!UrlValidator.IsValidDiscordWebhookUrl(webhookUrl, out var urlError))
         {
-            return BadRequest(
-                XtreamControllerHelpers.CreateError(
-                    ErrorCodes.ValidationFailed,
-                    "Webhook URL is required when notifications are enabled"
-                )
-            );
+            return BadRequest(XtreamControllerHelpers.CreateError(ErrorCodes.ValidationFailed, urlError));
         }
 
         var success = await discordService.TestWebhookAsync(webhookUrl, cancellationToken).ConfigureAwait(false);
