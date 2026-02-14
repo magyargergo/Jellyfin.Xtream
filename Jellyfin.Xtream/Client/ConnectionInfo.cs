@@ -39,5 +39,15 @@ public class ConnectionInfo(string baseUrl, string username, string password)
     public string Password { get; set; } = password;
 
     /// <inheritdoc />
-    public override string ToString() => $"{BaseUrl} {UserName}:{Password}";
+    public override string ToString()
+    {
+        var masked = Password.Length switch
+        {
+            0 => string.Empty,
+            1 => "*",
+            2 => $"{Password[0]}*",
+            _ => $"{Password[0]}{"".PadRight(Password.Length - 2, '*')}{Password[^1]}",
+        };
+        return $"{BaseUrl} {UserName}:{masked}";
+    }
 }

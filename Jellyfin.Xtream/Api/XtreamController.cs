@@ -159,7 +159,7 @@ public class XtreamController(
                 XtreamControllerHelpers.CreateError(
                     ErrorCodes.ConnectionFailed,
                     "Failed to load categories from provider",
-                    ex.Message
+                    XtreamControllerHelpers.RedactCredentials(ex.Message)
                 )
             );
         }
@@ -226,7 +226,7 @@ public class XtreamController(
                 XtreamControllerHelpers.CreateError(
                     ErrorCodes.ConnectionFailed,
                     "Failed to load streams from provider",
-                    ex.Message
+                    XtreamControllerHelpers.RedactCredentials(ex.Message)
                 )
             );
         }
@@ -286,7 +286,7 @@ public class XtreamController(
                 XtreamControllerHelpers.CreateError(
                     ErrorCodes.ConnectionFailed,
                     "Failed to load VOD categories from provider",
-                    ex.Message
+                    XtreamControllerHelpers.RedactCredentials(ex.Message)
                 )
             );
         }
@@ -353,7 +353,7 @@ public class XtreamController(
                 XtreamControllerHelpers.CreateError(
                     ErrorCodes.ConnectionFailed,
                     "Failed to load VOD streams from provider",
-                    ex.Message
+                    XtreamControllerHelpers.RedactCredentials(ex.Message)
                 )
             );
         }
@@ -413,7 +413,7 @@ public class XtreamController(
                 XtreamControllerHelpers.CreateError(
                     ErrorCodes.ConnectionFailed,
                     "Failed to load series categories from provider",
-                    ex.Message
+                    XtreamControllerHelpers.RedactCredentials(ex.Message)
                 )
             );
         }
@@ -480,7 +480,7 @@ public class XtreamController(
                 XtreamControllerHelpers.CreateError(
                     ErrorCodes.ConnectionFailed,
                     "Failed to load series from provider",
-                    ex.Message
+                    XtreamControllerHelpers.RedactCredentials(ex.Message)
                 )
             );
         }
@@ -532,7 +532,7 @@ public class XtreamController(
                 XtreamControllerHelpers.CreateError(
                     ErrorCodes.ConnectionFailed,
                     "Failed to load live TV channels from provider",
-                    ex.Message
+                    XtreamControllerHelpers.RedactCredentials(ex.Message)
                 )
             );
         }
@@ -589,7 +589,7 @@ public class XtreamController(
         catch (HttpRequestException ex)
         {
             _logger.PluginLogError(ex, "Failed to test provider {ProviderId}", providerId);
-            return Ok(new { success = false, message = "Connection failed: " + ex.Message });
+            return Ok(new { success = false, message = "Connection failed. Check server logs for details." });
         }
         catch (Exception ex)
         {

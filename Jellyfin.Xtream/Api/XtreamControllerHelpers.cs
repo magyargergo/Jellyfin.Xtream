@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Jellyfin.Xtream.Api.Models;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
@@ -62,6 +63,28 @@ internal static class XtreamControllerHelpers
             SuggestedAction = suggestedAction,
             Context = context,
         };
+    }
+
+    /// <summary>
+    /// Redacts Xtream API credentials from a string (typically an exception message).
+    /// Replaces username=X&amp;password=Y query parameters with redacted placeholders.
+    /// </summary>
+    /// <param name="input">The string that may contain credential query parameters.</param>
+    /// <returns>The input with credentials redacted.</returns>
+    internal static string RedactCredentials(string? input)
+    {
+        if (string.IsNullOrEmpty(input))
+        {
+            return string.Empty;
+        }
+
+        return Regex.Replace(
+            input,
+            @"(username=)[^&\s]+((&|&amp;)password=)[^&\s]+",
+            "$1***$2***",
+            RegexOptions.None,
+            TimeSpan.FromMilliseconds(100)
+        );
     }
 
     /// <summary>
