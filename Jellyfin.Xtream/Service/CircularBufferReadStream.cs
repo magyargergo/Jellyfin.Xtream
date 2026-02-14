@@ -19,7 +19,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using System.Threading;
 using System.Threading.Tasks;
@@ -48,20 +47,6 @@ namespace Jellyfin.Xtream.Service;
 /// </summary>
 public sealed class CircularBufferReadStream : Stream
 {
-    [StructLayout(LayoutKind.Explicit, Size = 128)]
-    private struct CacheLinePadded
-    {
-        [FieldOffset(0)]
-        public long Value;
-    }
-
-    [StructLayout(LayoutKind.Explicit, Size = 128)]
-    private struct CacheLinePaddedInt
-    {
-        [FieldOffset(0)]
-        public int Value;
-    }
-
     private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB read
 
     // Simple timeout - C++ handles reconnection and streaming state.
@@ -101,7 +86,7 @@ public sealed class CircularBufferReadStream : Stream
     private int _lastSeenDiscontinuityCount;
     private volatile bool _isDisposed;
     private DateTime _lastOverflowLog = DateTime.MinValue;
-    private DateTime _lastPredictorUpdate = DateTime.MinValue;
+    private long _lastPredictorUpdateTicks;
     private long _lastProgressLogBytes;
 
     // Overflow prediction for proactive warning (diagnostics only)
@@ -300,7 +285,7 @@ public sealed class CircularBufferReadStream : Stream
         }
 
         var gap = _sourceBuffer.TotalBytesWritten - ReadHead;
-        var waitStart = DateTime.UtcNow;
+        var waitStartTicks = Environment.TickCount64;
 
         // Check _isDisposed and source buffer disposal in loop to respond quickly to disposal.
         while (gap == 0 && !cancellationToken.IsCancellationRequested && !_isDisposed && !_sourceBuffer.IsDisposed)
@@ -324,7 +309,7 @@ public sealed class CircularBufferReadStream : Stream
             gap = _sourceBuffer.TotalBytesWritten - ReadHead;
 
             // Basic timeout as safety net
-            if ((DateTime.UtcNow - waitStart).TotalMilliseconds > MaxWaitMs)
+            if (Environment.TickCount64 - waitStartTicks > MaxWaitMs)
             {
                 _logger?.PluginLogWarning(
                     "Stream {StreamId}: No data for {MaxWaitMs}ms, returning EOF",
@@ -434,10 +419,10 @@ public sealed class CircularBufferReadStream : Stream
         }
 
         // Update overflow predictor periodically (every 500ms) for diagnostics
-        var predictorNow = DateTime.UtcNow;
-        if ((predictorNow - _lastPredictorUpdate).TotalMilliseconds >= 500)
+        var predictorNowTicks = Environment.TickCount64;
+        if (predictorNowTicks - _lastPredictorUpdateTicks >= 500)
         {
-            _lastPredictorUpdate = predictorNow;
+            _lastPredictorUpdateTicks = predictorNowTicks;
             var risk = _overflowPredictor.RecordSample(totalWritten, currentReadHead);
 
             // Log warning if risk is elevated

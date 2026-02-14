@@ -858,6 +858,9 @@ void StreamPipeline::worker_loop() {
 - [x] All `ex.Message` sites enumerated and sanitized (7+ catch blocks across controllers)
 - [x] Dead code removed (~750 LOC reduction — 3 items, AVX-512 kept)
 - [x] Unit tests added for CircuitBreaker (17 tests), OverflowPredictor (10 tests), SimdMemoryCopy (16 tests)
+- [x] CacheLinePadded structs extracted to shared Utility file (§3.2 #018)
+- [x] DateTime.UtcNow replaced with Environment.TickCount64 in hot read loop (§3.3 #020)
+- [x] SimdMemoryCopy CopyRemainder bug fixed — while loop for 8-byte chunks handles >15 byte remainders
 - [ ] No regression in existing test suite
 
 ### Non-Functional Requirements

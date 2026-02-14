@@ -16,7 +16,6 @@
 using System;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Utility;
@@ -45,20 +44,6 @@ namespace Jellyfin.Xtream.Service;
 public sealed class CircularBufferWriteStream(int bufferSize, ILoggerFactory? loggerFactory = null) : Stream
 {
     private volatile byte[]? _initData;
-
-    [StructLayout(LayoutKind.Explicit, Size = 128)]
-    private struct CacheLinePadded
-    {
-        [FieldOffset(0)]
-        public long Value;
-    }
-
-    [StructLayout(LayoutKind.Explicit, Size = 128)]
-    private struct CacheLinePaddedInt
-    {
-        [FieldOffset(0)]
-        public int Value;
-    }
 
     private const int NonTemporalThreshold = 262144;
     private const long ProgressLogIntervalBytes = 10 * 1024 * 1024; // Log every 10MB

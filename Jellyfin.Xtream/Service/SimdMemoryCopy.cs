@@ -534,7 +534,9 @@ internal static class SimdMemoryCopy
     {
         var remaining = length - offset;
 
-        if (remaining >= 8)
+        // Use while for 8-byte chunks since remainder can exceed 15 bytes
+        // (e.g., AVX2 processes 32-byte aligned chunks, leaving up to 31 bytes)
+        while (remaining >= 8)
         {
             Unsafe.WriteUnaligned(dst + offset, Unsafe.ReadUnaligned<long>(src + offset));
             offset += 8;
