@@ -95,8 +95,29 @@ internal sealed class RestreamHealthMonitor
             return;
         }
 
-        CheckBufferHealth(streamId, streamName, buffer, consumerCount);
-        LogProgress(streamId, buffer, consumerCount);
+        var readerSnapshots = CircularBufferReadStream
+            .GetActiveStreamSnapshots()
+            .Where(s => string.Equals(s.StreamId, streamId, StringComparison.Ordinal))
+            .ToList();
+
+        var minReaderGapBytes =
+            readerSnapshots.Count > 0 ? readerSnapshots.Min(s => s.CurrentGapBytes) : buffer.TotalBytesWritten;
+
+        var bufferFillPct =
+            buffer.BufferSize > 0
+                ? Math.Min(100.0, (double)minReaderGapBytes * 100.0 / (double)buffer.BufferSize)
+                : 0.0;
+
+        CheckBufferHealth(
+            streamId,
+            streamName,
+            buffer,
+            readerSnapshots.Count,
+            bufferFillPct,
+            minReaderGapBytes,
+            consumerCount
+        );
+        LogProgress(streamId, buffer, consumerCount, bufferFillPct, minReaderGapBytes);
     }
 
     /// <summary>
@@ -125,25 +146,13 @@ internal sealed class RestreamHealthMonitor
         string streamId,
         string streamName,
         CircularBufferWriteStream buffer,
+        int readerCount,
+        double bufferFillPct,
+        long minReaderGapBytes,
         int consumerCount
     )
     {
-        // Buffer health checks based on actual reader-writer gap (not write position).
-        var readerSnapshots = CircularBufferReadStream
-            .GetActiveStreamSnapshots()
-            .Where(s => string.Equals(s.StreamId, streamId, StringComparison.Ordinal))
-            .ToList();
-
-        // Use the minimum gap across all readers as the effective buffer fill
-        var minReaderGapBytes =
-            readerSnapshots.Count > 0 ? readerSnapshots.Min(s => s.CurrentGapBytes) : buffer.TotalBytesWritten; // No readers = full buffer available
-
-        var bufferFillPct =
-            buffer.BufferSize > 0
-                ? Math.Min(100.0, (double)minReaderGapBytes * 100.0 / (double)buffer.BufferSize)
-                : 0.0;
-
-        if (bufferFillPct < _bufferUnderrunThresholdPercent && readerSnapshots.Count > 0)
+        if (bufferFillPct < _bufferUnderrunThresholdPercent && readerCount > 0)
         {
             _bufferUnderrunCount++;
 
@@ -167,7 +176,7 @@ internal sealed class RestreamHealthMonitor
                 }
             }
         }
-        else if (bufferFillPct > _bufferNearFullThresholdPercent && readerSnapshots.Count > 0)
+        else if (bufferFillPct > _bufferNearFullThresholdPercent && readerCount > 0)
         {
             _bufferHealthWarnings++;
             _logger.LogDebugIfEnabled(
@@ -182,21 +191,14 @@ internal sealed class RestreamHealthMonitor
     /// <summary>
     /// Logs broadcast progress metrics at each health check interval.
     /// </summary>
-    private void LogProgress(string streamId, CircularBufferWriteStream buffer, int consumerCount)
+    private void LogProgress(
+        string streamId,
+        CircularBufferWriteStream buffer,
+        int consumerCount,
+        double bufferFillPct,
+        long minReaderGapBytes
+    )
     {
-        var readerSnapshots = CircularBufferReadStream
-            .GetActiveStreamSnapshots()
-            .Where(s => string.Equals(s.StreamId, streamId, StringComparison.Ordinal))
-            .ToList();
-
-        var minReaderGapBytes =
-            readerSnapshots.Count > 0 ? readerSnapshots.Min(s => s.CurrentGapBytes) : buffer.TotalBytesWritten;
-
-        var bufferFillPct =
-            buffer.BufferSize > 0
-                ? Math.Min(100.0, (double)minReaderGapBytes * 100.0 / (double)buffer.BufferSize)
-                : 0.0;
-
         _logger.PluginLogInformation(
             "Broadcast progress for channel {ChannelId}: {TotalMB} MB written, {Consumers} consumers, reader gap {GapKB}KB ({FillPct:F1}%)",
             streamId,
