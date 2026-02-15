@@ -1211,13 +1211,26 @@ public sealed class SharedMemoryTests : IDisposable
         int bufferCapacity = (slotCount - 1) * slotSize;
 
         // Act - write enough data to overflow without consumer reading
+        // Write in chunks so the producer detects availableSlots==0 on subsequent calls
         var generator = CreateGenerator();
         int packetsToOverflow = ((bufferCapacity / TsPacketSize) + 1) * 3;
-        var overflowData = generator.GenerateChunk(packetsToOverflow);
-        producer.Write(overflowData);
+        int packetsWritten = 0;
+        const int chunkSize = 50;
+        bool overflowOccurred = false;
 
-        // Consume overflow flag
-        bool overflowOccurred = consumer.ConsumeOverflow();
+        while (packetsWritten < packetsToOverflow)
+        {
+            int toWrite = Math.Min(chunkSize, packetsToOverflow - packetsWritten);
+            var chunk = generator.GenerateChunk(toWrite);
+            producer.Write(chunk);
+            packetsWritten += toWrite;
+
+            if (consumer.ConsumeOverflow())
+            {
+                overflowOccurred = true;
+            }
+        }
+
         _output.WriteLine($"Overflow occurred: {overflowOccurred}");
         Assert.True(overflowOccurred, "Should have detected overflow");
 
