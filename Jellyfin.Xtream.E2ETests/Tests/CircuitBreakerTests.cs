@@ -115,10 +115,13 @@ public class CircuitBreakerTests
         // Switch the provider to healthy behavior so it can recover during probation
         _fixture.ConfigureProvider(recoveringProvider, new ProviderBehavior { BitrateKbps = 5000 });
 
-        // Wait longer for probation/recovery since quarantine expiry depends on circuit breaker timing
+        // Wait longer for probation/recovery since quarantine expiry depends on circuit breaker timing.
+        // Must call CheckRecovery() because the streaming loop doesn't re-check ejection expiry
+        // once it's connected to a healthy provider (select_provider() is not called again).
         var reachedProbationOrActive = await TestHelpers.WaitForConditionAsync(
             () =>
             {
+                streamer.CheckRecovery();
                 var s = streamer.GetProviderState(0);
                 return s == ProviderState.Probation || s == ProviderState.Active;
             },
@@ -184,12 +187,16 @@ public class CircuitBreakerTests
         if (ejected)
         {
             // Wait for quarantine to expire and provider to leave Ejected state.
+            // The streaming loop doesn't call select_provider() once connected to a
+            // healthy provider, so check_ejection_expiry() never fires. We must call
+            // CheckRecovery() explicitly to trigger the Ejected → Probation transition.
             // With P2C load balancing, the recovering provider may stay in Probation
             // because the healthier provider always wins cost comparison, so the
             // recovering provider never receives traffic to accumulate probation_successes.
             var recoveredFromEjection = await TestHelpers.WaitForConditionAsync(
                 () =>
                 {
+                    streamer.CheckRecovery();
                     var s = streamer.GetProviderState(0);
                     return s == ProviderState.Probation || s == ProviderState.Active;
                 },

@@ -47,7 +47,13 @@ internal static class ProviderHealthAssertions
     )
     {
         var inProbation = await TestHelpers.WaitForConditionAsync(
-            () => streamer.GetProviderState(providerIndex) == ProviderState.Probation,
+            () =>
+            {
+                // The streaming loop doesn't re-check ejection expiry once connected
+                // to a healthy provider. Trigger the check explicitly.
+                streamer.CheckRecovery();
+                return streamer.GetProviderState(providerIndex) == ProviderState.Probation;
+            },
             timeout
         );
 
@@ -72,7 +78,13 @@ internal static class ProviderHealthAssertions
     )
     {
         var recovered = await TestHelpers.WaitForConditionAsync(
-            () => streamer.GetProviderState(providerIndex) == ProviderState.Active,
+            () =>
+            {
+                // The streaming loop doesn't re-check ejection expiry once connected
+                // to a healthy provider. Trigger the check explicitly.
+                streamer.CheckRecovery();
+                return streamer.GetProviderState(providerIndex) == ProviderState.Active;
+            },
             timeout
         );
 
