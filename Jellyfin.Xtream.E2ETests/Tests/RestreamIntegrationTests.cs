@@ -192,12 +192,14 @@ public sealed class RestreamIntegrationTests : IDisposable
         await restream.Open(CancellationToken.None);
 
         // Act - acquire and release a stream
+#pragma warning disable IDISP017 // Prefer using - explicit Dispose() is intentional to test grace period
         var stream = restream.GetStream();
         var buffer = new byte[1316];
-        await stream.ReadAsync(buffer); // Read some data
+        _ = await stream.ReadAsync(buffer); // Read some data
         _output.WriteLine($"Consumer count before dispose: {restream.ConsumerCount}");
 
-        stream.Dispose(); // Consumer disconnects
+        stream.Dispose(); // Consumer disconnects - triggers grace period countdown
+#pragma warning restore IDISP017
         _output.WriteLine($"Consumer count after dispose: {restream.ConsumerCount}");
 
         // Wait for grace period (5 seconds) + margin
@@ -223,10 +225,12 @@ public sealed class RestreamIntegrationTests : IDisposable
         await restream.Open(CancellationToken.None);
 
         // Act - first consumer
+#pragma warning disable IDISP017 // Prefer using - explicit Dispose() is intentional to test reconnection
         var stream1 = restream.GetStream();
         var buffer = new byte[1316];
-        await stream1.ReadAsync(buffer);
-        stream1.Dispose();
+        _ = await stream1.ReadAsync(buffer);
+        stream1.Dispose(); // Disconnect first consumer to test grace period
+#pragma warning restore IDISP017
 
         _output.WriteLine("First consumer disconnected, waiting 3 seconds...");
         await Task.Delay(TimeSpan.FromSeconds(3)); // Less than 5-second grace period
@@ -234,15 +238,13 @@ public sealed class RestreamIntegrationTests : IDisposable
         // Reconnect within grace period
         Assert.False(restream.IsDisposed, "Restream should NOT be disposed within grace period");
 
-        var stream2 = restream.GetStream();
+        using var stream2 = restream.GetStream();
         int read = await stream2.ReadAsync(buffer);
 
         // Assert
         Assert.True(read > 0, "Second consumer should receive data immediately");
         Assert.False(restream.IsDisposed, "Restream should still be active");
         _output.WriteLine($"Reconnected consumer received {read} bytes");
-
-        stream2.Dispose();
     }
 
     // =========================================================================

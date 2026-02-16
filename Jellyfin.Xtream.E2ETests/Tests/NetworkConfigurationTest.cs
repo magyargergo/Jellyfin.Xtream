@@ -574,6 +574,7 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     /// Tests that SetNetworkConfig throws when called on disposed streamer.
     /// </summary>
     [Fact]
+#pragma warning disable IDISP016 // Don't use disposed instance - intentional for this test
     public void NetworkConfig_SetOnDisposed_ThrowsObjectDisposedException()
     {
         // Arrange
@@ -587,10 +588,9 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Dispose();
 
         // Act & Assert - intentionally using disposed instance to verify exception
-#pragma warning disable IDISP016 // Don't use disposed instance - intentional for this test
         Assert.Throws<ObjectDisposedException>(() => streamer.SetNetworkConfig(NetworkConfig.CreateDefault()));
-#pragma warning restore IDISP016
     }
+#pragma warning restore IDISP016
 
     // ========================================================================
     // Helper Methods

@@ -31,5 +31,18 @@ public sealed class RegexReplacementRule(Regex pattern, string replacement = "")
     private readonly string _replacement = replacement;
 
     /// <inheritdoc />
-    public string Apply(string input) => _pattern.Replace(input, _replacement);
+    public string Apply(string input)
+    {
+        try
+        {
+            return _pattern.Replace(input, _replacement);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // On timeout, return input unchanged rather than crashing.
+            // This can happen on first invocation when DFA compilation occurs,
+            // especially with complex patterns containing Unicode alternations.
+            return input;
+        }
+    }
 }

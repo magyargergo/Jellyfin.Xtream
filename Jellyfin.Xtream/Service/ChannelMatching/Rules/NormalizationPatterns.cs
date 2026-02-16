@@ -30,8 +30,8 @@ public static partial class NormalizationPatterns
     /// </summary>
     [GeneratedRegex(
         @"^(\d+\s+)?([A-Z]{2,3}\s*[\|:\-⭐★▶►•●○–—~]|\|[A-Z]{2,3}\||\[[A-Z]{2,3}\]|\([A-Z]{2,3}\)|[A-Z]{2,3}-)\s*",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled,
-        matchTimeoutMilliseconds: 100
+        RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
+        matchTimeoutMilliseconds: 500
     )]
     public static partial Regex CountryPrefixPattern();
 
@@ -55,18 +55,19 @@ public static partial class NormalizationPatterns
     /// </summary>
     [GeneratedRegex(
         @"\s+(Poland|Polska|PL|UK|Germany|Deutschland|DE|France|FR|Spain|Espana|España|ES|Italy|Italia|IT|Netherlands|Nederland|NL|USA|US|Canada|CA|Australia|AU|Austria|Osterreich|Österreich|AT|Belgium|Belgique|België|BE|Switzerland|Schweiz|Suisse|CH|Czech|Cesko|Česko|CZ|Slovakia|Slovensko|SK|Hungary|Magyarorszag|Magyarország|HU|Romania|RO|Bulgaria|BG|Croatia|Hrvatska|HR|Serbia|Srbija|RS|Slovenia|Slovenija|SI|Portugal|PT|Brazil|Brasil|BR|Mexico|México|MX|Argentina|AR|Chile|CL|Colombia|CO|Peru|Perú|PE|Venezuela|VE|India|IN|Pakistan|PK|Bangladesh|BD|Russia|Rossiya|Россия|RU|Ukraine|Ukraina|Україна|UA|Belarus|BY|Kazakhstan|KZ|Turkey|Turkiye|Türkiye|TR|Greece|Hellas|GR|Israel|IL|Egypt|EG|South Africa|ZA|Nigeria|NG|Kenya|KE|Morocco|MA|Tunisia|TN|Algeria|DZ|Japan|Nippon|JP|China|CN|Korea|KR|Taiwan|TW|Hong Kong|HK|Singapore|SG|Malaysia|MY|Indonesia|ID|Thailand|TH|Vietnam|VN|Philippines|PH|Sweden|Sverige|SE|Norway|Norge|NO|Denmark|Danmark|DK|Finland|Suomi|FI|Iceland|IS|Ireland|IE|Scotland|Wales|England|Latvia|Latvija|LV|Lithuania|Lietuva|LT|Estonia|Eesti|EE)\s*$",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled,
-        matchTimeoutMilliseconds: 100
+        RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
+        matchTimeoutMilliseconds: 1000
     )]
     public static partial Regex CountrySuffixPattern();
 
     /// <summary>
     /// Matches common streaming/broadcast suffixes.
     /// Examples: "Live", "Stream", "TV", "Channel", "Plus", "Extra".
+    /// Uses NonBacktracking mode to prevent catastrophic backtracking with Unicode characters.
     /// </summary>
     [GeneratedRegex(
         @"\s+(Live|Stream|Streaming|Online|24/7|247|Backup|Main|Primary|Secondary|Alt|Alternative)\s*$",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexOptions.IgnoreCase | RegexOptions.NonBacktracking,
         matchTimeoutMilliseconds: 100
     )]
     public static partial Regex StreamingSuffixPattern();

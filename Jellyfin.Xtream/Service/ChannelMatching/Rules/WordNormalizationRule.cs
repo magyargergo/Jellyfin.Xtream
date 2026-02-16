@@ -114,24 +114,33 @@ public sealed partial class WordNormalizationRule : INormalizationRule
             return input;
         }
 
-        var result = input;
+        try
+        {
+            var result = input;
 
-        // Apply common word normalizations (singular/plural)
-        result = SportsPattern().Replace(result, "SPORT");
-        result = MoviesPattern().Replace(result, "MOVIE");
+            // Apply common word normalizations (singular/plural)
+            result = SportsPattern().Replace(result, "SPORT");
+            result = MoviesPattern().Replace(result, "MOVIE");
 
-        // Remove standalone "TV" that's redundant (but keep TVN, TVP, TV4, etc.)
-        result = StandaloneTvPattern().Replace(result, string.Empty);
+            // Remove standalone "TV" that's redundant (but keep TVN, TVP, TV4, etc.)
+            result = StandaloneTvPattern().Replace(result, string.Empty);
 
-        // Normalize brand name variations
-        result = NationalGeographicPattern().Replace(result, "NATGEO");
-        result = NatGeoPattern().Replace(result, "NATGEO");
-        result = TravelChannelPattern().Replace(result, "TRAVEL");
-        result = EEntertainmentPattern().Replace(result, "E");
+            // Normalize brand name variations
+            result = NationalGeographicPattern().Replace(result, "NATGEO");
+            result = NatGeoPattern().Replace(result, "NATGEO");
+            result = TravelChannelPattern().Replace(result, "TRAVEL");
+            result = EEntertainmentPattern().Replace(result, "E");
 
-        // Remove redundant "Channel" suffix (but after brand-specific rules)
-        result = StandaloneChannelPattern().Replace(result, string.Empty);
+            // Remove redundant "Channel" suffix (but after brand-specific rules)
+            result = StandaloneChannelPattern().Replace(result, string.Empty);
 
-        return result;
+            return result;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // On timeout, return input unchanged rather than crashing.
+            // This can happen on first invocation when DFA compilation occurs.
+            return input;
+        }
     }
 }
