@@ -404,10 +404,14 @@ public class XtreamDiscoveryController(ILogger<XtreamDiscoveryController> logger
     /// Import a discovered provider as a configured provider.
     /// </summary>
     /// <param name="provider">The provider to import.</param>
+    /// <param name="discoveryService">The discovery service for resolving cached credentials.</param>
     /// <returns>Result with the new provider ID.</returns>
     [Authorize(Policy = "RequiresElevation")]
     [HttpPost("ImportDiscoveredProvider")]
-    public ActionResult<object> ImportDiscoveredProvider([FromBody] DiscoveredProviderResponse provider)
+    public ActionResult<object> ImportDiscoveredProvider(
+        [FromBody] DiscoveredProviderResponse provider,
+        [FromServices] IProviderDiscoveryService discoveryService
+    )
     {
         if (string.IsNullOrEmpty(provider.Server) || string.IsNullOrEmpty(provider.Username))
         {
@@ -419,6 +423,13 @@ public class XtreamDiscoveryController(ILogger<XtreamDiscoveryController> logger
         if (!UrlValidator.IsValidProviderHost(provider.Server, out var hostError))
         {
             return BadRequest(XtreamControllerHelpers.CreateError(ErrorCodes.ValidationFailed, hostError));
+        }
+
+        if (provider.Port < 1 || provider.Port > 65535)
+        {
+            return BadRequest(
+                XtreamControllerHelpers.CreateError(ErrorCodes.ValidationFailed, "Port must be between 1 and 65535")
+            );
         }
 
         var config = Plugin.Instance.Configuration;
@@ -441,13 +452,34 @@ public class XtreamDiscoveryController(ILogger<XtreamDiscoveryController> logger
             );
         }
 
+        // Resolve the real password from cached discovery results (GET response redacts passwords).
+        var cachedResult = discoveryService.GetLastResult();
+        var cachedPassword =
+            cachedResult
+                ?.TestResults.FirstOrDefault(r =>
+                    string.Equals(r.Credential.Server, provider.Server, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(r.Credential.Username, provider.Username, StringComparison.OrdinalIgnoreCase)
+                )
+                ?.Credential.Password
+            ?? string.Empty;
+
+        if (string.IsNullOrEmpty(cachedPassword))
+        {
+            return BadRequest(
+                XtreamControllerHelpers.CreateError(
+                    ErrorCodes.ValidationFailed,
+                    "Could not resolve credentials. Please re-run discovery."
+                )
+            );
+        }
+
         var newProvider = new XtreamProvider
         {
             Id = Guid.NewGuid().ToString("N")[..8],
             Name = $"Discovered - {provider.Server}",
             BaseUrl = $"http://{provider.Server}:{provider.Port}",
             Username = provider.Username,
-            Password = provider.Password,
+            Password = cachedPassword,
             Enabled = true,
         };
 
@@ -483,7 +515,9 @@ public class XtreamDiscoveryController(ILogger<XtreamDiscoveryController> logger
             Server = result.Credential.Server,
             Port = result.Credential.Port,
             Username = result.Credential.Username,
-            Password = result.Credential.Password,
+            // Redact password in GET responses to avoid leaking credentials in logs/browser history.
+            // The import POST endpoint retrieves the password from the cached discovery result.
+            Password = string.IsNullOrEmpty(result.Credential.Password) ? string.Empty : "********",
             Status = result.Status.ToString(),
             ExpirationDate = result.ExpirationDate,
             MaxConnections = result.MaxConnections,

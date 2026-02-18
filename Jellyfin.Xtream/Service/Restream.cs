@@ -63,27 +63,27 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     // Data flow synchronization
     private volatile bool _receivingData;
 
-    private readonly ILogger<Restream> _logger;
-    private readonly ILoggerFactory _loggerFactory;
-    private readonly IDiscordNotificationService? _discordService;
+    private ILogger<Restream> _logger = null!;
+    private ILoggerFactory _loggerFactory = null!;
+    private IDiscordNotificationService? _discordService;
     private readonly IReadOnlyList<string> _urls;
     private readonly string _sourceUrl;
     private readonly SemaphoreSlim _openLock = new(1, 1);
-    private readonly CircularBufferWriteStream _buffer;
-    private readonly RefCountedResourcePool<CircularBufferReadStream> _readerPool;
-    private readonly string _streamQuality;
+    private CircularBufferWriteStream _buffer = null!;
+    private RefCountedResourcePool<CircularBufferReadStream> _readerPool = null!;
+    private string _streamQuality = null!;
     private readonly DateTime _startTime = DateTime.UtcNow;
-    private readonly int _streamOpenTimeoutMs;
-    private readonly int _firstByteTimeoutMs;
-    private readonly int _consumerDisconnectGraceSeconds;
+    private int _streamOpenTimeoutMs;
+    private int _firstByteTimeoutMs;
+    private int _consumerDisconnectGraceSeconds;
     private readonly IReadOnlyList<double>? _initialScores;
 
     // Extracted collaborators
-    private readonly RestreamHealthMonitor _healthMonitor;
-    private readonly string _sharedMemoryName;
+    private RestreamHealthMonitor _healthMonitor = null!;
+    private string _sharedMemoryName = null!;
     private RestreamSharedMemoryCoordinator? _shmCoordinator;
 
-    private CancellationTokenSource _tokenSource;
+    private CancellationTokenSource _tokenSource = null!;
     private Task? _broadcastTask;
     private int _consumerCount;
     private volatile bool _isDisposed;
@@ -105,7 +105,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     }
 
     /// <inheritdoc />
-    public string OriginalStreamId { get; set; }
+    public string OriginalStreamId { get; set; } = null!;
 
     /// <inheritdoc />
     public string TunerHostId => TunerHost;
@@ -114,10 +114,10 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
     public bool EnableStreamSharing => true;
 
     /// <inheritdoc />
-    public MediaSourceInfo MediaSource { get; set; }
+    public MediaSourceInfo MediaSource { get; set; } = null!;
 
     /// <inheritdoc />
-    public string UniqueId { get; init; }
+    public string UniqueId { get; private set; } = null!;
 
     /// <summary>
     /// Gets a value indicating whether this stream has been disposed.
@@ -154,48 +154,25 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         int firstByteTimeoutMs = DefaultFirstByteTimeoutMs
     )
     {
-        _logger = logger;
-        _loggerFactory = loggerFactory;
-        _discordService = discordService;
         _urls = urls;
         _initialScores = initialScores;
-        MediaSource = mediaSource;
-        _streamOpenTimeoutMs = streamOpenTimeoutMs;
-        _firstByteTimeoutMs = firstByteTimeoutMs;
-        _tokenSource = new CancellationTokenSource();
-        _streamQuality = RestreamConfiguration.DetectStreamQuality(mediaSource);
-        var bufferSize = RestreamConfiguration.GetBufferSize(_streamQuality);
-
-        _buffer = new CircularBufferWriteStream(bufferSize, _loggerFactory);
-
-        // Cache buffer threshold settings from plugin configuration for use in hot paths
-        var pluginConfig = RestreamConfiguration.GetPluginConfiguration();
-        _consumerDisconnectGraceSeconds = pluginConfig?.ConsumerDisconnectGraceSeconds ?? 5;
-
-        _healthMonitor = new RestreamHealthMonitor(
-            _logger,
-            _discordService,
-            pluginConfig?.BufferUnderrunThresholdPercent ?? 10.0,
-            pluginConfig?.BufferNearFullThresholdPercent ?? 90.0,
-            pluginConfig?.BufferUnderrunNotificationThreshold ?? 5
+        _sourceUrl = _urls.Count > 0 ? _urls[0] : "unknown";
+        InitializeCommon(
+            appHost,
+            logger,
+            loggerFactory,
+            mediaSource,
+            discordService,
+            streamOpenTimeoutMs,
+            firstByteTimeoutMs
         );
 
         _logger.PluginLogInformation(
             "Initialized stream {StreamId} ({Quality}) with automatic quality-based buffering ({BufferSizeMB}MB buffer)",
             mediaSource.Id,
             _streamQuality,
-            (double)bufferSize / 1048576.0
+            (double)_buffer.BufferSize / 1048576.0
         );
-        OriginalStreamId = MediaSource.Id;
-        UniqueId = Guid.NewGuid().ToString();
-        _sharedMemoryName = $"jellyfin_stream_{UniqueId.Replace("-", string.Empty, StringComparison.Ordinal)}";
-        _sourceUrl = _urls.Count > 0 ? _urls[0] : "unknown";
-        var path = "/LiveTv/LiveStreamFiles/" + UniqueId + "/stream.ts";
-        MediaSource.Path = appHost.GetSmartApiUrl(IPAddress.Any) + path;
-        MediaSource.EncoderPath = appHost.GetApiUrlForLocalAccess() + path;
-        MediaSource.Protocol = MediaProtocol.Http;
-        _readerPool = new RefCountedResourcePool<CircularBufferReadStream>(CreateReaderStream, OnConsumerCountChanged);
-        _ = RestreamActiveStreamRegistry.Register(MediaSource.Id, this);
         _logger.LogDebugIfEnabled(
             "Registered Restream {StreamId} (total active: {Count})",
             MediaSource.Id,
@@ -228,12 +205,43 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         int firstByteTimeoutMs = DefaultFirstByteTimeoutMs
     )
     {
-        _logger = logger;
-        _loggerFactory = loggerFactory;
-        _discordService = discordService;
         _registry = registry;
         _channelGuid = channelGuid;
         _urls = [];
+        _sourceUrl = $"registry:{channelGuid}";
+        InitializeCommon(
+            appHost,
+            logger,
+            loggerFactory,
+            mediaSource,
+            discordService,
+            streamOpenTimeoutMs,
+            firstByteTimeoutMs
+        );
+
+        _logger.PluginLogInformation(
+            "Initialized registry-based stream for {StreamId} ({Quality}, GUID: {Guid}) with {BufferSizeMB}MB buffer",
+            mediaSource.Id,
+            _streamQuality,
+            channelGuid,
+            (double)_buffer.BufferSize / 1048576.0
+        );
+    }
+
+#pragma warning disable IDISP003 // Fields are only assigned once from constructors via this method
+    private void InitializeCommon(
+        IServerApplicationHost appHost,
+        ILogger<Restream> logger,
+        ILoggerFactory loggerFactory,
+        MediaSourceInfo mediaSource,
+        IDiscordNotificationService? discordService,
+        int streamOpenTimeoutMs,
+        int firstByteTimeoutMs
+    )
+    {
+        _logger = logger;
+        _loggerFactory = loggerFactory;
+        _discordService = discordService;
         MediaSource = mediaSource;
         _streamOpenTimeoutMs = streamOpenTimeoutMs;
         _firstByteTimeoutMs = firstByteTimeoutMs;
@@ -254,17 +262,9 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
             pluginConfig?.BufferUnderrunNotificationThreshold ?? 5
         );
 
-        _logger.PluginLogInformation(
-            "Initialized registry-based stream for {StreamId} ({Quality}, GUID: {Guid}) with {BufferSizeMB}MB buffer",
-            mediaSource.Id,
-            _streamQuality,
-            channelGuid,
-            (double)bufferSize / 1048576.0
-        );
         OriginalStreamId = MediaSource.Id;
         UniqueId = Guid.NewGuid().ToString();
         _sharedMemoryName = $"jellyfin_stream_{UniqueId.Replace("-", string.Empty, StringComparison.Ordinal)}";
-        _sourceUrl = $"registry:{channelGuid}";
         var path = "/LiveTv/LiveStreamFiles/" + UniqueId + "/stream.ts";
         MediaSource.Path = appHost.GetSmartApiUrl(IPAddress.Any) + path;
         MediaSource.EncoderPath = appHost.GetApiUrlForLocalAccess() + path;
@@ -272,6 +272,7 @@ public class Restream : ILiveStream, IDisposable, IDirectStreamProvider
         _readerPool = new RefCountedResourcePool<CircularBufferReadStream>(CreateReaderStream, OnConsumerCountChanged);
         _ = RestreamActiveStreamRegistry.Register(MediaSource.Id, this);
     }
+#pragma warning restore IDISP003
 
     /// <summary>
     /// Finalizes an instance of the <see cref="Restream"/> class.

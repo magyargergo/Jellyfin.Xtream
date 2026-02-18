@@ -69,6 +69,41 @@ internal static class UrlValidator
     }
 
     /// <summary>
+    /// Validates that a provider base URL uses an allowed scheme (HTTP or HTTPS).
+    /// Rejects file://, ftp://, gopher://, dict://, and other non-HTTP schemes
+    /// to prevent SSRF via the native curl streaming layer.
+    /// </summary>
+    /// <param name="baseUrl">The provider base URL.</param>
+    /// <param name="error">Error message if validation fails.</param>
+    /// <returns>True if the URL uses an allowed scheme.</returns>
+    internal static bool IsValidProviderBaseUrl(string? baseUrl, out string error)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            error = "BaseUrl is required.";
+            return false;
+        }
+
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
+        {
+            error = "BaseUrl must be a valid absolute URL.";
+            return false;
+        }
+
+        if (
+            !string.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            error = $"BaseUrl must use HTTP or HTTPS scheme, got '{uri.Scheme}'.";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    /// <summary>
     /// Validates that a provider base URL does not point to private/loopback addresses.
     /// Xtream providers use HTTP by protocol design, so HTTP is allowed.
     /// </summary>

@@ -29,8 +29,17 @@ namespace Jellyfin.Xtream.Client;
 /// The Xtream API client implementation with token validation and health monitoring.
 /// </summary>
 /// <remarks>
+/// <para>
 /// This class implements IDisposable to properly clean up the authentication lock semaphore.
 /// HttpClient instances from IHttpClientFactory are managed by the factory and should not be disposed manually.
+/// </para>
+/// <para>
+/// SECURITY NOTE: The Xtream Codes API protocol mandates that credentials (username and password)
+/// are transmitted as URL query parameters (e.g., /player_api.php?username=X&amp;password=Y).
+/// This is an inherent protocol limitation — there is no alternative authentication mechanism.
+/// Credentials will appear in HTTP server access logs, network traces, and .NET diagnostic listeners.
+/// Callers should avoid logging request URLs and ensure HTTPS is used where possible.
+/// </para>
 /// </remarks>
 /// <remarks>
 /// Initializes a new instance of the <see cref="XtreamClient"/> class.

@@ -84,6 +84,14 @@ std::unique_ptr<SharedMemoryProducer> SharedMemoryProducer::create(
         return nullptr;
     }
 
+    // Guard against integer overflow in total size calculation.
+    // slot_count and slot_size are both size_t; their product can silently wrap.
+    if (slot_count > (SIZE_MAX - SHM_HEADER_SIZE) / slot_size) {
+        LOG_ERROR(kLogComponent, "slot_count * slot_size overflows: %zu x %zu", slot_count, slot_size);
+        store_error(out_error, std::make_error_code(std::errc::value_too_large));
+        return nullptr;
+    }
+
     auto producer = std::unique_ptr<SharedMemoryProducer>(new SharedMemoryProducer());
     producer->name_ = std::string(name);
     producer->slot_count_ = slot_count;

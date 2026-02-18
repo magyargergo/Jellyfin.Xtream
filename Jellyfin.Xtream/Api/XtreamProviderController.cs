@@ -133,6 +133,11 @@ public class XtreamProviderController(
             );
         }
 
+        if (!UrlValidator.IsValidProviderBaseUrl(request.BaseUrl, out var urlError))
+        {
+            return BadRequest(XtreamControllerHelpers.CreateError(ErrorCodes.ValidationFailed, urlError));
+        }
+
         var config = Plugin.Instance.Configuration;
 
         var newProvider = new XtreamProvider
@@ -191,6 +196,11 @@ public class XtreamProviderController(
 
         if (!string.IsNullOrWhiteSpace(request.BaseUrl))
         {
+            if (!UrlValidator.IsValidProviderBaseUrl(request.BaseUrl, out var urlError))
+            {
+                return BadRequest(XtreamControllerHelpers.CreateError(ErrorCodes.ValidationFailed, urlError));
+            }
+
             provider.BaseUrl = request.BaseUrl.TrimEnd('/');
         }
 

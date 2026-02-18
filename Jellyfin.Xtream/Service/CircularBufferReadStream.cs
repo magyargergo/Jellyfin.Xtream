@@ -808,9 +808,9 @@ public sealed class CircularBufferReadStream : Stream
                         }
                     );
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Ignore errors for individual streams
+                    stream._logger?.LogDebug(ex, "Error collecting snapshot for stream {StreamId}", stream._streamId);
                 }
             }
         }

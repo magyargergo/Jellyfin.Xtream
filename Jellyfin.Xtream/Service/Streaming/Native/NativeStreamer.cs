@@ -67,6 +67,57 @@ public sealed class NativeStreamer : IDisposable
     private int _callbackDisposed;
 
     /// <summary>
+    /// Executes an action with the native handle safely referenced via DangerousAddRef/DangerousRelease.
+    /// Prevents use-after-free if Dispose runs concurrently on another thread.
+    /// </summary>
+    private T WithHandle<T>(Func<nint, T> action, T disposedDefault)
+    {
+        if (_disposed)
+        {
+            return disposedDefault;
+        }
+
+        bool success = false;
+        try
+        {
+            _streamer.DangerousAddRef(ref success);
+            return action(_streamer.DangerousGetHandle());
+        }
+        finally
+        {
+            if (success)
+            {
+                _streamer.DangerousRelease();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Executes a void action with the native handle safely referenced.
+    /// </summary>
+    private void WithHandle(Action<nint> action)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        bool success = false;
+        try
+        {
+            _streamer.DangerousAddRef(ref success);
+            action(_streamer.DangerousGetHandle());
+        }
+        finally
+        {
+            if (success)
+            {
+                _streamer.DangerousRelease();
+            }
+        }
+    }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="NativeStreamer"/> class.
     /// </summary>
     /// <param name="config">Streamer configuration. Uses defaults if null.</param>
@@ -263,16 +314,7 @@ public sealed class NativeStreamer : IDisposable
     /// </summary>
     public bool IsSharedMemoryMode
     {
-        get
-        {
-            if (_disposed)
-            {
-                return false;
-            }
-
-            // Diagnostic-only: TOCTOU race acceptable
-            return TsDuckNativeMethods.StreamerIsSharedMemoryMode(_streamer.DangerousGetHandle()) != 0;
-        }
+        get => WithHandle(static h => TsDuckNativeMethods.StreamerIsSharedMemoryMode(h) != 0, false);
     }
 
     /// <summary>
@@ -379,13 +421,7 @@ public sealed class NativeStreamer : IDisposable
     /// </remarks>
     public DnsErrorType GetLastDnsError()
     {
-        if (_disposed)
-        {
-            return DnsErrorType.None;
-        }
-
-        // Diagnostic-only: TOCTOU race acceptable
-        return (DnsErrorType)TsDuckNativeMethods.StreamerGetLastDnsError(_streamer.DangerousGetHandle());
+        return WithHandle(static h => (DnsErrorType)TsDuckNativeMethods.StreamerGetLastDnsError(h), DnsErrorType.None);
     }
 
     /// <summary>
@@ -496,14 +532,11 @@ public sealed class NativeStreamer : IDisposable
     /// </summary>
     public void RequestSwitch()
     {
-        if (_disposed)
+        WithHandle(h =>
         {
-            return;
-        }
-
-        // Diagnostic-only: TOCTOU race acceptable
-        TsDuckNativeMethods.StreamerRequestSwitch(_streamer.DangerousGetHandle());
-        _logger?.LogDebugIfEnabled("NativeStreamer switch requested");
+            TsDuckNativeMethods.StreamerRequestSwitch(h);
+            _logger?.LogDebugIfEnabled("NativeStreamer switch requested");
+        });
     }
 
     /// <summary>
@@ -513,26 +546,10 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>The current status, or a default idle status if disposed or unavailable.</returns>
     public StreamerStatus GetStatus()
     {
-        if (_disposed)
-        {
-            return default;
-        }
-
-        bool success = false;
-        _streamer.DangerousAddRef(ref success);
-        try
-        {
-            if (TsDuckNativeMethods.StreamerGetStatus(_streamer.DangerousGetHandle(), out var native))
-            {
-                return native.ToManaged();
-            }
-
-            return default;
-        }
-        finally
-        {
-            _streamer.DangerousRelease();
-        }
+        return WithHandle(
+            static h => TsDuckNativeMethods.StreamerGetStatus(h, out var native) ? native.ToManaged() : default,
+            default
+        );
     }
 
     /// <summary>
@@ -542,24 +559,21 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>The current metrics snapshot, or null if unavailable.</returns>
     public TsDuckMetrics? GetMetrics()
     {
-        if (_disposed)
-        {
-            return null;
-        }
+        return WithHandle<TsDuckMetrics?>(
+            static h =>
+            {
+                var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(h);
+                if (analyzerHandle == 0)
+                {
+                    return null;
+                }
 
-        // Diagnostic-only: TOCTOU race acceptable
-        var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(_streamer.DangerousGetHandle());
-        if (analyzerHandle == 0)
-        {
-            return null;
-        }
-
-        if (TsDuckNativeMethods.AnalyzerGetMetrics(analyzerHandle, out var native))
-        {
-            return native.ToManaged();
-        }
-
-        return null;
+                return TsDuckNativeMethods.AnalyzerGetMetrics(analyzerHandle, out var native)
+                    ? native.ToManaged()
+                    : null;
+            },
+            null
+        );
     }
 
     /// <summary>
@@ -568,19 +582,21 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>PCR analysis data, or null if unavailable.</returns>
     public PcrAnalysis? GetPcrAnalysis()
     {
-        if (_disposed)
-        {
-            return null;
-        }
+        return WithHandle<PcrAnalysis?>(
+            static h =>
+            {
+                var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(h);
+                if (analyzerHandle == 0)
+                {
+                    return null;
+                }
 
-        // Diagnostic-only: TOCTOU race acceptable
-        var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(_streamer.DangerousGetHandle());
-        if (analyzerHandle == 0)
-        {
-            return null;
-        }
-
-        return TsDuckNativeMethods.AnalyzerGetPcrAnalysis(analyzerHandle, out var native) ? native.ToManaged() : null;
+                return TsDuckNativeMethods.AnalyzerGetPcrAnalysis(analyzerHandle, out var native)
+                    ? native.ToManaged()
+                    : null;
+            },
+            null
+        );
     }
 
     /// <summary>
@@ -596,31 +612,47 @@ public sealed class NativeStreamer : IDisposable
             return null;
         }
 
-        // Allocate a buffer large enough for PAT + PMT + several TS packets of SPS/PPS/VPS
-        // Max: PAT(188) + PMT(188) + ~10 TS packets of parameter sets = ~2256 bytes
-        const int maxBufferSize = 188 * 16;
-        byte* buffer = stackalloc byte[maxBufferSize];
-        int bytesWritten = 0;
-
-        var result = TsDuckNativeMethods.StreamerGetInitPackets(
-            _streamer.DangerousGetHandle(),
-            buffer,
-            maxBufferSize,
-            &bytesWritten
-        );
-
-        if (result != 0 || bytesWritten <= 0)
+        bool refSuccess = false;
+        try
         {
-            _logger?.LogDebugIfEnabled("NativeStreamer.GetInitPackets: not available yet (result={Result})", result);
-            return null;
+            _streamer.DangerousAddRef(ref refSuccess);
+
+            // Allocate a buffer large enough for PAT + PMT + several TS packets of SPS/PPS/VPS
+            // Max: PAT(188) + PMT(188) + ~10 TS packets of parameter sets = ~2256 bytes
+            const int maxBufferSize = 188 * 16;
+            byte* buffer = stackalloc byte[maxBufferSize];
+            int bytesWritten = 0;
+
+            var result = TsDuckNativeMethods.StreamerGetInitPackets(
+                _streamer.DangerousGetHandle(),
+                buffer,
+                maxBufferSize,
+                &bytesWritten
+            );
+
+            if (result != 0 || bytesWritten <= 0)
+            {
+                _logger?.LogDebugIfEnabled(
+                    "NativeStreamer.GetInitPackets: not available yet (result={Result})",
+                    result
+                );
+                return null;
+            }
+
+            // Copy to managed array
+            var data = new byte[bytesWritten];
+            new Span<byte>(buffer, bytesWritten).CopyTo(data);
+
+            _logger?.LogDebugIfEnabled("NativeStreamer.GetInitPackets: returning {Bytes} bytes", bytesWritten);
+            return data;
         }
-
-        // Copy to managed array
-        var data = new byte[bytesWritten];
-        new Span<byte>(buffer, bytesWritten).CopyTo(data);
-
-        _logger?.LogDebugIfEnabled("NativeStreamer.GetInitPackets: returning {Bytes} bytes", bytesWritten);
-        return data;
+        finally
+        {
+            if (refSuccess)
+            {
+                _streamer.DangerousRelease();
+            }
+        }
     }
 
     /// <summary>
@@ -629,21 +661,21 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>A/V sync analysis data, or null if unavailable.</returns>
     public AvSyncAnalysis? GetAvSyncAnalysis()
     {
-        if (_disposed)
-        {
-            return null;
-        }
+        return WithHandle<AvSyncAnalysis?>(
+            static h =>
+            {
+                var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(h);
+                if (analyzerHandle == 0)
+                {
+                    return null;
+                }
 
-        // Diagnostic-only: TOCTOU race acceptable
-        var analyzerHandle = TsDuckNativeMethods.StreamerGetAnalyzer(_streamer.DangerousGetHandle());
-        if (analyzerHandle == 0)
-        {
-            return null;
-        }
-
-        return TsDuckNativeMethods.AnalyzerGetAvSyncAnalysis(analyzerHandle, out var native)
-            ? native.ToManaged()
-            : null;
+                return TsDuckNativeMethods.AnalyzerGetAvSyncAnalysis(analyzerHandle, out var native)
+                    ? native.ToManaged()
+                    : null;
+            },
+            null
+        );
     }
 
     // =========================================================================
@@ -657,14 +689,14 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>The provider state, or <see cref="ProviderState.Ejected"/> if disposed or invalid index.</returns>
     public ProviderState GetProviderState(int providerIndex)
     {
-        if (_disposed)
-        {
-            return ProviderState.Ejected;
-        }
-
-        // Diagnostic-only: TOCTOU race acceptable
-        var state = TsDuckNativeMethods.StreamerGetProviderState(_streamer.DangerousGetHandle(), providerIndex);
-        return state < 0 ? ProviderState.Ejected : (ProviderState)state;
+        return WithHandle(
+            h =>
+            {
+                var state = TsDuckNativeMethods.StreamerGetProviderState(h, providerIndex);
+                return state < 0 ? ProviderState.Ejected : (ProviderState)state;
+            },
+            ProviderState.Ejected
+        );
     }
 
     /// <summary>
@@ -674,20 +706,13 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>The health snapshot, or null if unavailable.</returns>
     public ProviderHealthSnapshot? GetProviderHealth(int providerIndex)
     {
-        if (_disposed)
-        {
-            return null;
-        }
-
-        // Diagnostic-only: TOCTOU race acceptable
-        if (
-            TsDuckNativeMethods.StreamerGetProviderHealth(_streamer.DangerousGetHandle(), providerIndex, out var native)
-        )
-        {
-            return native.ToManaged();
-        }
-
-        return null;
+        return WithHandle<ProviderHealthSnapshot?>(
+            h =>
+                TsDuckNativeMethods.StreamerGetProviderHealth(h, providerIndex, out var native)
+                    ? native.ToManaged()
+                    : null,
+            null
+        );
     }
 
     /// <summary>
@@ -697,13 +722,7 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>Isolated times count, or -1 if unavailable.</returns>
     public int GetIsolatedTimes(int providerIndex)
     {
-        if (_disposed)
-        {
-            return -1;
-        }
-
-        // Diagnostic-only: TOCTOU race acceptable
-        return TsDuckNativeMethods.StreamerGetIsolatedTimes(_streamer.DangerousGetHandle(), providerIndex);
+        return WithHandle(h => TsDuckNativeMethods.StreamerGetIsolatedTimes(h, providerIndex), -1);
     }
 
     /// <summary>
@@ -712,12 +731,12 @@ public sealed class NativeStreamer : IDisposable
     /// </summary>
     public void RunOutlierDetection()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
-        TsDuckNativeMethods.StreamerRunOutlierDetection(_streamer.DangerousGetHandle());
+        WithHandle(
+            static (nint h) =>
+            {
+                TsDuckNativeMethods.StreamerRunOutlierDetection(h);
+            }
+        );
     }
 
     /// <summary>
@@ -726,13 +745,7 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>Provider count, or 0 if unavailable.</returns>
     public int GetProviderCount()
     {
-        if (_disposed)
-        {
-            return 0;
-        }
-
-        // Diagnostic-only: TOCTOU race acceptable
-        return TsDuckNativeMethods.StreamerGetProviderCount(_streamer.DangerousGetHandle());
+        return WithHandle(static h => TsDuckNativeMethods.StreamerGetProviderCount(h), 0);
     }
 
     /// <summary>
@@ -740,13 +753,11 @@ public sealed class NativeStreamer : IDisposable
     /// </summary>
     public void ResetAllProviders()
     {
-        if (_disposed)
+        WithHandle(h =>
         {
-            return;
-        }
-
-        TsDuckNativeMethods.StreamerResetAllProviders(_streamer.DangerousGetHandle());
-        _logger?.LogDebugIfEnabled("NativeStreamer: all providers reset to Active");
+            TsDuckNativeMethods.StreamerResetAllProviders(h);
+            _logger?.LogDebugIfEnabled("NativeStreamer: all providers reset to Active");
+        });
     }
 
     /// <summary>
@@ -756,17 +767,15 @@ public sealed class NativeStreamer : IDisposable
     /// <param name="durationMs">Duration of ejection in milliseconds.</param>
     public void ForceEjectProvider(int providerIndex, int durationMs)
     {
-        if (_disposed)
+        WithHandle(h =>
         {
-            return;
-        }
-
-        TsDuckNativeMethods.StreamerForceEjectProvider(_streamer.DangerousGetHandle(), providerIndex, durationMs);
-        _logger?.LogDebugIfEnabled(
-            "NativeStreamer: provider {Index} force ejected for {Duration}ms",
-            providerIndex,
-            durationMs
-        );
+            TsDuckNativeMethods.StreamerForceEjectProvider(h, providerIndex, durationMs);
+            _logger?.LogDebugIfEnabled(
+                "NativeStreamer: provider {Index} force ejected for {Duration}ms",
+                providerIndex,
+                durationMs
+            );
+        });
     }
 
     // ========================================================================
@@ -780,13 +789,7 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>DNS failure count, or 0 if disposed or invalid index.</returns>
     public int GetDnsFailureCount(int providerIndex)
     {
-        if (_disposed)
-        {
-            return 0;
-        }
-
-        // Diagnostic-only: TOCTOU race acceptable
-        return TsDuckNativeMethods.StreamerGetDnsFailureCount(_streamer.DangerousGetHandle(), providerIndex);
+        return WithHandle(h => TsDuckNativeMethods.StreamerGetDnsFailureCount(h, providerIndex), 0);
     }
 
     /// <summary>
@@ -797,18 +800,19 @@ public sealed class NativeStreamer : IDisposable
     /// <returns>DNS failure policy (0=Switch, 1=EjectAndSwitch), or -1 on error.</returns>
     public DnsFailurePolicy SimulateDnsFailure(int providerIndex)
     {
-        if (_disposed)
-        {
-            return DnsFailurePolicy.Switch;
-        }
-
-        var result = TsDuckNativeMethods.StreamerSimulateDnsFailure(_streamer.DangerousGetHandle(), providerIndex);
-        _logger?.LogDebugIfEnabled(
-            "NativeStreamer: simulated DNS failure for provider {Index}, policy={Policy}",
-            providerIndex,
-            result
+        return WithHandle(
+            h =>
+            {
+                var result = TsDuckNativeMethods.StreamerSimulateDnsFailure(h, providerIndex);
+                _logger?.LogDebugIfEnabled(
+                    "NativeStreamer: simulated DNS failure for provider {Index}, policy={Policy}",
+                    providerIndex,
+                    result
+                );
+                return result < 0 ? DnsFailurePolicy.Switch : (DnsFailurePolicy)result;
+            },
+            DnsFailurePolicy.Switch
         );
-        return result < 0 ? DnsFailurePolicy.Switch : (DnsFailurePolicy)result;
     }
 
     /// <summary>
@@ -817,13 +821,11 @@ public sealed class NativeStreamer : IDisposable
     /// <param name="providerIndex">Index of the provider (0-based).</param>
     public void ResetDnsFailureCount(int providerIndex)
     {
-        if (_disposed)
+        WithHandle(h =>
         {
-            return;
-        }
-
-        TsDuckNativeMethods.StreamerResetDnsFailureCount(_streamer.DangerousGetHandle(), providerIndex);
-        _logger?.LogDebugIfEnabled("NativeStreamer: DNS failure count reset for provider {Index}", providerIndex);
+            TsDuckNativeMethods.StreamerResetDnsFailureCount(h, providerIndex);
+            _logger?.LogDebugIfEnabled("NativeStreamer: DNS failure count reset for provider {Index}", providerIndex);
+        });
     }
 
     /// <summary>
@@ -833,12 +835,12 @@ public sealed class NativeStreamer : IDisposable
     /// </summary>
     public void CheckRecovery()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
-        TsDuckNativeMethods.StreamerCheckRecovery(_streamer.DangerousGetHandle());
+        WithHandle(
+            static (nint h) =>
+            {
+                TsDuckNativeMethods.StreamerCheckRecovery(h);
+            }
+        );
     }
 
     /// <inheritdoc/>
