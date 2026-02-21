@@ -155,7 +155,7 @@ try {
         # 0a: .NET unit tests
         Write-Info "[1/3] Running .NET unit tests..."
         Push-Location $ProjectPath
-        $testCommand = "dotnet test --configuration $Configuration --no-restore --filter 'Category!=Integration' --logger 'console;verbosity=minimal'"
+        $testCommand = "dotnet test --configuration $Configuration --no-restore --filter 'Category!=Integration' --logger 'console;verbosity=minimal' -p:BuildNativeLibrary=false"
         Write-Info "Executing: $testCommand"
         Invoke-Expression $testCommand
         if ($LASTEXITCODE -ne 0) {

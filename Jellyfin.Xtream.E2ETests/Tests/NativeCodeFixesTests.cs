@@ -477,7 +477,8 @@ public class NativeCodeFixesTests
         Assert.True(endStatus.BytesReceived > 0, "Should receive data");
         Assert.True(
             endStatus.CurrentUrlIndex >= 0 && endStatus.CurrentUrlIndex <= 1,
-            $"URL index should be valid (0 or 1), was {endStatus.CurrentUrlIndex}");
+            $"URL index should be valid (0 or 1), was {endStatus.CurrentUrlIndex}"
+        );
     }
 
     /// <summary>
