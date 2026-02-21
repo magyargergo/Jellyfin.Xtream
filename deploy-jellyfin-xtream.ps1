@@ -152,6 +152,24 @@ try {
         # Step 0: Run pre-deployment checks
         Write-Info "Running pre-deployment checks..."
 
+        # Ensure tsduck-base:local Docker image exists (required for native build and tests)
+        Write-Info "Checking for tsduck-base:local Docker image..."
+        $baseImageExists = docker image inspect tsduck-base:local 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "tsduck-base:local image not found, building it (this takes ~5 min on first run)..."
+            Push-Location "$ProjectPath\native\tsduck_interop"
+            docker build -f Dockerfile.tsduck-base -t tsduck-base:local .
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to build tsduck-base Docker image"
+                Pop-Location
+                exit 1
+            }
+            Pop-Location
+            Write-Success "tsduck-base:local image built successfully"
+        } else {
+            Write-Success "tsduck-base:local image found"
+        }
+
         # 0a: .NET unit tests
         Write-Info "[1/3] Running .NET unit tests..."
         Push-Location $ProjectPath
