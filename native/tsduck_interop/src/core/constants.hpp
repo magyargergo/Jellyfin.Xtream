@@ -180,8 +180,32 @@ inline constexpr double MIN_CORRECTION_INTERVAL_SEC = 0.1;
 /// allow the analyzer to stabilize and the PCR bitrate estimate to converge.
 inline constexpr double CORRECTION_WARMUP_SEC = 3.0;
 
-/// PCR smoothing EMA factor
-inline constexpr double PCR_SMOOTHING_FACTOR = 0.95;  // Was 0.85; gentler smoothing reduces PCR-PTS divergence
+/// PCR smoothing EMA factor (used in EPTLA fallback path)
+inline constexpr double PCR_SMOOTHING_FACTOR = 0.95;
+
+// ============================================================================
+// EPTLA Constants (Estimated Packet Timing Lowpoint Algorithm)
+// Based on GStreamer mpegtspacketizer.c / rtpjitterbuffer.c
+// ============================================================================
+
+/// EPTLA window size for PCR clock ratio estimation.
+/// 32 samples ≈ 800ms at typical 25ms PCR interval.
+/// Must be power of 2 for bitmask modulo.
+inline constexpr std::size_t EPTLA_WINDOW_SIZE = 32;
+static_assert(is_power_of_two(EPTLA_WINDOW_SIZE),
+              "EPTLA_WINDOW_SIZE must be power of 2 for bitmask modulo");
+
+/// Minimum valid clock ratio (reject extreme outliers)
+inline constexpr double EPTLA_MIN_VALID_RATIO = 0.9;
+
+/// Maximum valid clock ratio
+inline constexpr double EPTLA_MAX_VALID_RATIO = 1.1;
+
+/// Minimum wall-clock delta for valid ratio (timer resolution guard)
+inline constexpr std::int64_t EPTLA_MIN_WALL_DELTA_NS = 1'000'000; // 1ms
+
+/// Maximum wall-clock delta (post-stall rejection)
+inline constexpr std::int64_t EPTLA_MAX_WALL_DELTA_NS = 200'000'000; // 200ms
 
 // ============================================================================
 // TR 101 290 Timing Limits (ETSI TR 101 290 V1.3.1)

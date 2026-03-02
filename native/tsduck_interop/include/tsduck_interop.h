@@ -100,7 +100,9 @@ extern "C" {
         double correction_threshold_ms;  // Start correcting at this drift (default: 45ms)
         double max_correction_rate_ms;   // Max correction per second (default: 10ms)
         double hysteresis_threshold_ms;  // Stop correcting below this (default: 20ms)
-        int64_t stream_bitrate_hint;     // Hint for CBR PCR smoothing (0=auto-detect)
+        int64_t reserved1;               // Was stream_bitrate_hint (removed: EPTLA replaces bitrate estimation)
+        int32_t use_dts_derived_pcr;     // 0 = EPTLA only, 1 = prefer DTS-derived PCR
+        int32_t reserved2;               // Padding for alignment
     } TsDuckConfigNative;
 
     // PCR Analysis structure (Phase 2a - blittable)
@@ -246,7 +248,9 @@ extern "C" {
         double max_correction_rate_ms;   // Max correction per second (default: 10ms)
         double hysteresis_threshold_ms;  // Stop correcting below this (default: 20ms)
 
-        int64_t stream_bitrate_hint;  // Hint for CBR PCR smoothing (0=auto-detect)
+        int64_t reserved1;               // Was stream_bitrate_hint (removed: EPTLA replaces bitrate estimation)
+        int32_t use_dts_derived_pcr;     // 0 = EPTLA only, 1 = prefer DTS-derived PCR
+        int32_t reserved2;               // Padding for alignment
     } RestampingConfigNative;
 
     // Restamping statistics (blittable)

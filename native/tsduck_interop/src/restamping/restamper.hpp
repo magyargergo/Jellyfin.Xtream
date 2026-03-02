@@ -5,6 +5,7 @@
 #define TSDUCK_INTEROP_RESTAMPING_RESTAMPER_HPP
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -57,12 +58,6 @@ public:
             config = *cfg;
         } else {
             config = make_default_config();
-        }
-
-        // Prime bitrate estimate so PCR smoothing starts with a reasonable
-        // expected_delta instead of waiting for 100+ packets to converge.
-        if (config.stream_bitrate_hint > 0) {
-            estimated_bitrate_.store(config.stream_bitrate_hint, std::memory_order_release);
         }
 
         last_correction_time_ns_.store(now_ns(), std::memory_order_release);
@@ -136,7 +131,7 @@ public:
             }
 
             // Process PCR with switch offset only. Drift correction is for A/V stream timestamps.
-            modifications += process_pcr(pkt, packet_idx, switch_off_90khz);
+            modifications += process_pcr(pkt, packet_idx, switch_off_90khz, current_time);
 
             // Process PTS/DTS — apply whenever in CORRECT mode.
             // process_pts_dts() short-circuits via selected_offset_90khz == 0.
@@ -196,6 +191,10 @@ public:
         // provider from influencing correction on the new source.
         drift_integral_ms_.store(0.0, std::memory_order_release);
         correction_activation_time_ns_.store(0, std::memory_order_release);
+        // Signal EPTLA reset (consumed by writer thread to avoid data race)
+        eptla_reset_pending_.store(true, std::memory_order_release);
+        // Invalidate DTS-derived PCR offset for fresh calibration
+        dts_pcr_state_.valid.store(false, std::memory_order_release);
 
         LOG_INFO("Restamper", "Provider switch: offset=%lld (90kHz), discontinuity pending",
                 static_cast<long long>(new_offset));
@@ -285,6 +284,11 @@ public:
         stream_start_time_ns_.store(0, std::memory_order_release);
         drift_integral_ms_.store(0.0, std::memory_order_release);
         correction_activation_time_ns_.store(0, std::memory_order_release);
+
+        // Signal EPTLA reset (consumed by writer thread to avoid data race on non-atomic fields)
+        eptla_reset_pending_.store(true, std::memory_order_release);
+        // Invalidate DTS-derived PCR offset for fresh calibration
+        dts_pcr_state_.valid.store(false, std::memory_order_release);
     }
 
 private:
@@ -313,7 +317,9 @@ private:
             .correction_threshold_ms = DEFAULT_CORRECTION_THRESHOLD_MS,
             .max_correction_rate_ms = DEFAULT_MAX_CORRECTION_RATE_MS,
             .hysteresis_threshold_ms = DEFAULT_HYSTERESIS_THRESHOLD_MS,
-            .stream_bitrate_hint = 0
+            .reserved1 = 0,
+            .use_dts_derived_pcr = 1,
+            .reserved2 = 0
         };
     }
 
@@ -419,10 +425,12 @@ private:
     }
 
     /// Process PCR in a packet.
+    /// @param wall_ns Wall-clock timestamp from process() (reused, no extra syscall)
     /// @return 1 if PCR was modified, 0 otherwise
     [[nodiscard]] std::int32_t process_pcr(ts::TSPacket& pkt,
                                            std::int64_t packet_idx,
-                                           std::int64_t total_offset_90khz) noexcept {
+                                           std::int64_t total_offset_90khz,
+                                           std::int64_t wall_ns) noexcept {
         if (!pkt.hasPCR()) {
             return 0;
         }
@@ -445,9 +453,47 @@ private:
             }
         }
 
-        std::uint64_t smoothed = calculate_smoothed_pcr(original_pcr, packet_idx);
+        // Capture DTS-PCR offset for DTS-derived PCR (Tvheadend approach)
+        if (pkt.hasDTS() && config.use_dts_derived_pcr) {
+            std::int64_t dts_27mhz = static_cast<std::int64_t>(pkt.getDTS()) * PCR_TO_90KHZ;
+            std::int64_t raw_delta = static_cast<std::int64_t>(original_pcr) - dts_27mhz;
 
-        // Convert offset from 90kHz to 27MHz
+            // Symmetric wraparound handling
+            constexpr std::int64_t half_pcr = PCR_WRAPAROUND / 2;
+            if (raw_delta > half_pcr) raw_delta -= PCR_WRAPAROUND;
+            else if (raw_delta < -half_pcr) raw_delta += PCR_WRAPAROUND;
+
+            if (!dts_pcr_state_.valid.load(std::memory_order_relaxed)) {
+                dts_pcr_state_.offset_27mhz.store(raw_delta, std::memory_order_release);
+                dts_pcr_state_.valid.store(true, std::memory_order_release);
+                dts_pcr_state_.pid.store(pid, std::memory_order_release);
+            } else {
+                // EMA update: tracks VBV buffer fullness changes in VBR streams
+                std::int64_t old_offset = dts_pcr_state_.offset_27mhz.load(std::memory_order_relaxed);
+                auto new_offset = static_cast<std::int64_t>(
+                    0.99 * static_cast<double>(old_offset) +
+                    0.01 * static_cast<double>(raw_delta));
+                dts_pcr_state_.offset_27mhz.store(new_offset, std::memory_order_release);
+            }
+        }
+
+        bool derived_from_dts = false;
+        std::uint64_t smoothed = calculate_smoothed_pcr(
+            pkt, original_pcr, packet_idx, wall_ns, derived_from_dts);
+
+        if (derived_from_dts) {
+            // PCR already includes correction via corrected DTS — set directly.
+            // Switch offset is already baked in via the corrected DTS value,
+            // so applying total_pcr_offset would double-correct.
+            if (smoothed != original_pcr) {
+                pkt.setPCR(smoothed);
+                increment_pcr_smoothed();
+                return 1;
+            }
+            return 0;
+        }
+
+        // EPTLA path: apply switch offset
         std::int64_t total_pcr_offset = total_offset_90khz * PCR_TO_90KHZ;
 
         if (smoothed != original_pcr || total_pcr_offset != 0) {
@@ -514,25 +560,73 @@ private:
         return mods;
     }
 
-    /// Calculate smoothed PCR using TsDuck's pcradjust algorithm.
-    [[nodiscard]] std::uint64_t calculate_smoothed_pcr(std::uint64_t original_pcr,
-                                                       std::int64_t packet_idx) noexcept {
+    /// Calculate smoothed PCR using EPTLA windowed-minimum clock ratio.
+    /// Replaces the old bitrate-estimation + TsDuck pcradjust algorithm with
+    /// GStreamer's EPTLA approach: network jitter is one-sided (packets only
+    /// arrive late), so the minimum inter-arrival ratio = true clock rate.
+    ///
+    /// When DTS-derived PCR is available and enabled, it is preferred over EPTLA
+    /// because it guarantees PCR-PTS coherence by construction (Tvheadend approach).
+    ///
+    /// @param pkt          The packet (needed for DTS-derived PCR path)
+    /// @param original_pcr The original PCR value from the packet
+    /// @param packet_idx   Packet index in the stream
+    /// @param wall_ns      Wall-clock timestamp from process()
+    /// @param derived_from_dts [out] Set to true if PCR was derived from DTS
+    /// @return Smoothed PCR value
+    [[nodiscard]] std::uint64_t calculate_smoothed_pcr(
+            const ts::TSPacket& pkt,
+            std::uint64_t original_pcr,
+            std::int64_t packet_idx,
+            std::int64_t wall_ns,
+            bool& derived_from_dts) noexcept {
+
+        derived_from_dts = false;
+
         if (config.smooth_pcr == 0) {
             return original_pcr;
         }
 
         std::uint64_t last_pcr = last_original_pcr_.load(std::memory_order_relaxed);
         std::int64_t last_idx = last_pcr_packet_idx_.load(std::memory_order_relaxed);
-        std::int64_t bitrate = estimated_bitrate_.load(std::memory_order_relaxed);
 
         last_original_pcr_.store(original_pcr, std::memory_order_release);
         last_pcr_packet_idx_.store(packet_idx, std::memory_order_release);
 
-        if (last_pcr == INVALID_PCR || bitrate <= 0) {
-            if (config.stream_bitrate_hint > 0) {
-                estimated_bitrate_.store(config.stream_bitrate_hint, std::memory_order_release);
+        // DTS-derived PCR path: prefer when available (Tvheadend approach).
+        // Guarantees PCR-PTS coherence by construction: PCR = corrected_DTS + offset.
+        if (config.use_dts_derived_pcr &&
+            dts_pcr_state_.valid.load(std::memory_order_acquire) &&
+            pkt.hasDTS()) {
+
+            std::int64_t dts_27mhz = static_cast<std::int64_t>(pkt.getDTS()) * PCR_TO_90KHZ;
+            std::int64_t offset = dts_pcr_state_.offset_27mhz.load(std::memory_order_relaxed);
+
+            // Safe modulo for potentially negative values
+            std::int64_t raw = dts_27mhz + offset;
+            while (raw < 0) raw += PCR_WRAPAROUND;
+            raw %= PCR_WRAPAROUND;
+
+            auto derived_pcr = static_cast<std::uint64_t>(raw);
+            last_smoothed_pcr_.store(derived_pcr, std::memory_order_release);
+            pcr_smoothing_delta_90khz_.store(0, std::memory_order_release);
+            derived_from_dts = true;
+
+            // Still update EPTLA for potential fallback
+            if (last_pcr != INVALID_PCR) {
+                // Capture wall delta BEFORE eptla_update updates last_pcr_wall_ns_
+                eptla_update(last_pcr, original_pcr, wall_ns);
+            } else {
+                last_pcr_wall_ns_ = wall_ns;
             }
+
+            return derived_pcr;
+        }
+
+        // EPTLA path: wall-clock based smoothing
+        if (last_pcr == INVALID_PCR) {
             last_smoothed_pcr_.store(original_pcr, std::memory_order_release);
+            last_pcr_wall_ns_ = wall_ns;
             return original_pcr;
         }
 
@@ -541,11 +635,22 @@ private:
             return original_pcr;
         }
 
-        // Detect PCR discontinuity - reset smoothing if large jump detected
+        // Capture wall delta BEFORE eptla_update updates last_pcr_wall_ns_
+        std::int64_t wall_delta_ns = (last_pcr_wall_ns_ == 0)
+            ? 0
+            : wall_ns - last_pcr_wall_ns_;
+
+        eptla_update(last_pcr, original_pcr, wall_ns);
+
+        if (wall_delta_ns <= 0) {
+            last_smoothed_pcr_.store(original_pcr, std::memory_order_release);
+            return original_pcr;
+        }
+
+        // Detect PCR discontinuity - clamp large jumps
         std::int64_t pcr_jump = static_cast<std::int64_t>(original_pcr) -
                                static_cast<std::int64_t>(last_pcr);
 
-        // Handle wraparound
         constexpr std::int64_t half_scale = PCR_WRAPAROUND / 2;
         if (pcr_jump > half_scale) {
             pcr_jump -= PCR_WRAPAROUND;
@@ -562,7 +667,7 @@ private:
             pcr_jump = (pcr_jump > 0) ? PCR_JUMP_CLAMP_TICKS : -PCR_JUMP_CLAMP_TICKS;
         } else if (std::abs(pcr_jump) > PCR_DISCONTINUITY_THRESHOLD) {
             LOG_DEBUG("Restamper",
-                     "PCR discontinuity detected: jump=%lld ticks (%.3fms), continuing with smoothing",
+                     "PCR discontinuity detected: jump=%lld ticks (%.3fms), continuing",
                      static_cast<long long>(pcr_jump),
                      static_cast<double>(pcr_jump) / 27000.0);
         }
@@ -574,18 +679,16 @@ private:
         adjusted_pcr_signed %= PCR_WRAPAROUND;
         std::uint64_t adjusted_pcr = static_cast<std::uint64_t>(adjusted_pcr_signed);
 
-        // TsDuck pcradjust formula
-        double bits_transmitted =
-            static_cast<double>(packet_delta) * static_cast<double>(TS_PACKET_SIZE_BITS);
-        double expected_delta_27mhz =
-            (bits_transmitted / static_cast<double>(bitrate)) *
-            static_cast<double>(ts::SYSTEM_CLOCK_FREQ);
+        // EPTLA: expected PCR delta from wall-clock and smoothed clock ratio
+        double expected_delta_27mhz = static_cast<double>(wall_delta_ns)
+            * (static_cast<double>(ts::SYSTEM_CLOCK_FREQ) / 1e9)
+            * eptla_skew_ratio_;
 
         std::uint64_t last_smoothed = last_smoothed_pcr_.load(std::memory_order_relaxed);
         std::uint64_t expected_pcr = (last_smoothed + static_cast<std::uint64_t>(expected_delta_27mhz)) %
                                     static_cast<std::uint64_t>(PCR_WRAPAROUND);
 
-        // Compute signed difference with wraparound handling
+        // Signed difference with wraparound handling
         std::int64_t delta = static_cast<std::int64_t>(adjusted_pcr) -
                             static_cast<std::int64_t>(expected_pcr);
         if (delta > half_scale) {
@@ -606,57 +709,123 @@ private:
                                     static_cast<std::uint64_t>(PCR_WRAPAROUND);
         last_smoothed_pcr_.store(smoothed_pcr, std::memory_order_release);
 
-        // Track smoothing delta for future symmetric PTS/DTS adjustment.
-        // Currently written but not read — symmetric application deferred
-        // pending evaluation of EPTLA/DTS-derived PCR alternatives (see plan).
-        // Kept alive for metrics visibility and future PI-controller integration.
+        // Track smoothing delta for metrics visibility
         std::int64_t smoothing_delta = (static_cast<std::int64_t>(smoothed_pcr) -
                                         static_cast<std::int64_t>(adjusted_pcr));
-        // Handle wraparound in the delta
         if (smoothing_delta > half_scale) {
             smoothing_delta -= PCR_WRAPAROUND;
         } else if (smoothing_delta < -half_scale) {
             smoothing_delta += PCR_WRAPAROUND;
         }
-        // Convert from 27MHz PCR ticks to 90kHz PTS/DTS ticks
         pcr_smoothing_delta_90khz_.store(smoothing_delta / PCR_TO_90KHZ,
                                          std::memory_order_release);
-
-        // Update bitrate estimate from PCR deltas
-        if (packet_delta > 100) {
-            update_bitrate_estimate(adjusted_pcr, last_pcr, bits_transmitted);
-        }
 
         return smoothed_pcr;
     }
 
-    /// Update bitrate estimate from PCR timing.
-    void update_bitrate_estimate(std::uint64_t current_pcr, std::uint64_t last_pcr,
-                                double bits_transmitted) noexcept {
-        std::int64_t pcr_delta = static_cast<std::int64_t>(current_pcr) -
-                                static_cast<std::int64_t>(last_pcr);
-        if (pcr_delta < 0) {
-            pcr_delta += PCR_WRAPAROUND;
-        }
-
-        // Sanity check: PCR delta should be less than 10 seconds
-        constexpr std::int64_t MAX_PCR_DELTA = static_cast<std::int64_t>(ts::SYSTEM_CLOCK_FREQ) * 10;
-        if (pcr_delta <= 0 || pcr_delta >= MAX_PCR_DELTA) {
+    /// Update EPTLA clock ratio estimate from PCR arrival timing.
+    /// Network jitter is one-sided (packets only arrive late), so the
+    /// minimum inter-arrival ratio = true clock rate (GStreamer approach).
+    /// @param prev_pcr  Previous original PCR value
+    /// @param curr_pcr  Current original PCR value
+    /// @param wall_ns   Wall-clock timestamp from process()
+    void eptla_update(std::uint64_t prev_pcr, std::uint64_t curr_pcr,
+                      std::int64_t wall_ns) noexcept {
+        // Check for pending reset from handle_switch()/reset()
+        if (eptla_reset_pending_.exchange(false, std::memory_order_acquire)) {
+            eptla_count_ = 0;
+            eptla_head_ = 0;
+            eptla_min_idx_ = 0;
+            eptla_skew_ratio_ = 1.0;
+            eptla_filling_ = true;
+            last_pcr_wall_ns_ = wall_ns;
             return;
         }
 
-        double time_sec = static_cast<double>(pcr_delta) /
-                         static_cast<double>(ts::SYSTEM_CLOCK_FREQ);
-        std::int64_t new_bitrate = static_cast<std::int64_t>(bits_transmitted / time_sec);
-
-        std::int64_t old_bitrate = estimated_bitrate_.load(std::memory_order_relaxed);
-        if (old_bitrate > 0) {
-            // Exponential moving average
-            new_bitrate = static_cast<std::int64_t>(
-                0.9 * static_cast<double>(old_bitrate) +
-                0.1 * static_cast<double>(new_bitrate));
+        if (last_pcr_wall_ns_ == 0 || prev_pcr == INVALID_PCR) {
+            last_pcr_wall_ns_ = wall_ns;
+            return;
         }
-        estimated_bitrate_.store(new_bitrate, std::memory_order_release);
+
+        // Symmetric wraparound handling
+        std::int64_t pcr_delta = static_cast<std::int64_t>(curr_pcr) -
+                                 static_cast<std::int64_t>(prev_pcr);
+        constexpr std::int64_t half_scale = PCR_WRAPAROUND / 2;
+        if (pcr_delta > half_scale) {
+            pcr_delta -= PCR_WRAPAROUND;
+        } else if (pcr_delta < -half_scale) {
+            pcr_delta += PCR_WRAPAROUND;
+        }
+        if (std::abs(pcr_delta) > half_scale) return; // true discontinuity
+
+        std::int64_t wall_delta_ns = wall_ns - last_pcr_wall_ns_;
+        if (wall_delta_ns < EPTLA_MIN_WALL_DELTA_NS ||
+            wall_delta_ns > EPTLA_MAX_WALL_DELTA_NS) {
+            last_pcr_wall_ns_ = wall_ns;
+            return;
+        }
+
+        // Clock ratio: stream_ticks / wall_ticks (both normalized to 27MHz)
+        constexpr double PCR_TICKS_PER_NS =
+            static_cast<double>(ts::SYSTEM_CLOCK_FREQ) / 1e9;
+        double ratio = static_cast<double>(pcr_delta) /
+                       (static_cast<double>(wall_delta_ns) * PCR_TICKS_PER_NS);
+
+        // Reject extreme outliers
+        if (ratio < EPTLA_MIN_VALID_RATIO || ratio > EPTLA_MAX_VALID_RATIO) {
+            last_pcr_wall_ns_ = wall_ns;
+            return;
+        }
+
+        // Push into circular window (bitmask for power-of-2 size)
+        constexpr std::size_t MASK = EPTLA_WINDOW_SIZE - 1;
+        std::size_t evicted_idx = SIZE_MAX;
+        std::size_t idx = (eptla_head_ + eptla_count_) & MASK;
+        if (eptla_count_ < EPTLA_WINDOW_SIZE) {
+            ++eptla_count_;
+        } else {
+            evicted_idx = eptla_head_;
+            eptla_head_ = (eptla_head_ + 1) & MASK;
+        }
+        eptla_ratios_[idx] = ratio;
+        eptla_wall_times_[idx] = wall_ns;
+
+        // Lazy minimum tracking (full rescan only when minimum evicted)
+        double min_ratio;
+        if (ratio <= eptla_skew_ratio_) {
+            min_ratio = ratio;
+            eptla_min_idx_ = idx;
+        } else if (evicted_idx == eptla_min_idx_) {
+            // Evicted the minimum — full rescan needed
+            min_ratio = std::numeric_limits<double>::max();
+            for (std::size_t i = 0; i < eptla_count_; ++i) {
+                std::size_t j = (eptla_head_ + i) & MASK;
+                if (eptla_ratios_[j] < min_ratio) {
+                    min_ratio = eptla_ratios_[j];
+                    eptla_min_idx_ = j;
+                }
+            }
+        } else {
+            min_ratio = eptla_skew_ratio_; // unchanged
+        }
+
+        // GStreamer-style EMA smoothing
+        if (eptla_filling_) {
+            // Parabolic startup: more weight to min as window fills
+            std::size_t perc = (eptla_count_ * 100) / EPTLA_WINDOW_SIZE;
+            perc = perc * perc; // quadratic: 0..10000
+            eptla_skew_ratio_ = (static_cast<double>(perc) * min_ratio +
+                                 static_cast<double>(10000 - perc) * eptla_skew_ratio_) / 10000.0;
+            if (eptla_count_ >= EPTLA_WINDOW_SIZE) {
+                eptla_skew_ratio_ = min_ratio;
+                eptla_filling_ = false;
+            }
+        } else {
+            // Steady-state: 1/125 EMA weight (from GStreamer rtpjitterbuffer)
+            eptla_skew_ratio_ = (min_ratio + 124.0 * eptla_skew_ratio_) / 125.0;
+        }
+
+        last_pcr_wall_ns_ = wall_ns;
     }
 
     /// Update statistics with packets processed and correction applied.
@@ -714,9 +883,32 @@ private:
     // PCR smoothing state
     alignas(CACHE_LINE_SIZE) std::atomic<std::uint64_t> last_smoothed_pcr_{INVALID_PCR};
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> last_pcr_packet_idx_{0};
-    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> estimated_bitrate_{0};
     alignas(CACHE_LINE_SIZE) std::atomic<std::uint64_t> last_original_pcr_{INVALID_PCR};
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> pcr_smoothing_delta_90khz_{0};
+
+    // EPTLA windowed-minimum state (non-atomic: single-writer in process())
+    // Split into parallel arrays for better scan cache utilization
+    // (ratio scan only touches 256 bytes = 4 cache lines)
+    std::array<double, EPTLA_WINDOW_SIZE> eptla_ratios_{};
+    std::array<std::int64_t, EPTLA_WINDOW_SIZE> eptla_wall_times_{}; // diagnostics
+    std::size_t eptla_count_{0};
+    std::size_t eptla_head_{0};
+    std::size_t eptla_min_idx_{0};  // index of current minimum for lazy tracking
+    std::int64_t last_pcr_wall_ns_{0};
+    double eptla_skew_ratio_{1.0};  // EMA-smoothed minimum ratio
+    bool eptla_filling_{true};       // startup phase flag
+
+    // Thread-safe reset flag (set by handle_switch/reset, consumed by process)
+    alignas(CACHE_LINE_SIZE) std::atomic<bool> eptla_reset_pending_{false};
+
+    // DTS-derived PCR state (Tvheadend delta-preservation approach)
+    // Packed into one cache line — always accessed together
+    struct alignas(CACHE_LINE_SIZE) DtsDerivedPcrState {
+        std::atomic<std::int64_t> offset_27mhz{0};  // PCR-DTS offset (signed, EMA-updated)
+        std::atomic<bool> valid{false};
+        std::atomic<std::int64_t> pid{-1};           // PID carrying PCR
+    };
+    DtsDerivedPcrState dts_pcr_state_;
 
     // Discontinuity indicator management
     alignas(CACHE_LINE_SIZE) std::atomic<bool> pending_discontinuity_{false};

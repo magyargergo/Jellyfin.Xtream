@@ -249,7 +249,9 @@ void StreamPipeline::init_common(const TsDuckConfigNative* analyzer_config) {
         default_cfg.correction_threshold_ms = DEFAULT_CORRECTION_THRESHOLD_MS;
         default_cfg.max_correction_rate_ms = DEFAULT_MAX_CORRECTION_RATE_MS;
         default_cfg.hysteresis_threshold_ms = DEFAULT_HYSTERESIS_THRESHOLD_MS;
-        default_cfg.stream_bitrate_hint = 0;
+        default_cfg.reserved1 = 0;
+        default_cfg.use_dts_derived_pcr = 1;
+        default_cfg.reserved2 = 0;
         analyzer_ = std::make_unique<context::TsDuckAnalyzer>(context_.get(), &default_cfg);
     }
 

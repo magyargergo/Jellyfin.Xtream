@@ -72,9 +72,12 @@ public sealed record TsDuckConfiguration
     public double HysteresisThresholdMs { get; init; } = 10.0;
 
     /// <summary>
-    /// Gets the stream bitrate hint for PCR smoothing (0 = auto-detect).
+    /// Gets a value indicating whether DTS-derived PCR smoothing is enabled.
+    /// When enabled, PCR values are derived from corrected DTS timestamps,
+    /// guaranteeing PCR-PTS coherence by construction (Tvheadend approach).
+    /// Falls back to EPTLA windowed-minimum when DTS is not available.
     /// </summary>
-    public long StreamBitrateHint { get; init; } = 20_000_000; // 20 Mbps typical for 1080i IPTV
+    public bool UseDtsDerivedPcr { get; init; } = true;
 
     /// <summary>
     /// Gets a value indicating whether debug logging is enabled for native code.

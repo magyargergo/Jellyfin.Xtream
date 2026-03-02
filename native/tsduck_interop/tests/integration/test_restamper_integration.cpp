@@ -116,7 +116,7 @@ TEST_F(RestamperIntegrationTest, ProcessesPcrPacket) {
 TEST_F(RestamperIntegrationTest, SmoothsPcrValues) {
     // Enable smoothing
     restamper->config.smooth_pcr = 1;
-    restamper->config.stream_bitrate_hint = 10000000;  // 10 Mbps
+    // EPTLA replaces bitrate estimation — no hint needed
 
     std::vector<uint8_t> data(ts::PKT_SIZE * 100);
     int64_t pcr_base = 90000;

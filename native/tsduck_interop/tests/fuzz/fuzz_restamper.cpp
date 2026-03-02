@@ -37,7 +37,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     config.correction_threshold_ms = static_cast<double>(data[2]) + 1.0;
     config.max_correction_rate_ms = static_cast<double>(data[3]) / 10.0 + 0.1;
     config.hysteresis_threshold_ms = config.correction_threshold_ms / 2.0;
-    config.stream_bitrate_hint = 10000000;  // 10 Mbps
+    config.reserved1 = 0;
+    config.use_dts_derived_pcr = 1;
+    config.reserved2 = 0;
 
     AvSyncTracker av_sync;
     Restamper restamper(&av_sync, &config);

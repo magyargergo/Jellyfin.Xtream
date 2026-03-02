@@ -1105,7 +1105,9 @@ TEST_F(CombinedStressTest, AnalyzerFullLoad) {
         .correction_threshold_ms = 45.0,
         .max_correction_rate_ms = 10.0,
         .hysteresis_threshold_ms = 20.0,
-        .stream_bitrate_hint = 0
+        .reserved1 = 0,
+        .use_dts_derived_pcr = 1,
+        .reserved2 = 0
     };
 
     context::TsDuckAnalyzer analyzer(context.get(), &config);

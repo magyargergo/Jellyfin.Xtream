@@ -115,7 +115,9 @@ internal readonly struct TsDuckConfigNative
     public readonly double CorrectionThresholdMs;
     public readonly double MaxCorrectionRateMs;
     public readonly double HysteresisThresholdMs;
-    public readonly long StreamBitrateHint;
+    public readonly long Reserved1;
+    public readonly int UseDtsDerivedPcr;
+    public readonly int Reserved2;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TsDuckConfigNative"/> struct.
@@ -132,7 +134,9 @@ internal readonly struct TsDuckConfigNative
         double correctionThresholdMs,
         double maxCorrectionRateMs,
         double hysteresisThresholdMs,
-        long streamBitrateHint
+        long reserved1,
+        int useDtsDerivedPcr,
+        int reserved2
     )
     {
         MetricsIntervalMs = metricsIntervalMs;
@@ -146,7 +150,9 @@ internal readonly struct TsDuckConfigNative
         CorrectionThresholdMs = correctionThresholdMs;
         MaxCorrectionRateMs = maxCorrectionRateMs;
         HysteresisThresholdMs = hysteresisThresholdMs;
-        StreamBitrateHint = streamBitrateHint;
+        Reserved1 = reserved1;
+        UseDtsDerivedPcr = useDtsDerivedPcr;
+        Reserved2 = reserved2;
     }
 
     /// <summary>
@@ -165,7 +171,9 @@ internal readonly struct TsDuckConfigNative
             correctionThresholdMs: config.CorrectionThresholdMs,
             maxCorrectionRateMs: config.MaxCorrectionRateMs,
             hysteresisThresholdMs: config.HysteresisThresholdMs,
-            streamBitrateHint: config.StreamBitrateHint
+            reserved1: 0,
+            useDtsDerivedPcr: config.UseDtsDerivedPcr ? 1 : 0,
+            reserved2: 0
         );
 }
 

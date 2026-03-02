@@ -514,7 +514,9 @@ public:
                 .correction_threshold_ms = config.correction_threshold_ms,
                 .max_correction_rate_ms = config.max_correction_rate_ms,
                 .hysteresis_threshold_ms = config.hysteresis_threshold_ms,
-                .stream_bitrate_hint = config.stream_bitrate_hint
+                .reserved1 = 0,
+                .use_dts_derived_pcr = config.use_dts_derived_pcr,
+                .reserved2 = 0
             };
             restamper = std::make_unique<restamping::Restamper>(&av_sync, &cfg);
         } else {
@@ -656,7 +658,9 @@ private:
             .correction_threshold_ms = DEFAULT_CORRECTION_THRESHOLD_MS,
             .max_correction_rate_ms = DEFAULT_MAX_CORRECTION_RATE_MS,
             .hysteresis_threshold_ms = DEFAULT_HYSTERESIS_THRESHOLD_MS,
-            .stream_bitrate_hint = 0
+            .reserved1 = 0,
+            .use_dts_derived_pcr = 1,
+            .reserved2 = 0
         };
     }
 
@@ -672,7 +676,9 @@ private:
                 .correction_threshold_ms = config.correction_threshold_ms,
                 .max_correction_rate_ms = config.max_correction_rate_ms,
                 .hysteresis_threshold_ms = config.hysteresis_threshold_ms,
-                .stream_bitrate_hint = config.stream_bitrate_hint
+                .reserved1 = 0,
+                .use_dts_derived_pcr = config.use_dts_derived_pcr,
+                .reserved2 = 0
             };
             restamper = std::make_unique<restamping::Restamper>(&av_sync, &restamp_cfg);
             auto_restamp_enabled.store(true, std::memory_order_release);
