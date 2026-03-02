@@ -89,7 +89,7 @@ public:
         // Record stream start time on first call for warmup period.
         std::int64_t expected_zero = 0;
         stream_start_time_ns_.compare_exchange_strong(
-            expected_zero, current_time, std::memory_order_release, std::memory_order_relaxed);
+            expected_zero, current_time, std::memory_order_acq_rel, std::memory_order_relaxed);
 
         std::int64_t last_time = last_correction_time_ns_.load(std::memory_order_relaxed);
         double elapsed_sec = static_cast<double>(current_time - last_time) / 1e9;
@@ -103,10 +103,10 @@ public:
         // Drift correction is stream-selective:
         // - Positive drift (audio timestamp later than video) => delay video only.
         // - Negative drift (audio timestamp earlier than video) => delay audio only.
-        // Note: PCR smoothing delta is NOT applied to PTS/DTS. It cancels
-        // mathematically in drift (audio-video) and PCR-PTS divergence
-        // calculations, but its convergence transient during bitrate estimate
-        // warmup triggers false correction activations that create real drift.
+        // The analyzer runs on ORIGINAL timestamps (before restamping), so
+        // avg_drift_ms reflects the source's real A/V drift. The controller
+        // computes the residual (source_drift - accumulated_correction) to
+        // determine the remaining error that downstream consumers see.
         std::int64_t video_total_offset_90khz = switch_off_90khz;
         std::int64_t audio_total_offset_90khz = switch_off_90khz;
         if (accumulated_offset_90khz > 0) {
@@ -184,7 +184,10 @@ public:
         pending_discontinuity_.store(true, std::memory_order_release);
         discontinuity_pcr_pid_.store(pcr_pid, std::memory_order_release);
 
-        // Reset smoothing state for fresh start from new source
+        // Reset smoothing state for fresh start from new source.
+        // Note: stream_start_time_ns_ is intentionally NOT reset here.
+        // After a switch the warmup has already elapsed; correction resumes
+        // immediately using the windowed avg_drift_ms from the analyzer.
         last_smoothed_pcr_.store(INVALID_PCR, std::memory_order_release);
         last_original_pcr_.store(INVALID_PCR, std::memory_order_release);
         pcr_smoothing_delta_90khz_.store(0, std::memory_order_release);
@@ -275,6 +278,8 @@ public:
 
         last_correction_time_ns_.store(now_ns(), std::memory_order_release);
         stream_start_time_ns_.store(0, std::memory_order_release);
+        drift_integral_ms_.store(0.0, std::memory_order_release);
+        correction_activation_time_ns_.store(0, std::memory_order_release);
     }
 
 private:
@@ -349,34 +354,47 @@ private:
             return 0.0;
         }
 
-        // Use average drift (over the sample window) instead of instantaneous drift.
-        // The instantaneous video_audio_drift_ms has periodic -50ms transient peaks
-        // from PTS emission timing gaps (audio/video PES written at different intervals).
-        // These peaks are NOT real A/V sync issues — Monitor mode shows ~3ms average.
-        // Using avg_drift_ms filters out transients and only responds to sustained drift.
-        double drift_ms = sync_analysis.avg_drift_ms;
-        double abs_drift = std::abs(drift_ms);
+        // The analyzer measures original (uncorrected) timestamps because analysis
+        // runs before restamping in the pipeline. avg_drift_ms reflects the SOURCE's
+        // real A/V drift, not the corrected output. Compute the residual: the drift
+        // that downstream (FFmpeg) still sees after our accumulated correction.
+        double source_drift_ms = sync_analysis.avg_drift_ms;
+        double acc_correction = accumulated_correction_ms_.load(std::memory_order_relaxed);
+        double residual_ms = source_drift_ms - acc_correction;
+        double abs_residual = std::abs(residual_ms);
 
-        // Hysteresis logic
+        // Hysteresis on RESIDUAL drift (what downstream actually sees).
         if (correction_active_.load(std::memory_order_relaxed)) {
-            if (abs_drift < config.hysteresis_threshold_ms) {
+            if (abs_residual < config.hysteresis_threshold_ms) {
                 correction_active_.store(false, std::memory_order_release);
-                // Do NOT reset accumulated_correction_ms_ here.
-                // The accumulated value reflects PTS/DTS offsets already applied to packets.
-                // Resetting to zero causes the next activation to re-apply from scratch,
-                // creating oscillation as the analyzer measures corrected timestamps.
                 return 0.0;
             }
         } else {
-            if (abs_drift < config.correction_threshold_ms) {
+            if (abs_residual < config.correction_threshold_ms) {
                 return 0.0;
             }
             correction_active_.store(true, std::memory_order_release);
+            correction_activation_time_ns_.store(now_ns(), std::memory_order_release);
+            drift_integral_ms_.store(0.0, std::memory_order_release);
         }
 
-        // Calculate ramped correction
-        double correction_per_sec = drift_ms * CORRECTION_RAMP_FACTOR;
-        double target_correction = correction_per_sec * elapsed_sec;
+        // PI controller on the residual error.
+        // P term drives residual toward zero; I term eliminates steady-state offset.
+        double p_term = residual_ms * CORRECTION_RAMP_FACTOR * elapsed_sec;
+
+        double i_term = 0.0;
+        std::int64_t activation_time = correction_activation_time_ns_.load(std::memory_order_relaxed);
+        double correction_age_sec = static_cast<double>(now_ns() - activation_time) / 1e9;
+        if (correction_age_sec >= INTEGRAL_WARMUP_SEC) {
+            double integral = drift_integral_ms_.load(std::memory_order_relaxed);
+            integral += residual_ms * elapsed_sec;
+            constexpr double MAX_INTEGRAL_MS = 500.0;
+            integral = std::clamp(integral, -MAX_INTEGRAL_MS, MAX_INTEGRAL_MS);
+            drift_integral_ms_.store(integral, std::memory_order_release);
+            i_term = CORRECTION_KI * integral;
+        }
+
+        double target_correction = p_term + i_term;
 
         // Clamp to max rate
         double max_correction = config.max_correction_rate_ms * elapsed_sec;
@@ -385,15 +403,12 @@ private:
         }
 
         // Keep correction bounded to prevent runaway offsets during unstable sources.
+        // Reuse acc_correction from line above to avoid double-load TOCTOU window.
         constexpr double MAX_ACCUMULATED_CORRECTION_MS = 500.0;
-        double acc = accumulated_correction_ms_.load(std::memory_order_relaxed);
-        acc += target_correction;
-        if (acc > MAX_ACCUMULATED_CORRECTION_MS) {
-            acc = MAX_ACCUMULATED_CORRECTION_MS;
-        } else if (acc < -MAX_ACCUMULATED_CORRECTION_MS) {
-            acc = -MAX_ACCUMULATED_CORRECTION_MS;
-        }
-        accumulated_correction_ms_.store(acc, std::memory_order_release);
+        double new_acc = std::clamp(acc_correction + target_correction,
+                                     -MAX_ACCUMULATED_CORRECTION_MS,
+                                      MAX_ACCUMULATED_CORRECTION_MS);
+        accumulated_correction_ms_.store(new_acc, std::memory_order_release);
 
         return target_correction;
     }
@@ -586,8 +601,10 @@ private:
                                     static_cast<std::uint64_t>(PCR_WRAPAROUND);
         last_smoothed_pcr_.store(smoothed_pcr, std::memory_order_release);
 
-        // Track smoothing delta so PTS/DTS can be adjusted symmetrically.
-        // This keeps decoder clock (PCR-driven) coherent with presentation timestamps.
+        // Track smoothing delta for future symmetric PTS/DTS adjustment.
+        // Currently written but not read — symmetric application deferred
+        // pending evaluation of EPTLA/DTS-derived PCR alternatives (see plan).
+        // Kept alive for metrics visibility and future PI-controller integration.
         std::int64_t smoothing_delta = (static_cast<std::int64_t>(smoothed_pcr) -
                                         static_cast<std::int64_t>(adjusted_pcr));
         // Handle wraparound in the delta

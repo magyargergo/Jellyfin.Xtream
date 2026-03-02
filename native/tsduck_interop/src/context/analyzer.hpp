@@ -465,11 +465,10 @@ public:
 
         std::int64_t base_packet_index = packets_processed.load(std::memory_order_relaxed);
 
-        // Apply restamping BEFORE analysis (modifies data in-place)
-        if (auto_restamp_enabled.load(std::memory_order_acquire) && restamper) {
-            (void)restamper->process(data, length, base_packet_index);
-        }
-
+        // Analyze ORIGINAL timestamps BEFORE restamping to break the feedback
+        // loop. The restamper's drift correction reads avg_drift_ms from this
+        // analysis; if we analyzed corrected data, the correction would see its
+        // own output, causing overshoot and oscillation.
         auto packet_span = std::span{reinterpret_cast<ts::TSPacket*>(data),
                                     static_cast<std::size_t>(packets)};
 
@@ -478,6 +477,11 @@ public:
             ++i;
 
             process_single_packet(pkt, packet_idx);
+        }
+
+        // Apply restamping AFTER analysis (modifies data in-place for downstream)
+        if (auto_restamp_enabled.load(std::memory_order_acquire) && restamper) {
+            (void)restamper->process(data, length, base_packet_index);
         }
 
         packets_processed.fetch_add(packets, std::memory_order_release);

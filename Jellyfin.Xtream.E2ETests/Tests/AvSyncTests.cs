@@ -201,25 +201,25 @@ public class AvSyncTests(DockerTestFixture fixture, ITestOutputHelper output)
         Assert.True(status.Reconnections > 0, "Unstable source should trigger reconnections");
         Assert.True(status.PacketsOutput > 0, "Should output packets despite instability");
 
-        if (avSync != null)
-        {
-            var sync = avSync.Value;
-            Output.WriteLine($"A/V drift: {sync.VideoAudioDriftMs:F2}ms (absolute: {sync.AbsoluteDriftMs:F2}ms)");
-            Output.WriteLine($"Peak drift: {sync.PeakDriftMs:F2}ms");
-            Output.WriteLine($"PCR-Video offset: {sync.PcrVideoOffsetMs:F2}ms");
-            Output.WriteLine($"PCR-Audio offset: {sync.PcrAudioOffsetMs:F2}ms");
-            Output.WriteLine(
-                $"Discontinuities: video={sync.VideoDiscontinuities}, audio={sync.AudioDiscontinuities}, pcr={sync.PcrDiscontinuities}"
-            );
+        // If packets flowed, we must have sync data
+        Assert.NotNull(avSync);
+        var sync = avSync!.Value;
 
-            // After recovery, current drift should be reasonable (allow wider tolerance
-            // for unstable sources since there may be in-flight corrections)
-            Assert.True(
-                sync.AbsoluteDriftMs <= 50.0,
-                $"Post-recovery A/V drift {sync.AbsoluteDriftMs:F2}ms is too high — "
-                    + "smoothing delta reset on switch may not be working"
-            );
-        }
+        Output.WriteLine($"A/V drift: {sync.VideoAudioDriftMs:F2}ms (absolute: {sync.AbsoluteDriftMs:F2}ms)");
+        Output.WriteLine($"Peak drift: {sync.PeakDriftMs:F2}ms");
+        Output.WriteLine($"PCR-Video offset: {sync.PcrVideoOffsetMs:F2}ms");
+        Output.WriteLine($"PCR-Audio offset: {sync.PcrAudioOffsetMs:F2}ms");
+        Output.WriteLine(
+            $"Discontinuities: video={sync.VideoDiscontinuities}, audio={sync.AudioDiscontinuities}, pcr={sync.PcrDiscontinuities}"
+        );
+
+        // After recovery, current drift should be reasonable (allow wider tolerance
+        // for unstable sources since there may be in-flight corrections)
+        Assert.True(
+            sync.AbsoluteDriftMs <= 50.0,
+            $"Post-recovery A/V drift {sync.AbsoluteDriftMs:F2}ms is too high — "
+                + "smoothing delta reset on switch may not be working"
+        );
     }
 
     /// <summary>
