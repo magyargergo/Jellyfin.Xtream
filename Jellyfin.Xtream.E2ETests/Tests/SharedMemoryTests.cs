@@ -33,21 +33,14 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// requiring the native library. This validates the IPC protocol implementation.
 /// </remarks>
 [Collection("E2E-SharedMemory")]
-public sealed class SharedMemoryTests : IDisposable
+public sealed class SharedMemoryTests(DockerTestFixture fixture, ITestOutputHelper output) : NativeE2ETestBase(output)
 {
     private const int TsPacketSize = 188;
     private const int DefaultSlotCount = 1024;
     private const int DefaultPacketsPerSlot = 7;
     private const int DefaultSlotSize = DefaultPacketsPerSlot * TsPacketSize; // 1316 bytes
 
-    private readonly ITestOutputHelper _output;
-    private readonly List<SharedMemoryTestProducer> _producers = new();
-
-    public SharedMemoryTests(DockerTestFixture fixture, ITestOutputHelper output)
-    {
-        _ = fixture; // Fixture is required by collection but not used directly
-        _output = output;
-    }
+    private readonly List<SharedMemoryTestProducer> _producers = [];
 
     /// <summary>
     /// Creates a fresh TestStreamGenerator with reset state for each test.
@@ -57,14 +50,18 @@ public sealed class SharedMemoryTests : IDisposable
         return new TestStreamGenerator(5000);
     }
 
-    public void Dispose()
+    protected override void Dispose(bool disposing)
     {
-        foreach (var producer in _producers)
+        if (disposing)
         {
-            producer.Dispose();
+            foreach (var producer in _producers)
+            {
+                producer.Dispose();
+            }
+            _producers.Clear();
         }
-        _producers.Clear();
-        GC.SuppressFinalize(this);
+
+        base.Dispose(disposing);
     }
 
     private SharedMemoryTestProducer CreateProducer(
@@ -103,7 +100,7 @@ public sealed class SharedMemoryTests : IDisposable
         int bytesRead = consumer.Read(readBuffer);
 
         // Assert
-        _output.WriteLine($"Source: {sourceData.Length} bytes, Read: {bytesRead} bytes");
+        Output.WriteLine($"Source: {sourceData.Length} bytes, Read: {bytesRead} bytes");
         Assert.Equal(sourceData.Length, bytesRead);
         Assert.True(sourceData.AsSpan().SequenceEqual(readBuffer), "Data mismatch: read data does not match source");
     }
@@ -139,7 +136,7 @@ public sealed class SharedMemoryTests : IDisposable
         var expectedData = allSourceData.SelectMany(c => c).ToArray();
         var actualData = allReadData.ToArray();
 
-        _output.WriteLine($"Total source: {expectedData.Length}, Total read: {actualData.Length}");
+        Output.WriteLine($"Total source: {expectedData.Length}, Total read: {actualData.Length}");
 
         // Verify we read at least as much as we wrote
         Assert.True(
@@ -167,7 +164,7 @@ public sealed class SharedMemoryTests : IDisposable
                 Assert.Fail($"Invalid sync byte 0x{syncByte:X2} at packet {i}");
             }
         }
-        _output.WriteLine($"Valid packets: {validPackets}, Padding packets: {paddingPackets}");
+        Output.WriteLine($"Valid packets: {validPackets}, Padding packets: {paddingPackets}");
 
         // Verify the start of the data matches (first chunk should be exact match)
         Assert.True(
@@ -212,7 +209,7 @@ public sealed class SharedMemoryTests : IDisposable
             }
         }
 
-        _output.WriteLine($"Packets read: {packetCount}, Invalid sync bytes: {invalidSyncCount}");
+        Output.WriteLine($"Packets read: {packetCount}, Invalid sync bytes: {invalidSyncCount}");
         Assert.Equal(0, invalidSyncCount);
     }
 
@@ -292,9 +289,9 @@ public sealed class SharedMemoryTests : IDisposable
 
         // Assert
         var actualBitrate = totalRead * 8.0 / sw.Elapsed.TotalSeconds;
-        _output.WriteLine($"Duration: {sw.Elapsed.TotalSeconds:F2}s");
-        _output.WriteLine($"Written: {totalWritten:N0} bytes, Read: {totalRead:N0} bytes");
-        _output.WriteLine($"Actual bitrate: {actualBitrate / 1_000_000:F2} Mbps");
+        Output.WriteLine($"Duration: {sw.Elapsed.TotalSeconds:F2}s");
+        Output.WriteLine($"Written: {totalWritten:N0} bytes, Read: {totalRead:N0} bytes");
+        Output.WriteLine($"Actual bitrate: {actualBitrate / 1_000_000:F2} Mbps");
 
         // Reads may include slot padding (0xFF bytes), so totalRead may be >= totalWritten
         // We verify that we read at least what was written (no data loss)
@@ -303,7 +300,7 @@ public sealed class SharedMemoryTests : IDisposable
         // The "extra" bytes should be due to slot padding, not duplication
         // Allow up to 5% overhead for slot alignment
         double overheadPercent = (totalRead - totalWritten) * 100.0 / totalWritten;
-        _output.WriteLine($"Slot padding overhead: {overheadPercent:F2}%");
+        Output.WriteLine($"Slot padding overhead: {overheadPercent:F2}%");
         Assert.True(overheadPercent < 10, $"Slot padding overhead {overheadPercent:F2}% exceeds 10% threshold");
     }
 
@@ -353,12 +350,10 @@ public sealed class SharedMemoryTests : IDisposable
         var writeThroughput = sourceData.Length / writeTime.TotalSeconds / (1024 * 1024);
         var readThroughput = totalRead / readTime.TotalSeconds / (1024 * 1024);
 
-        _output.WriteLine(
+        Output.WriteLine(
             $"Write: {sourceData.Length:N0} bytes in {writeTime.TotalMilliseconds:F2}ms = {writeThroughput:F0} MB/s"
         );
-        _output.WriteLine(
-            $"Read: {totalRead:N0} bytes in {readTime.TotalMilliseconds:F2}ms = {readThroughput:F0} MB/s"
-        );
+        Output.WriteLine($"Read: {totalRead:N0} bytes in {readTime.TotalMilliseconds:F2}ms = {readThroughput:F0} MB/s");
 
         // Should read at least as much as was written (may include slot padding)
         Assert.True(totalRead >= sourceData.Length, $"Should read at least {sourceData.Length} bytes, got {totalRead}");
@@ -421,11 +416,11 @@ public sealed class SharedMemoryTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Buffer capacity: {bufferCapacity:N0} bytes ({slotCount - 1} slots)");
-        _output.WriteLine($"Total written: {totalWritten:N0} bytes");
-        _output.WriteLine($"Overflow detected: {overflowOccurred}");
-        _output.WriteLine($"Bytes read: {totalRead:N0}");
-        _output.WriteLine($"Dropped bytes: {totalWritten - totalRead:N0}");
+        Output.WriteLine($"Buffer capacity: {bufferCapacity:N0} bytes ({slotCount - 1} slots)");
+        Output.WriteLine($"Total written: {totalWritten:N0} bytes");
+        Output.WriteLine($"Overflow detected: {overflowOccurred}");
+        Output.WriteLine($"Bytes read: {totalRead:N0}");
+        Output.WriteLine($"Dropped bytes: {totalWritten - totalRead:N0}");
 
         Assert.True(overflowOccurred, "Overflow should be detected when buffer is overrun");
         // With overflow, we should read significantly less than we wrote
@@ -500,9 +495,9 @@ public sealed class SharedMemoryTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Written: {totalWritten:N0}, Read: {totalRead:N0}");
-        _output.WriteLine($"Overflow events: {overflowCount}");
-        _output.WriteLine($"Data loss: {totalWritten - totalRead:N0} bytes");
+        Output.WriteLine($"Written: {totalWritten:N0}, Read: {totalRead:N0}");
+        Output.WriteLine($"Overflow events: {overflowCount}");
+        Output.WriteLine($"Data loss: {totalWritten - totalRead:N0} bytes");
 
         Assert.True(overflowCount > 0, "Should have experienced overflow with slow consumer");
         Assert.True(totalRead > 0, "Consumer should have read some data");
@@ -546,10 +541,10 @@ public sealed class SharedMemoryTests : IDisposable
         int readAfter = consumer.Read(buffer);
 
         // Assert
-        _output.WriteLine($"Discontinuity before signal: {discontinuityBefore}");
-        _output.WriteLine($"Discontinuity detected: {discontinuityDetected}");
-        _output.WriteLine($"Discontinuity after consume: {discontinuityAfterConsume}");
-        _output.WriteLine($"Bytes read after discontinuity: {readAfter}");
+        Output.WriteLine($"Discontinuity before signal: {discontinuityBefore}");
+        Output.WriteLine($"Discontinuity detected: {discontinuityDetected}");
+        Output.WriteLine($"Discontinuity after consume: {discontinuityAfterConsume}");
+        Output.WriteLine($"Bytes read after discontinuity: {readAfter}");
 
         Assert.False(discontinuityBefore, "No discontinuity should exist before signal");
         Assert.True(discontinuityDetected, "Discontinuity should be detected after signal");
@@ -588,15 +583,15 @@ public sealed class SharedMemoryTests : IDisposable
             if (!discontinuityFound && consumer.ConsumeDiscontinuity())
             {
                 discontinuityFound = true;
-                _output.WriteLine($"Discontinuity detected at byte offset {totalRead}");
+                Output.WriteLine($"Discontinuity detected at byte offset {totalRead}");
             }
 
             totalRead += read;
         }
 
         // Assert
-        _output.WriteLine($"Data before: {dataBefore.Length}, Data after: {dataAfter.Length}");
-        _output.WriteLine($"Total read: {totalRead}");
+        Output.WriteLine($"Data before: {dataBefore.Length}, Data after: {dataAfter.Length}");
+        Output.WriteLine($"Total read: {totalRead}");
 
         // Verify we read at least both chunks worth of data
         var expectedMinimum = dataBefore.Length + dataAfter.Length;
@@ -611,7 +606,7 @@ public sealed class SharedMemoryTests : IDisposable
         // Second chunk starts after first chunk's slot boundary (includes padding)
         int slotsForFirstChunk = (dataBefore.Length + DefaultSlotSize - 1) / DefaultSlotSize;
         int firstChunkSlotEnd = slotsForFirstChunk * DefaultSlotSize;
-        _output.WriteLine($"First chunk slots: {slotsForFirstChunk}, slot boundary: {firstChunkSlotEnd}");
+        Output.WriteLine($"First chunk slots: {slotsForFirstChunk}, slot boundary: {firstChunkSlotEnd}");
 
         // Verify second chunk starts after first chunk's slot boundary
         Assert.True(
@@ -649,8 +644,8 @@ public sealed class SharedMemoryTests : IDisposable
         bool eosAfterSignal = consumer.IsEndOfStream;
 
         // Assert
-        _output.WriteLine($"EOS before signal: {eosBeforeSignal}");
-        _output.WriteLine($"EOS after signal: {eosAfterSignal}");
+        Output.WriteLine($"EOS before signal: {eosBeforeSignal}");
+        Output.WriteLine($"EOS after signal: {eosAfterSignal}");
 
         Assert.False(eosBeforeSignal);
         Assert.True(eosAfterSignal);
@@ -688,7 +683,7 @@ public sealed class SharedMemoryTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Source: {sourceData.Length}, Read: {totalRead}");
+        Output.WriteLine($"Source: {sourceData.Length}, Read: {totalRead}");
 
         // We should read at least as much as was written (may include slot padding)
         Assert.True(totalRead >= sourceData.Length, $"Should read at least {sourceData.Length} bytes, got {totalRead}");
@@ -726,7 +721,7 @@ public sealed class SharedMemoryTests : IDisposable
         sw.Stop();
 
         // Assert
-        _output.WriteLine($"WaitForData returned in {sw.ElapsedMilliseconds}ms, result: {result}");
+        Output.WriteLine($"WaitForData returned in {sw.ElapsedMilliseconds}ms, result: {result}");
         Assert.True(result, "WaitForData should return true when EOS is set");
         Assert.True(sw.ElapsedMilliseconds < 1000, "Should return immediately, not wait for timeout");
     }
@@ -752,9 +747,9 @@ public sealed class SharedMemoryTests : IDisposable
         Assert.Equal(SharedMemoryErrorCode.NetworkError, consumer.ErrorCode);
         Assert.Equal("Network error", consumer.ErrorMessage);
 
-        _output.WriteLine($"Error detected: {consumer.HasError}");
-        _output.WriteLine($"Error code: {consumer.ErrorCode}");
-        _output.WriteLine($"Error message: {consumer.ErrorMessage}");
+        Output.WriteLine($"Error detected: {consumer.HasError}");
+        Output.WriteLine($"Error code: {consumer.ErrorCode}");
+        Output.WriteLine($"Error message: {consumer.ErrorMessage}");
     }
 
     [Fact]
@@ -792,7 +787,7 @@ public sealed class SharedMemoryTests : IDisposable
         sw.Stop();
 
         // Assert
-        _output.WriteLine($"Wait completed: {result}, took {sw.ElapsedMilliseconds}ms");
+        Output.WriteLine($"Wait completed: {result}, took {sw.ElapsedMilliseconds}ms");
         Assert.True(result, "Task should complete when error is set");
         Assert.True(waitResult, "WaitForData should return true on error");
     }
@@ -810,8 +805,8 @@ public sealed class SharedMemoryTests : IDisposable
         using var consumer = new SharedMemoryConsumer(producer.Name);
 
         // Assert — verify the error code maps to the expected fixed string
-        _output.WriteLine($"Error code: {consumer.ErrorCode}");
-        _output.WriteLine($"Error message: {consumer.ErrorMessage}");
+        Output.WriteLine($"Error code: {consumer.ErrorCode}");
+        Output.WriteLine($"Error message: {consumer.ErrorMessage}");
 
         Assert.Equal(SharedMemoryErrorCode.InternalError, consumer.ErrorCode);
         Assert.Equal("Internal error", consumer.ErrorMessage);
@@ -855,8 +850,8 @@ public sealed class SharedMemoryTests : IDisposable
             int read2 = consumer2.Read(buffer2);
 
             // Assert
-            _output.WriteLine($"Consumer 1 read: {buffer1.Length}");
-            _output.WriteLine($"Consumer 2 read: {read2}");
+            Output.WriteLine($"Consumer 1 read: {buffer1.Length}");
+            Output.WriteLine($"Consumer 2 read: {read2}");
 
             Assert.Equal(data2.Length, read2);
             Assert.True(data2.AsSpan().SequenceEqual(buffer2.AsSpan(0, read2)));
@@ -875,18 +870,18 @@ public sealed class SharedMemoryTests : IDisposable
         using (var consumer1 = new SharedMemoryConsumer(producer.Name))
         {
             Assert.True(producer.IsConsumerAttached(), "Consumer 1 should be attached");
-            _output.WriteLine("Consumer 1 attached");
+            Output.WriteLine("Consumer 1 attached");
         }
 
         // Small delay for flag propagation
         Thread.Sleep(10);
         Assert.False(producer.IsConsumerAttached(), "Consumer 1 detached");
-        _output.WriteLine("Consumer 1 detached");
+        Output.WriteLine("Consumer 1 detached");
 
         using (var consumer2 = new SharedMemoryConsumer(producer.Name))
         {
             Assert.True(producer.IsConsumerAttached(), "Consumer 2 should be attached");
-            _output.WriteLine("Consumer 2 attached");
+            Output.WriteLine("Consumer 2 attached");
         }
     }
 
@@ -911,7 +906,7 @@ public sealed class SharedMemoryTests : IDisposable
         Thread.Sleep(10);
         Assert.Equal(ProducerState.Stopped, consumer.ProducerState);
 
-        _output.WriteLine("Producer state transitions verified");
+        Output.WriteLine("Producer state transitions verified");
     }
 
     // =========================================================================
@@ -936,10 +931,10 @@ public sealed class SharedMemoryTests : IDisposable
         var stats = consumer.GetStatistics();
 
         // Assert
-        _output.WriteLine($"Bytes written: {stats.TotalBytesWritten}");
-        _output.WriteLine($"Packets written: {stats.TotalPacketsWritten}");
-        _output.WriteLine($"Bytes read: {stats.TotalBytesRead}");
-        _output.WriteLine($"Packets read: {stats.TotalPacketsRead}");
+        Output.WriteLine($"Bytes written: {stats.TotalBytesWritten}");
+        Output.WriteLine($"Packets written: {stats.TotalPacketsWritten}");
+        Output.WriteLine($"Bytes read: {stats.TotalBytesRead}");
+        Output.WriteLine($"Packets read: {stats.TotalPacketsRead}");
 
         Assert.Equal((ulong)data.Length, stats.TotalBytesWritten);
         Assert.Equal((ulong)(data.Length / TsPacketSize), stats.TotalPacketsWritten);
@@ -980,7 +975,7 @@ public sealed class SharedMemoryTests : IDisposable
         int read = consumer.Read(buffer);
 
         // Assert
-        _output.WriteLine($"Source: {smallData.Length}, Read: {read}");
+        Output.WriteLine($"Source: {smallData.Length}, Read: {read}");
         Assert.Equal(smallData.Length, read);
         Assert.True(smallData.AsSpan().SequenceEqual(buffer));
     }
@@ -1002,14 +997,14 @@ public sealed class SharedMemoryTests : IDisposable
         int read1 = consumer.Read(smallBuffer);
 
         // Assert
-        _output.WriteLine($"Available: {largeData.Length}, Buffer: {smallBuffer.Length}, Read: {read1}");
+        Output.WriteLine($"Available: {largeData.Length}, Buffer: {smallBuffer.Length}, Read: {read1}");
         Assert.Equal(smallBuffer.Length, read1);
         Assert.True(consumer.AvailableBytes > 0, "Should have more data available");
 
         // Read the rest
         var remainingBuffer = new byte[largeData.Length * 2]; // Large buffer for remaining + potential padding
         int read2 = consumer.Read(remainingBuffer);
-        _output.WriteLine($"Second read: {read2}");
+        Output.WriteLine($"Second read: {read2}");
 
         // Should read at least the remaining source data
         int expectedMinimum = largeData.Length - smallBuffer.Length;
@@ -1107,12 +1102,12 @@ public sealed class SharedMemoryTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Total reads: {Interlocked.Read(ref readCount)}");
-        _output.WriteLine($"Invalid messages: {invalidMessages.Count}");
+        Output.WriteLine($"Total reads: {Interlocked.Read(ref readCount)}");
+        Output.WriteLine($"Invalid messages: {invalidMessages.Count}");
 
         foreach (var msg in invalidMessages.Take(10))
         {
-            _output.WriteLine($"  Invalid: \"{msg}\"");
+            Output.WriteLine($"  Invalid: \"{msg}\"");
         }
 
         Assert.True(
@@ -1141,7 +1136,7 @@ public sealed class SharedMemoryTests : IDisposable
 
         // Read position before consumer reads
         ulong readPosBefore = producer.ReadReadPosition();
-        _output.WriteLine($"Read position before consumer read: {readPosBefore}");
+        Output.WriteLine($"Read position before consumer read: {readPosBefore}");
 
         // Consumer reads data
         var buffer = new byte[sourceData.Length];
@@ -1149,8 +1144,8 @@ public sealed class SharedMemoryTests : IDisposable
 
         // Read position after consumer reads
         ulong readPosAfter = producer.ReadReadPosition();
-        _output.WriteLine($"Read position after consumer read: {readPosAfter}");
-        _output.WriteLine($"Bytes read: {bytesRead}");
+        Output.WriteLine($"Read position after consumer read: {readPosAfter}");
+        Output.WriteLine($"Bytes read: {bytesRead}");
 
         Assert.True(
             readPosAfter > readPosBefore,
@@ -1167,8 +1162,8 @@ public sealed class SharedMemoryTests : IDisposable
         await Task.Delay(10);
 
         ulong readPosAfterSecondWrite = producer.ReadReadPosition();
-        _output.WriteLine($"Read position before second write: {readPosBeforeSecondWrite}");
-        _output.WriteLine($"Read position after second write: {readPosAfterSecondWrite}");
+        Output.WriteLine($"Read position before second write: {readPosBeforeSecondWrite}");
+        Output.WriteLine($"Read position after second write: {readPosAfterSecondWrite}");
 
         Assert.Equal(readPosBeforeSecondWrite, readPosAfterSecondWrite);
     }
@@ -1192,7 +1187,7 @@ public sealed class SharedMemoryTests : IDisposable
         sw.Stop();
 
         // Assert
-        _output.WriteLine($"WaitForData returned: {result} in {sw.ElapsedMilliseconds}ms");
+        Output.WriteLine($"WaitForData returned: {result} in {sw.ElapsedMilliseconds}ms");
 
         Assert.False(result, "WaitForData should return false when no data and timeout expires");
         Assert.True(
@@ -1237,7 +1232,7 @@ public sealed class SharedMemoryTests : IDisposable
             }
         }
 
-        _output.WriteLine($"Overflow occurred: {overflowOccurred}");
+        Output.WriteLine($"Overflow occurred: {overflowOccurred}");
         Assert.True(overflowOccurred, "Should have detected overflow");
 
         // Write fresh data after overflow
@@ -1254,7 +1249,7 @@ public sealed class SharedMemoryTests : IDisposable
             totalRead += read;
         }
 
-        _output.WriteLine($"Total read after recovery: {totalRead}");
+        Output.WriteLine($"Total read after recovery: {totalRead}");
 
         // Assert - verify MPEG-TS sync byte integrity
         int packetCount = totalRead / TsPacketSize;
@@ -1265,11 +1260,11 @@ public sealed class SharedMemoryTests : IDisposable
             if (syncByte != 0x47 && syncByte != 0xFF)
             {
                 invalidSyncCount++;
-                _output.WriteLine($"Invalid sync byte 0x{syncByte:X2} at packet {i}");
+                Output.WriteLine($"Invalid sync byte 0x{syncByte:X2} at packet {i}");
             }
         }
 
-        _output.WriteLine($"Packets read: {packetCount}, Invalid sync: {invalidSyncCount}");
+        Output.WriteLine($"Packets read: {packetCount}, Invalid sync: {invalidSyncCount}");
         Assert.True(totalRead > 0, "Should have read data after overflow recovery");
         Assert.Equal(0, invalidSyncCount);
     }
@@ -1293,8 +1288,8 @@ public sealed class SharedMemoryTests : IDisposable
         bool overflowFirst = consumer.ConsumeOverflow();
         bool discontinuityFirst = consumer.ConsumeDiscontinuity();
 
-        _output.WriteLine($"Overflow consumed: {overflowFirst}");
-        _output.WriteLine($"Discontinuity consumed: {discontinuityFirst}");
+        Output.WriteLine($"Overflow consumed: {overflowFirst}");
+        Output.WriteLine($"Discontinuity consumed: {discontinuityFirst}");
 
         Assert.True(overflowFirst, "Overflow flag should be set and consumable");
         Assert.True(discontinuityFirst, "Discontinuity flag should be set and consumable");
@@ -1303,8 +1298,8 @@ public sealed class SharedMemoryTests : IDisposable
         bool overflowSecond = consumer.ConsumeOverflow();
         bool discontinuitySecond = consumer.ConsumeDiscontinuity();
 
-        _output.WriteLine($"Overflow second consume: {overflowSecond}");
-        _output.WriteLine($"Discontinuity second consume: {discontinuitySecond}");
+        Output.WriteLine($"Overflow second consume: {overflowSecond}");
+        Output.WriteLine($"Discontinuity second consume: {discontinuitySecond}");
 
         Assert.False(overflowSecond, "Overflow should be cleared after first consume");
         Assert.False(discontinuitySecond, "Discontinuity should be cleared after first consume");

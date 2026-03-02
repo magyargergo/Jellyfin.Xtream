@@ -33,17 +33,8 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// 7. Thread-safe RNG using thread_local
 /// </summary>
 [Collection("E2E-NativeCodeFixes")]
-public class NativeCodeFixesTests
+public class NativeCodeFixesTests(DockerTestFixture fixture, ITestOutputHelper output) : NativeE2ETestBase(output)
 {
-    private readonly DockerTestFixture _fixture;
-    private readonly ITestOutputHelper _output;
-
-    public NativeCodeFixesTests(DockerTestFixture fixture, ITestOutputHelper output)
-    {
-        _fixture = fixture;
-        _output = output;
-    }
-
     // =========================================================================
     // Fix 1: Integer Overflow Protection in Curl Write Callback
     // Location: native/tsduck_interop/src/streaming/stream_source.cpp:341-347
@@ -61,16 +52,11 @@ public class NativeCodeFixesTests
         const string providerId = "large-data-provider";
         const int highBitrateKbps = 50000; // 50 Mbps
 
-        _fixture.ConfigureProvider(providerId, new ProviderBehavior { BitrateKbps = highBitrateKbps });
+        fixture.ConfigureProvider(providerId, new ProviderBehavior { BitrateKbps = highBitrateKbps });
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
-        streamer.AddUrl(_fixture.GetProviderUrl(providerId));
+        streamer.AddUrl(fixture.GetProviderUrl(providerId));
 
         // Act - stream for several seconds at high bitrate
         Assert.True(streamer.Start(), "Streamer should start successfully");
@@ -85,10 +71,10 @@ public class NativeCodeFixesTests
         streamer.Stop();
 
         // Assert - should have received significant data without crashes or corruption
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Packets output: {status.PacketsOutput:N0}");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Retry count: {status.RetryCount}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Packets output: {status.PacketsOutput:N0}");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Retry count: {status.RetryCount}");
 
         // At 50 Mbps for 5 seconds, we expect ~31MB of data
         // Allow for some variance but should be substantial
@@ -113,16 +99,11 @@ public class NativeCodeFixesTests
         const string providerId = "sustained-throughput-provider";
         const int bitrateKbps = 25000; // 25 Mbps sustained
 
-        _fixture.ConfigureProvider(providerId, new ProviderBehavior { BitrateKbps = bitrateKbps });
+        fixture.ConfigureProvider(providerId, new ProviderBehavior { BitrateKbps = bitrateKbps });
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
-        streamer.AddUrl(_fixture.GetProviderUrl(providerId));
+        streamer.AddUrl(fixture.GetProviderUrl(providerId));
         Assert.True(streamer.Start(), "Streamer should start");
 
         await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
@@ -144,9 +125,9 @@ public class NativeCodeFixesTests
             byteDeltas.Add(delta);
         }
 
-        _output.WriteLine($"Total samples: {samples.Count}");
-        _output.WriteLine($"Total bytes: {samples.Last().BytesReceived:N0}");
-        _output.WriteLine($"Min delta: {byteDeltas.Min():N0}, Max delta: {byteDeltas.Max():N0}");
+        Output.WriteLine($"Total samples: {samples.Count}");
+        Output.WriteLine($"Total bytes: {samples.Last().BytesReceived:N0}");
+        Output.WriteLine($"Min delta: {byteDeltas.Min():N0}, Max delta: {byteDeltas.Max():N0}");
 
         // No sample should show negative delta (would indicate overflow/corruption)
         Assert.All(byteDeltas, delta => Assert.True(delta >= 0, $"Negative byte delta: {delta}"));
@@ -154,7 +135,7 @@ public class NativeCodeFixesTests
         // Most samples should show data flow (allow for some timing variance)
         var flowingSamples = byteDeltas.Count(d => d > 0);
         var flowRate = (double)flowingSamples / byteDeltas.Count;
-        _output.WriteLine($"Flowing samples: {flowingSamples}/{byteDeltas.Count} ({flowRate:P0})");
+        Output.WriteLine($"Flowing samples: {flowingSamples}/{byteDeltas.Count} ({flowRate:P0})");
 
         Assert.True(flowRate >= 0.8, $"At least 80% of samples should show data flow, got {flowRate:P0}");
     }
@@ -176,19 +157,14 @@ public class NativeCodeFixesTests
         const int providerCount = 3;
         for (int i = 0; i < providerCount; i++)
         {
-            _fixture.ConfigureProvider($"atomic-test-{i}", new ProviderBehavior { BitrateKbps = 5000 });
+            fixture.ConfigureProvider($"atomic-test-{i}", new ProviderBehavior { BitrateKbps = 5000 });
         }
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         for (int i = 0; i < providerCount; i++)
         {
-            streamer.AddUrl(_fixture.GetProviderUrl($"atomic-test-{i}"));
+            streamer.AddUrl(fixture.GetProviderUrl($"atomic-test-{i}"));
         }
 
         Assert.True(streamer.Start(), "Streamer should start");
@@ -235,9 +211,9 @@ public class NativeCodeFixesTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Total index observations: {observedIndices.Count}");
-        _output.WriteLine($"Invalid indices: {invalidIndices.Count}");
-        _output.WriteLine($"Unique indices seen: {observedIndices.Distinct().Count()}");
+        Output.WriteLine($"Total index observations: {observedIndices.Count}");
+        Output.WriteLine($"Invalid indices: {invalidIndices.Count}");
+        Output.WriteLine($"Unique indices seen: {observedIndices.Distinct().Count()}");
 
         // No invalid indices should be observed (torn reads would cause this)
         Assert.Empty(invalidIndices);
@@ -254,16 +230,11 @@ public class NativeCodeFixesTests
     public async Task AtomicUrlIndex_RapidStatusPolling_ConsistentReads()
     {
         // Arrange
-        _fixture.ConfigureProvider("rapid-poll-provider", new ProviderBehavior { BitrateKbps = 10000 });
+        fixture.ConfigureProvider("rapid-poll-provider", new ProviderBehavior { BitrateKbps = 10000 });
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
-        streamer.AddUrl(_fixture.GetProviderUrl("rapid-poll-provider"));
+        streamer.AddUrl(fixture.GetProviderUrl("rapid-poll-provider"));
         Assert.True(streamer.Start(), "Streamer should start");
         await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(3));
 
@@ -281,7 +252,7 @@ public class NativeCodeFixesTests
 
         // Assert - all indices should be 0 (only one URL, no switches)
         var uniqueIndices = indices.Distinct().ToArray();
-        _output.WriteLine($"Unique indices: [{string.Join(", ", uniqueIndices)}]");
+        Output.WriteLine($"Unique indices: [{string.Join(", ", uniqueIndices)}]");
 
         Assert.Single(uniqueIndices);
         Assert.Equal(0, uniqueIndices[0]);
@@ -301,16 +272,11 @@ public class NativeCodeFixesTests
     public async Task FirstFeedReceived_ConcurrentFeeds_InitializedOnce()
     {
         // Arrange - provider that starts streaming immediately
-        _fixture.ConfigureProvider("first-feed-provider", new ProviderBehavior { BitrateKbps = 20000 });
+        fixture.ConfigureProvider("first-feed-provider", new ProviderBehavior { BitrateKbps = 20000 });
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
-        streamer.AddUrl(_fixture.GetProviderUrl("first-feed-provider"));
+        streamer.AddUrl(fixture.GetProviderUrl("first-feed-provider"));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start");
@@ -329,9 +295,9 @@ public class NativeCodeFixesTests
 
         // Assert - metrics should show consistent timing
         // TsDuckMetrics uses PidCount as a proxy for data flow (PIDs are discovered as packets arrive)
-        _output.WriteLine($"Metrics 1: pids={metrics1?.PidCount}, bitrate={metrics1?.TsBitrate}");
-        _output.WriteLine($"Metrics 2: pids={metrics2?.PidCount}, bitrate={metrics2?.TsBitrate}");
-        _output.WriteLine($"Metrics 3: pids={metrics3?.PidCount}, bitrate={metrics3?.TsBitrate}");
+        Output.WriteLine($"Metrics 1: pids={metrics1?.PidCount}, bitrate={metrics1?.TsBitrate}");
+        Output.WriteLine($"Metrics 2: pids={metrics2?.PidCount}, bitrate={metrics2?.TsBitrate}");
+        Output.WriteLine($"Metrics 3: pids={metrics3?.PidCount}, bitrate={metrics3?.TsBitrate}");
 
         Assert.NotNull(metrics1);
         Assert.NotNull(metrics2);
@@ -352,7 +318,7 @@ public class NativeCodeFixesTests
     public async Task FirstFeedReceived_RapidRestarts_TimingConsistent()
     {
         // Arrange
-        _fixture.ConfigureProvider("restart-provider", new ProviderBehavior { BitrateKbps = 10000 });
+        fixture.ConfigureProvider("restart-provider", new ProviderBehavior { BitrateKbps = 10000 });
 
         // Act - perform multiple rapid start/stop cycles
         const int cycleCount = 5;
@@ -360,14 +326,9 @@ public class NativeCodeFixesTests
 
         for (int cycle = 0; cycle < cycleCount; cycle++)
         {
-            using var streamer = CreateStreamer();
-            if (streamer == null)
-            {
-                _output.WriteLine("SKIP: Native library not available");
-                return;
-            }
+            using var streamer = BuildStreamer(TestConfigs.Default);
 
-            streamer.AddUrl(_fixture.GetProviderUrl("restart-provider"));
+            streamer.AddUrl(fixture.GetProviderUrl("restart-provider"));
             Assert.True(streamer.Start(), $"Cycle {cycle}: Streamer should start");
 
             // Wait for some data
@@ -376,7 +337,7 @@ public class NativeCodeFixesTests
             var status = streamer.GetStatus();
             bytesCounts.Add(status.BytesReceived);
 
-            _output.WriteLine($"Cycle {cycle}: {status.BytesReceived:N0} bytes received");
+            Output.WriteLine($"Cycle {cycle}: {status.BytesReceived:N0} bytes received");
 
             streamer.Stop();
 
@@ -438,18 +399,13 @@ public class NativeCodeFixesTests
         };
 
         // Use two providers - if false switch occurs, we'd see CurrentUrlIndex change
-        _fixture.ConfigureProvider("quality-primary", new ProviderBehavior { BitrateKbps = 5000 });
-        _fixture.ConfigureProvider("quality-backup", new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider("quality-primary", new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider("quality-backup", new ProviderBehavior { BitrateKbps = 5000 });
 
-        using var streamer = NativeStreamer.TryCreate(config);
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(new StreamerTestSetup(config));
 
-        streamer.AddUrl(_fixture.GetProviderUrl("quality-primary"));
-        streamer.AddUrl(_fixture.GetProviderUrl("quality-backup"));
+        streamer.AddUrl(fixture.GetProviderUrl("quality-primary"));
+        streamer.AddUrl(fixture.GetProviderUrl("quality-backup"));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start");
@@ -469,10 +425,10 @@ public class NativeCodeFixesTests
         // expected behavior with synthetic TS data, not a false switch from counter
         // reset logic. The key assertion is that the streamer continues streaming
         // and doesn't crash or stall.
-        _output.WriteLine($"Start URL index: {startStatus.CurrentUrlIndex}");
-        _output.WriteLine($"End URL index: {endStatus.CurrentUrlIndex}");
-        _output.WriteLine($"Switches completed: {endStatus.SwitchesCompleted}");
-        _output.WriteLine($"Bytes received: {endStatus.BytesReceived:N0}");
+        Output.WriteLine($"Start URL index: {startStatus.CurrentUrlIndex}");
+        Output.WriteLine($"End URL index: {endStatus.CurrentUrlIndex}");
+        Output.WriteLine($"Switches completed: {endStatus.SwitchesCompleted}");
+        Output.WriteLine($"Bytes received: {endStatus.BytesReceived:N0}");
 
         Assert.True(endStatus.BytesReceived > 0, "Should receive data");
         Assert.True(
@@ -489,16 +445,11 @@ public class NativeCodeFixesTests
     public async Task QualitySwitchTrigger_ResetRecovery_GracefulHandling()
     {
         // Arrange
-        _fixture.ConfigureProvider("recovery-provider", new ProviderBehavior { BitrateKbps = 10000 });
+        fixture.ConfigureProvider("recovery-provider", new ProviderBehavior { BitrateKbps = 10000 });
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
-        streamer.AddUrl(_fixture.GetProviderUrl("recovery-provider"));
+        streamer.AddUrl(fixture.GetProviderUrl("recovery-provider"));
 
         // Act - stream with intermittent restart to simulate counter changes
         Assert.True(streamer.Start(), "Streamer should start");
@@ -520,8 +471,8 @@ public class NativeCodeFixesTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Metrics samples collected: {metricsSamples.Count}");
-        _output.WriteLine($"Final status: bytes={finalStatus.BytesReceived:N0}, state={finalStatus.State}");
+        Output.WriteLine($"Metrics samples collected: {metricsSamples.Count}");
+        Output.WriteLine($"Final status: bytes={finalStatus.BytesReceived:N0}, state={finalStatus.State}");
 
         // Should have collected metrics and data without crashes
         Assert.True(metricsSamples.Count > 0, "Should collect metrics samples");
@@ -545,7 +496,7 @@ public class NativeCodeFixesTests
         for (int i = 0; i < providerCount; i++)
         {
             // Different latencies for each provider
-            _fixture.ConfigureProvider(
+            fixture.ConfigureProvider(
                 $"latency-test-{i}",
                 new ProviderBehavior
                 {
@@ -555,16 +506,11 @@ public class NativeCodeFixesTests
             );
         }
 
-        using var streamer = CreateStreamerWithFastIsolation();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.FastIsolation);
 
         for (int i = 0; i < providerCount; i++)
         {
-            streamer.AddUrl(_fixture.GetProviderUrl($"latency-test-{i}"));
+            streamer.AddUrl(fixture.GetProviderUrl($"latency-test-{i}"));
         }
 
         // Act
@@ -587,7 +533,7 @@ public class NativeCodeFixesTests
         for (int i = 0; i < providerCount; i++)
         {
             var health = healthSnapshots[i];
-            _output.WriteLine($"Provider {i}: latency={health?.LatencyEwmaMs:F1}ms, state={health?.State}");
+            Output.WriteLine($"Provider {i}: latency={health?.LatencyEwmaMs:F1}ms, state={health?.State}");
         }
 
         // Active providers should have reasonable latency values (not NaN, not absurdly high)
@@ -612,19 +558,14 @@ public class NativeCodeFixesTests
     public async Task LatencyEwma_ConcurrentStress_ReasonableValues()
     {
         // Arrange - high-traffic provider for rapid latency samples
-        _fixture.ConfigureProvider(
+        fixture.ConfigureProvider(
             "stress-latency-provider",
             new ProviderBehavior { BitrateKbps = 30000, LatencyMs = 100 }
         );
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
-        streamer.AddUrl(_fixture.GetProviderUrl("stress-latency-provider"));
+        streamer.AddUrl(fixture.GetProviderUrl("stress-latency-provider"));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start");
@@ -656,15 +597,15 @@ public class NativeCodeFixesTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Total latency samples: {latencyValues.Count}");
+        Output.WriteLine($"Total latency samples: {latencyValues.Count}");
 
         var validLatencies = latencyValues.Where(l => !double.IsNaN(l) && !double.IsInfinity(l)).ToList();
-        _output.WriteLine($"Valid latencies: {validLatencies.Count}");
+        Output.WriteLine($"Valid latencies: {validLatencies.Count}");
 
         if (validLatencies.Count > 0)
         {
-            _output.WriteLine($"Min: {validLatencies.Min():F1}ms, Max: {validLatencies.Max():F1}ms");
-            _output.WriteLine($"Avg: {validLatencies.Average():F1}ms");
+            Output.WriteLine($"Min: {validLatencies.Min():F1}ms, Max: {validLatencies.Max():F1}ms");
+            Output.WriteLine($"Avg: {validLatencies.Average():F1}ms");
         }
 
         // All values should be valid (no corruption from concurrent updates)
@@ -693,22 +634,17 @@ public class NativeCodeFixesTests
         // Provider 3 - outlier (50% failure rate)
         for (int i = 0; i < providerCount - 1; i++)
         {
-            _fixture.ConfigureProvider($"outlier-healthy-{i}", new ProviderBehavior { BitrateKbps = 5000 });
+            fixture.ConfigureProvider($"outlier-healthy-{i}", new ProviderBehavior { BitrateKbps = 5000 });
         }
-        _fixture.ConfigureProvider("outlier-bad", new ProviderBehavior { BitrateKbps = 5000, FailureRate = 0.5 });
+        fixture.ConfigureProvider("outlier-bad", new ProviderBehavior { BitrateKbps = 5000, FailureRate = 0.5 });
 
-        using var streamer = CreateStreamerWithOutlierDetection();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.OutlierDetection);
 
         for (int i = 0; i < providerCount - 1; i++)
         {
-            streamer.AddUrl(_fixture.GetProviderUrl($"outlier-healthy-{i}"));
+            streamer.AddUrl(fixture.GetProviderUrl($"outlier-healthy-{i}"));
         }
-        streamer.AddUrl(_fixture.GetProviderUrl("outlier-bad"));
+        streamer.AddUrl(fixture.GetProviderUrl("outlier-bad"));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start");
@@ -737,10 +673,10 @@ public class NativeCodeFixesTests
         for (int i = 0; i < providerCount; i++)
         {
             var health = streamer.GetProviderHealth(i);
-            _output.WriteLine($"Provider {i}: state={states[i]}, success_rate={health?.SuccessRate:P1}");
+            Output.WriteLine($"Provider {i}: state={states[i]}, success_rate={health?.SuccessRate:P1}");
         }
 
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         // Data should have been received
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -758,7 +694,7 @@ public class NativeCodeFixesTests
 
         for (int i = 0; i < providerCount; i++)
         {
-            _fixture.ConfigureProvider(
+            fixture.ConfigureProvider(
                 $"bounds-test-{i}",
                 new ProviderBehavior
                 {
@@ -769,16 +705,11 @@ public class NativeCodeFixesTests
             );
         }
 
-        using var streamer = CreateStreamerWithOutlierDetection();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.OutlierDetection);
 
         for (int i = 0; i < providerCount; i++)
         {
-            streamer.AddUrl(_fixture.GetProviderUrl($"bounds-test-{i}"));
+            streamer.AddUrl(fixture.GetProviderUrl($"bounds-test-{i}"));
         }
 
         // Act - stream and repeatedly run outlier detection
@@ -796,9 +727,9 @@ public class NativeCodeFixesTests
         streamer.Stop();
 
         // Assert - should complete without crashes (index out of bounds would crash)
-        _output.WriteLine($"Completed {10} outlier detection runs");
-        _output.WriteLine($"Final bytes: {finalStatus.BytesReceived:N0}");
-        _output.WriteLine($"Provider count: {streamer.GetProviderCount()}");
+        Output.WriteLine($"Completed {10} outlier detection runs");
+        Output.WriteLine($"Final bytes: {finalStatus.BytesReceived:N0}");
+        Output.WriteLine($"Provider count: {streamer.GetProviderCount()}");
 
         Assert.Equal(providerCount, streamer.GetProviderCount());
         Assert.True(finalStatus.BytesReceived > 0, "Should receive data");
@@ -820,19 +751,14 @@ public class NativeCodeFixesTests
         const int providerCount = 5;
         for (int i = 0; i < providerCount; i++)
         {
-            _fixture.ConfigureProvider($"rng-test-{i}", new ProviderBehavior { BitrateKbps = 5000 });
+            fixture.ConfigureProvider($"rng-test-{i}", new ProviderBehavior { BitrateKbps = 5000 });
         }
 
-        using var streamer = CreateStreamerWithP2C();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.P2CLoadBalancing);
 
         for (int i = 0; i < providerCount; i++)
         {
-            streamer.AddUrl(_fixture.GetProviderUrl($"rng-test-{i}"));
+            streamer.AddUrl(fixture.GetProviderUrl($"rng-test-{i}"));
         }
 
         // Act
@@ -875,8 +801,8 @@ public class NativeCodeFixesTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Total queries: {queryCount}");
-        _output.WriteLine($"Errors: {errorCount}");
+        Output.WriteLine($"Total queries: {queryCount}");
+        Output.WriteLine($"Errors: {errorCount}");
 
         // No errors should occur from RNG corruption
         Assert.Equal(0, errorCount);
@@ -891,20 +817,15 @@ public class NativeCodeFixesTests
     public async Task ThreadSafeRng_P2CLoadBalancing_WorksCorrectly()
     {
         // Arrange - providers with different characteristics
-        _fixture.ConfigureProvider("p2c-fast", new ProviderBehavior { BitrateKbps = 10000, LatencyMs = 10 });
-        _fixture.ConfigureProvider("p2c-medium", new ProviderBehavior { BitrateKbps = 5000, LatencyMs = 50 });
-        _fixture.ConfigureProvider("p2c-slow", new ProviderBehavior { BitrateKbps = 3000, LatencyMs = 100 });
+        fixture.ConfigureProvider("p2c-fast", new ProviderBehavior { BitrateKbps = 10000, LatencyMs = 10 });
+        fixture.ConfigureProvider("p2c-medium", new ProviderBehavior { BitrateKbps = 5000, LatencyMs = 50 });
+        fixture.ConfigureProvider("p2c-slow", new ProviderBehavior { BitrateKbps = 3000, LatencyMs = 100 });
 
-        using var streamer = CreateStreamerWithP2C();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.P2CLoadBalancing);
 
-        streamer.AddUrl(_fixture.GetProviderUrl("p2c-fast"));
-        streamer.AddUrl(_fixture.GetProviderUrl("p2c-medium"));
-        streamer.AddUrl(_fixture.GetProviderUrl("p2c-slow"));
+        streamer.AddUrl(fixture.GetProviderUrl("p2c-fast"));
+        streamer.AddUrl(fixture.GetProviderUrl("p2c-medium"));
+        streamer.AddUrl(fixture.GetProviderUrl("p2c-slow"));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start");
@@ -923,13 +844,13 @@ public class NativeCodeFixesTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Final URL index: {finalStatus.CurrentUrlIndex}");
-        _output.WriteLine($"Bytes received: {finalStatus.BytesReceived:N0}");
+        Output.WriteLine($"Final URL index: {finalStatus.CurrentUrlIndex}");
+        Output.WriteLine($"Bytes received: {finalStatus.BytesReceived:N0}");
 
         for (int i = 0; i < 3; i++)
         {
             var h = healthSnapshots[i];
-            _output.WriteLine($"Provider {i}: state={h?.State}, latency={h?.LatencyEwmaMs:F1}ms");
+            Output.WriteLine($"Provider {i}: state={h?.State}, latency={h?.LatencyEwmaMs:F1}ms");
         }
 
         // P2C should have streamed successfully
@@ -940,30 +861,6 @@ public class NativeCodeFixesTests
             healthSnapshots.Any(h => h?.State == ProviderState.Active),
             "At least one provider should be active"
         );
-    }
-
-    // =========================================================================
-    // Helper Methods
-    // =========================================================================
-
-    private static NativeStreamer? CreateStreamer()
-    {
-        return NativeStreamer.TryCreate(TsDuckStreamerConfigNative.Default);
-    }
-
-    private static NativeStreamer? CreateStreamerWithFastIsolation()
-    {
-        return NativeStreamer.TryCreate(TestConfigs.FastIsolation);
-    }
-
-    private static NativeStreamer? CreateStreamerWithOutlierDetection()
-    {
-        return NativeStreamer.TryCreate(TestConfigs.OutlierDetection);
-    }
-
-    private static NativeStreamer? CreateStreamerWithP2C()
-    {
-        return NativeStreamer.TryCreate(TestConfigs.P2CLoadBalancing);
     }
 }
 

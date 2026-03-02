@@ -10,17 +10,9 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// and eventually recover to active state.
 /// </summary>
 [Collection("E2E-ProviderHealth")]
-public class CircuitBreakerTests
+public class CircuitBreakerTests(DockerTestFixture fixture, ITestOutputHelper output)
+    : NativeE2ETestBase(output, TestConfigs.FastIsolation)
 {
-    private readonly DockerTestFixture _fixture;
-    private readonly ITestOutputHelper _output;
-
-    public CircuitBreakerTests(DockerTestFixture fixture, ITestOutputHelper output)
-    {
-        _fixture = fixture;
-        _output = output;
-    }
-
     /// <summary>
     /// Tests that a provider gets ejected (circuit opens) after consecutive failures.
     /// The failing provider should transition from Active to Ejected state.
@@ -32,19 +24,14 @@ public class CircuitBreakerTests
         const string failingProvider = "failing-1";
         const string healthyProvider = "healthy-1";
 
-        _fixture.ConfigureProvider(failingProvider, new ProviderBehavior { FailureRate = 1.0 }); // Always fail
-        _fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 }); // Healthy
+        fixture.ConfigureProvider(failingProvider, new ProviderBehavior { FailureRate = 1.0 }); // Always fail
+        fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 }); // Healthy
 
-        using var streamer = CreateStreamerWithFastIsolation();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.FastIsolation);
 
         // Add URLs - failing provider first, healthy second
-        streamer.AddUrl(_fixture.GetProviderUrl(failingProvider));
-        streamer.AddUrl(_fixture.GetProviderUrl(healthyProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(failingProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(healthyProvider));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start successfully");
@@ -63,12 +50,12 @@ public class CircuitBreakerTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Failing provider state: {streamer.GetProviderState(0)}");
-        _output.WriteLine($"Healthy provider state: {streamer.GetProviderState(1)}");
-        _output.WriteLine($"Failing provider success rate: {failingHealth?.SuccessRate:P1}");
-        _output.WriteLine($"Healthy provider success rate: {healthyHealth?.SuccessRate:P1}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Current URL index: {status.CurrentUrlIndex}");
+        Output.WriteLine($"Failing provider state: {streamer.GetProviderState(0)}");
+        Output.WriteLine($"Healthy provider state: {streamer.GetProviderState(1)}");
+        Output.WriteLine($"Failing provider success rate: {failingHealth?.SuccessRate:P1}");
+        Output.WriteLine($"Healthy provider success rate: {healthyHealth?.SuccessRate:P1}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Current URL index: {status.CurrentUrlIndex}");
 
         Assert.Equal(ProviderState.Ejected, streamer.GetProviderState(0));
         Assert.True(status.BytesReceived > 0, "Should have received data from healthy provider");
@@ -86,18 +73,13 @@ public class CircuitBreakerTests
         const string healthyProvider = "healthy-2";
 
         // Configure provider first with 100% failure rate to guarantee ejection
-        _fixture.ConfigureProvider(recoveringProvider, new ProviderBehavior { FailureRate = 1.0 });
-        _fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider(recoveringProvider, new ProviderBehavior { FailureRate = 1.0 });
+        fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
 
-        using var streamer = CreateStreamerWithFastIsolation();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.FastIsolation);
 
-        streamer.AddUrl(_fixture.GetProviderUrl(recoveringProvider));
-        streamer.AddUrl(_fixture.GetProviderUrl(healthyProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(recoveringProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(healthyProvider));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start successfully");
@@ -110,10 +92,10 @@ public class CircuitBreakerTests
             because: "Provider should be ejected after initial failures"
         );
 
-        _output.WriteLine("Provider 0 ejected. Switching to healthy behavior for recovery...");
+        Output.WriteLine("Provider 0 ejected. Switching to healthy behavior for recovery...");
 
         // Switch the provider to healthy behavior so it can recover during probation
-        _fixture.ConfigureProvider(recoveringProvider, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider(recoveringProvider, new ProviderBehavior { BitrateKbps = 5000 });
 
         // Wait longer for probation/recovery since quarantine expiry depends on circuit breaker timing.
         // Must call CheckRecovery() because the streaming loop doesn't re-check ejection expiry
@@ -134,11 +116,11 @@ public class CircuitBreakerTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Provider state: {state}");
-        _output.WriteLine($"Provider success rate: {health?.SuccessRate:P1}");
-        _output.WriteLine($"Provider isolated times: {streamer.GetIsolatedTimes(0)}");
-        _output.WriteLine($"Bytes received: {bytesReceived:N0}");
-        _output.WriteLine($"Reached probation/active: {reachedProbationOrActive}");
+        Output.WriteLine($"Provider state: {state}");
+        Output.WriteLine($"Provider success rate: {health?.SuccessRate:P1}");
+        Output.WriteLine($"Provider isolated times: {streamer.GetIsolatedTimes(0)}");
+        Output.WriteLine($"Bytes received: {bytesReceived:N0}");
+        Output.WriteLine($"Reached probation/active: {reachedProbationOrActive}");
 
         // The provider should have been ejected at some point and then recovered
         // It might already be in Active state if it recovered fully
@@ -160,19 +142,14 @@ public class CircuitBreakerTests
         const string healthyProvider = "healthy-3";
 
         // Configure providers first, then set failure count (order matters!)
-        _fixture.ConfigureProvider(recoveringProvider, new ProviderBehavior { BitrateKbps = 5000 });
-        _fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
-        _fixture.FailNextRequests(recoveringProvider, 3); // Fail first 3 requests AFTER configure
+        fixture.ConfigureProvider(recoveringProvider, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.FailNextRequests(recoveringProvider, 3); // Fail first 3 requests AFTER configure
 
-        using var streamer = CreateStreamerWithFastIsolation();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.FastIsolation);
 
-        streamer.AddUrl(_fixture.GetProviderUrl(recoveringProvider));
-        streamer.AddUrl(_fixture.GetProviderUrl(healthyProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(recoveringProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(healthyProvider));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start successfully");
@@ -182,7 +159,7 @@ public class CircuitBreakerTests
             () => streamer.GetProviderState(0) == ProviderState.Ejected,
             TimeSpan.FromSeconds(10)
         );
-        _output.WriteLine($"Provider ejected: {ejected}");
+        Output.WriteLine($"Provider ejected: {ejected}");
 
         if (ejected)
         {
@@ -214,9 +191,9 @@ public class CircuitBreakerTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Final provider state: {finalState}");
-        _output.WriteLine($"Success rate: {health?.SuccessRate:P1}");
-        _output.WriteLine($"Isolated times: {streamer.GetIsolatedTimes(0)}");
+        Output.WriteLine($"Final provider state: {finalState}");
+        Output.WriteLine($"Success rate: {health?.SuccessRate:P1}");
+        Output.WriteLine($"Isolated times: {streamer.GetIsolatedTimes(0)}");
 
         // Provider should have recovered from Ejected. With P2C routing and a healthy
         // alternative, the provider may remain in Probation (never selected for traffic)
@@ -238,18 +215,13 @@ public class CircuitBreakerTests
         const string healthyProvider = "healthy-force-test";
         const string ejectedProvider = "ejected-force-test";
 
-        _fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
-        _fixture.ConfigureProvider(ejectedProvider, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider(ejectedProvider, new ProviderBehavior { BitrateKbps = 5000 });
 
-        using var streamer = CreateStreamerWithFastIsolation();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.FastIsolation);
 
-        streamer.AddUrl(_fixture.GetProviderUrl(healthyProvider));
-        streamer.AddUrl(_fixture.GetProviderUrl(ejectedProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(healthyProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(ejectedProvider));
 
         // Force-eject the second provider before starting
         streamer.ForceEjectProvider(1, 60000); // Eject for 60 seconds
@@ -266,10 +238,10 @@ public class CircuitBreakerTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Provider 0 state: {provider0State}");
-        _output.WriteLine($"Provider 1 state: {provider1State}");
-        _output.WriteLine($"Current URL index: {status.CurrentUrlIndex}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Provider 0 state: {provider0State}");
+        Output.WriteLine($"Provider 1 state: {provider1State}");
+        Output.WriteLine($"Current URL index: {status.CurrentUrlIndex}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         // Key assertion: force-ejected provider should remain ejected
         Assert.Equal(ProviderState.Ejected, provider1State);
@@ -291,18 +263,13 @@ public class CircuitBreakerTests
         const string healthyProvider = "repeated-healthy";
 
         // Use 100% failure rate for deterministic, guaranteed ejection
-        _fixture.ConfigureProvider(failingProvider, new ProviderBehavior { FailureRate = 1.0 });
-        _fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider(failingProvider, new ProviderBehavior { FailureRate = 1.0 });
+        fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
 
-        using var streamer = CreateStreamerWithHighlyReactive();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.HighlyReactive);
 
-        streamer.AddUrl(_fixture.GetProviderUrl(failingProvider));
-        streamer.AddUrl(_fixture.GetProviderUrl(healthyProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(failingProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(healthyProvider));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start successfully");
@@ -316,10 +283,10 @@ public class CircuitBreakerTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Isolated times: {isolatedTimes}");
-        _output.WriteLine($"Provider state: {streamer.GetProviderState(0)}");
-        _output.WriteLine($"Success rate: {health?.SuccessRate:P1}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Isolated times: {isolatedTimes}");
+        Output.WriteLine($"Provider state: {streamer.GetProviderState(0)}");
+        Output.WriteLine($"Success rate: {health?.SuccessRate:P1}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         // With 100% failure rate, should have been isolated at least once (deterministic)
         ProviderHealthAssertions.AssertMinIsolations(streamer, 0, minIsolations: 1);
@@ -337,19 +304,14 @@ public class CircuitBreakerTests
         const string healthyProvider = "success-rate-healthy";
 
         // Partial-fail provider first - will accumulate some failures before healthy takes over
-        _fixture.ConfigureProvider(partialFailProvider, new ProviderBehavior { FailureRate = 0.5, BitrateKbps = 5000 });
-        _fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider(partialFailProvider, new ProviderBehavior { FailureRate = 0.5, BitrateKbps = 5000 });
+        fixture.ConfigureProvider(healthyProvider, new ProviderBehavior { BitrateKbps = 5000 });
 
-        using var streamer = CreateStreamerWithFastIsolation();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.FastIsolation);
 
         // Partial-fail first, healthy second (fallback)
-        streamer.AddUrl(_fixture.GetProviderUrl(partialFailProvider));
-        streamer.AddUrl(_fixture.GetProviderUrl(healthyProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(partialFailProvider));
+        streamer.AddUrl(fixture.GetProviderUrl(healthyProvider));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start successfully");
@@ -362,10 +324,10 @@ public class CircuitBreakerTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Partial-fail provider success rate: {partialHealth?.SuccessRate:P1}");
-        _output.WriteLine($"Healthy provider success rate: {healthyHealth?.SuccessRate:P1}");
-        _output.WriteLine($"Partial-fail provider state: {streamer.GetProviderState(0)}");
-        _output.WriteLine($"Healthy provider state: {streamer.GetProviderState(1)}");
+        Output.WriteLine($"Partial-fail provider success rate: {partialHealth?.SuccessRate:P1}");
+        Output.WriteLine($"Healthy provider success rate: {healthyHealth?.SuccessRate:P1}");
+        Output.WriteLine($"Partial-fail provider state: {streamer.GetProviderState(0)}");
+        Output.WriteLine($"Healthy provider state: {streamer.GetProviderState(1)}");
 
         // Partial-fail provider should have a measurable success rate (some successes, some failures)
         if (partialHealth != null)
@@ -394,18 +356,13 @@ public class CircuitBreakerTests
         const string provider1 = "snapshot-1";
         const string provider2 = "snapshot-2";
 
-        _fixture.ConfigureProvider(provider1, new ProviderBehavior { BitrateKbps = 5000, LatencyMs = 50 });
-        _fixture.ConfigureProvider(provider2, new ProviderBehavior { BitrateKbps = 5000 });
+        fixture.ConfigureProvider(provider1, new ProviderBehavior { BitrateKbps = 5000, LatencyMs = 50 });
+        fixture.ConfigureProvider(provider2, new ProviderBehavior { BitrateKbps = 5000 });
 
-        using var streamer = CreateStreamerWithFastIsolation();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.FastIsolation);
 
-        streamer.AddUrl(_fixture.GetProviderUrl(provider1));
-        streamer.AddUrl(_fixture.GetProviderUrl(provider2));
+        streamer.AddUrl(fixture.GetProviderUrl(provider1));
+        streamer.AddUrl(fixture.GetProviderUrl(provider2));
 
         // Act
         Assert.True(streamer.Start(), "Streamer should start successfully");
@@ -418,11 +375,11 @@ public class CircuitBreakerTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Provider count: {providerCount}");
-        _output.WriteLine(
+        Output.WriteLine($"Provider count: {providerCount}");
+        Output.WriteLine(
             $"Provider 0: state={health0?.State}, rate={health0?.SuccessRate:P1}, latency={health0?.LatencyEwmaMs:F1}ms"
         );
-        _output.WriteLine(
+        Output.WriteLine(
             $"Provider 1: state={health1?.State}, rate={health1?.SuccessRate:P1}, latency={health1?.LatencyEwmaMs:F1}ms"
         );
 
@@ -437,19 +394,5 @@ public class CircuitBreakerTests
                 || health0.Value.State == ProviderState.Ejected,
             $"Provider 0 has invalid state: {health0.Value.State}"
         );
-    }
-
-    // ========================================================================
-    // Helper Methods
-    // ========================================================================
-
-    private static NativeStreamer? CreateStreamerWithFastIsolation()
-    {
-        return NativeStreamer.TryCreate(TestConfigs.FastIsolation);
-    }
-
-    private static NativeStreamer? CreateStreamerWithHighlyReactive()
-    {
-        return NativeStreamer.TryCreate(TestConfigs.HighlyReactive);
     }
 }

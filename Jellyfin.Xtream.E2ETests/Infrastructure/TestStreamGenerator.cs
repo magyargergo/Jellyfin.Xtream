@@ -43,10 +43,19 @@ internal sealed class TestStreamGenerator
     private const long Pcr90KhzPerSecond = 90_000L;
     private const long PcrIntervalMs = 40; // PCR every 40ms per spec
 
+    // Frame timing: PTS must advance at frame rate, not packet rate
+    // Video: 30fps → 3003 ticks per frame (90000/29.97)
+    // Audio: AAC at 48kHz with 1024 samples → 46.875fps → 1920 ticks per frame
+    private const long VideoFrameTicks90Khz = 3003;
+    private const long AudioFrameTicks90Khz = 1920;
+
     // Continuity counters (0-15)
     private readonly int[] _continuityCounters = new int[8192];
     private long _currentPcr90Khz;
-    private long _currentPts90Khz;
+    private long _currentVideoPts90Khz;
+    private long _currentAudioPts90Khz;
+    private long _nextVideoFramePcr90Khz; // PCR threshold for next video frame
+    private long _nextAudioFramePcr90Khz; // PCR threshold for next audio frame
     private long _packetIndex;
     private int _pcrPacketCounter;
     private readonly int _pcrIntervalPackets;
@@ -68,7 +77,10 @@ internal sealed class TestStreamGenerator
     {
         _initialPcrOffset = initialPcrOffset;
         _currentPcr90Khz = initialPcrOffset;
-        _currentPts90Khz = initialPcrOffset;
+        _currentVideoPts90Khz = initialPcrOffset;
+        _currentAudioPts90Khz = initialPcrOffset;
+        _nextVideoFramePcr90Khz = initialPcrOffset;
+        _nextAudioFramePcr90Khz = initialPcrOffset;
         _enableH264Nals = enableH264Nals;
         _gopSize = gopSize;
 
@@ -173,7 +185,10 @@ internal sealed class TestStreamGenerator
     {
         Array.Clear(_continuityCounters);
         _currentPcr90Khz = _initialPcrOffset;
-        _currentPts90Khz = _initialPcrOffset;
+        _currentVideoPts90Khz = _initialPcrOffset;
+        _currentAudioPts90Khz = _initialPcrOffset;
+        _nextVideoFramePcr90Khz = _initialPcrOffset;
+        _nextAudioFramePcr90Khz = _initialPcrOffset;
         _packetIndex = 0;
         _pcrPacketCounter = 0;
         _frameCounter = 0;
@@ -279,6 +294,9 @@ internal sealed class TestStreamGenerator
         // Advance PCR by interval
         _currentPcr90Khz += (PcrIntervalMs * Pcr90KhzPerSecond) / 1000;
 
+        // Advance video PTS at frame rate (may need multiple frames per PCR step)
+        AdvanceVideoFrames();
+
         // Determine if this is a keyframe
         bool isKeyframe = _frameCounter % _gopSize == 0;
 
@@ -304,7 +322,7 @@ internal sealed class TestStreamGenerator
 
         // PES header starts after adaptation field (offset 12)
         int pesOffset = 12;
-        WritePesHeader(packet.Slice(pesOffset), 0xE0, true); // video stream_id, with PTS
+        WriteVideoPesHeaderWithPts(packet.Slice(pesOffset));
 
         // Fill with video data
         int dataStart = pesOffset + 14; // PES header is 14 bytes with PTS
@@ -325,8 +343,6 @@ internal sealed class TestStreamGenerator
                 packet[i] = (byte)(i & 0xFF);
             }
         }
-
-        _frameCounter++;
     }
 
     private void WriteVideoPesPacket(Span<byte> packet)
@@ -348,10 +364,7 @@ internal sealed class TestStreamGenerator
             packet[4] = 1; // adaptation_field_length = 1
             packet[5] = 0x40; // random_access_indicator = 1
 
-            // Advance PTS (assuming 30fps -> ~3003 ticks per frame at 90kHz)
-            _currentPts90Khz += 3003;
-
-            WritePesHeader(packet.Slice(6), 0xE0, true);
+            WriteVideoPesHeaderWithPts(packet.Slice(6));
 
             // Fill with video data
             int dataStart = 6 + 14; // adaptation(2) + PES header(14)
@@ -364,10 +377,7 @@ internal sealed class TestStreamGenerator
         {
             packet[3] = (byte)(0x10 | cc); // payload only
 
-            // Advance PTS (assuming 30fps -> ~3003 ticks per frame at 90kHz)
-            _currentPts90Khz += 3003;
-
-            WritePesHeader(packet[4..], 0xE0, true);
+            WriteVideoPesHeaderWithPts(packet[4..]);
 
             // Fill with video data
             int dataStart = 18; // TS header(4) + PES header(14)
@@ -387,8 +397,6 @@ internal sealed class TestStreamGenerator
                 }
             }
         }
-
-        _frameCounter++;
     }
 
     private void WriteAudioPesPacket(Span<byte> packet)
@@ -396,12 +404,15 @@ internal sealed class TestStreamGenerator
         packet.Clear();
         var cc = NextContinuityCounter(AudioPid);
 
+        // Advance audio PTS at AAC frame rate (may need multiple frames per PCR step)
+        AdvanceAudioFrames();
+
         packet[0] = SyncByte;
         packet[1] = (byte)(0x40 | ((AudioPid >> 8) & 0x1F)); // PUSI=1
         packet[2] = (byte)(AudioPid & 0xFF);
         packet[3] = (byte)(0x10 | cc); // payload only
 
-        WritePesHeader(packet.Slice(4), 0xC0, true); // audio stream_id
+        WriteAudioPesHeaderWithPts(packet.Slice(4));
 
         // Fill with pseudo audio data
         for (int i = 18; i < TsPacketSize; i++)
@@ -423,7 +434,17 @@ internal sealed class TestStreamGenerator
         packet.Slice(4).Fill(0xFF);
     }
 
-    private void WritePesHeader(Span<byte> dest, byte streamId, bool includePts)
+    private void WriteVideoPesHeaderWithPts(Span<byte> dest)
+    {
+        WritePesHeaderCore(dest, 0xE0, _currentVideoPts90Khz);
+    }
+
+    private void WriteAudioPesHeaderWithPts(Span<byte> dest)
+    {
+        WritePesHeaderCore(dest, 0xC0, _currentAudioPts90Khz);
+    }
+
+    private static void WritePesHeaderCore(Span<byte> dest, byte streamId, long pts)
     {
         // PES start code: 00 00 01
         dest[0] = 0x00;
@@ -431,32 +452,45 @@ internal sealed class TestStreamGenerator
         dest[2] = 0x01;
         dest[3] = streamId;
 
-        if (includePts)
+        // PES packet length = 0 (unbounded for video)
+        dest[4] = 0x00;
+        dest[5] = 0x00;
+
+        // PES header flags
+        dest[6] = 0x80; // '10' marker bits
+        dest[7] = 0x80; // PTS_DTS_flags = '10' (PTS only)
+        dest[8] = 0x05; // PES_header_data_length = 5 bytes (PTS)
+
+        // PTS (5 bytes, '0010' marker pattern)
+        dest[9] = (byte)(0x21 | ((pts >> 29) & 0x0E)); // '0010' + PTS[32..30] + marker
+        dest[10] = (byte)((pts >> 22) & 0xFF); // PTS[29..22]
+        dest[11] = (byte)(0x01 | ((pts >> 14) & 0xFE)); // PTS[21..15] + marker
+        dest[12] = (byte)((pts >> 7) & 0xFF); // PTS[14..7]
+        dest[13] = (byte)(0x01 | ((pts << 1) & 0xFE)); // PTS[6..0] + marker
+    }
+
+    /// <summary>
+    /// Advances video PTS to catch up with current PCR, creating frames at 30fps rate.
+    /// </summary>
+    private void AdvanceVideoFrames()
+    {
+        while (_currentPcr90Khz >= _nextVideoFramePcr90Khz)
         {
-            // PES packet length = 0 (unbounded for video)
-            dest[4] = 0x00;
-            dest[5] = 0x00;
-
-            // PES header flags
-            dest[6] = 0x80; // '10' marker bits
-            dest[7] = 0x80; // PTS_DTS_flags = '10' (PTS only)
-            dest[8] = 0x05; // PES_header_data_length = 5 bytes (PTS)
-
-            // PTS (5 bytes, '0010' marker pattern)
-            long pts = _currentPts90Khz;
-            dest[9] = (byte)(0x21 | ((pts >> 29) & 0x0E)); // '0010' + PTS[32..30] + marker
-            dest[10] = (byte)((pts >> 22) & 0xFF); // PTS[29..22]
-            dest[11] = (byte)(0x01 | ((pts >> 14) & 0xFE)); // PTS[21..15] + marker
-            dest[12] = (byte)((pts >> 7) & 0xFF); // PTS[14..7]
-            dest[13] = (byte)(0x01 | ((pts << 1) & 0xFE)); // PTS[6..0] + marker
+            _currentVideoPts90Khz = _nextVideoFramePcr90Khz;
+            _nextVideoFramePcr90Khz += VideoFrameTicks90Khz;
+            _frameCounter++;
         }
-        else
+    }
+
+    /// <summary>
+    /// Advances audio PTS to catch up with current PCR, creating frames at AAC rate.
+    /// </summary>
+    private void AdvanceAudioFrames()
+    {
+        while (_currentPcr90Khz >= _nextAudioFramePcr90Khz)
         {
-            dest[4] = 0x00;
-            dest[5] = 0x00;
-            dest[6] = 0x80;
-            dest[7] = 0x00; // no PTS/DTS
-            dest[8] = 0x00; // header data length = 0
+            _currentAudioPts90Khz = _nextAudioFramePcr90Khz;
+            _nextAudioFramePcr90Khz += AudioFrameTicks90Khz;
         }
     }
 

@@ -34,40 +34,34 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// </para>
 /// </remarks>
 [Collection("E2E-Restream")]
-public sealed class RestreamIntegrationTests : IDisposable
+public sealed class RestreamIntegrationTests(DockerTestFixture fixture, ITestOutputHelper output)
+    : NativeE2ETestBase(output)
 {
     private const int TsPacketSize = 188;
+    private readonly List<IDisposable> _disposables = [];
 
-    private readonly DockerTestFixture _fixture;
-    private readonly ITestOutputHelper _output;
-    private readonly List<IDisposable> _disposables = new();
-
-    public RestreamIntegrationTests(DockerTestFixture fixture, ITestOutputHelper output)
+    protected override void Dispose(bool disposing)
     {
-        _fixture = fixture;
-        _output = output;
-    }
-
-    public void Dispose()
-    {
-        foreach (var disposable in _disposables)
+        if (disposing)
         {
-            try
+            foreach (var disposable in _disposables)
             {
-                disposable.Dispose();
+                try
+                {
+                    disposable.Dispose();
+                }
+                catch
+                {
+                    // Best effort cleanup
+                }
             }
-            catch
-            {
-                // Best effort cleanup
-            }
+            _disposables.Clear();
+
+            // Cleanup any remaining active streams
+            Restream.KillAllStreams("Test cleanup");
         }
 
-        _disposables.Clear();
-
-        // Cleanup any remaining active streams
-        Restream.KillAllStreams("Test cleanup");
-
-        GC.SuppressFinalize(this);
+        base.Dispose(disposing);
     }
 
     private Restream CreateRestream(params string[] urls)
@@ -93,7 +87,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_Open_CompletesWithinTimeout()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000"; // 5 Mbps stream
+        var url = $"{fixture.BaseUrl}/stream/5000"; // 5 Mbps stream
         var restream = CreateRestream(url);
 
         // Act
@@ -102,7 +96,7 @@ public sealed class RestreamIntegrationTests : IDisposable
         sw.Stop();
 
         // Assert
-        _output.WriteLine($"Open() completed in {sw.ElapsedMilliseconds}ms");
+        Output.WriteLine($"Open() completed in {sw.ElapsedMilliseconds}ms");
         Assert.True(sw.ElapsedMilliseconds < 10000, $"Open() took {sw.ElapsedMilliseconds}ms, expected < 10000ms");
         Assert.False(restream.IsDisposed, "Stream should not be disposed after Open()");
     }
@@ -117,7 +111,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_GetStream_ReturnsValidTsData()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
         var restream = CreateRestream(url);
         await restream.Open(CancellationToken.None);
 
@@ -143,7 +137,7 @@ public sealed class RestreamIntegrationTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Read {totalRead} bytes in {readSw.ElapsedMilliseconds}ms");
+        Output.WriteLine($"Read {totalRead} bytes in {readSw.ElapsedMilliseconds}ms");
         Assert.True(totalRead > 0, "Should have read some data");
         Assert.Equal(0, totalRead % TsPacketSize); // Must be aligned to TS packets
 
@@ -166,7 +160,7 @@ public sealed class RestreamIntegrationTests : IDisposable
 
         int totalValid = validSyncBytes + paddingPackets;
         double syncRate = totalValid * 100.0 / packetCount;
-        _output.WriteLine(
+        Output.WriteLine(
             $"Packets: {packetCount}, Valid sync: {validSyncBytes}, Padding: {paddingPackets} ({syncRate:F1}%)"
         );
         Assert.True(validSyncBytes > 0, "Should have at least some actual TS packets");
@@ -187,7 +181,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_AllConsumersDisconnect_CleansUpAfterGracePeriod()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
         var restream = CreateRestream(url);
         await restream.Open(CancellationToken.None);
 
@@ -195,17 +189,17 @@ public sealed class RestreamIntegrationTests : IDisposable
         var stream = restream.GetStream();
         var buffer = new byte[1316];
         await stream.ReadAsync(buffer); // Read some data
-        _output.WriteLine($"Consumer count before dispose: {restream.ConsumerCount}");
+        Output.WriteLine($"Consumer count before dispose: {restream.ConsumerCount}");
 
         stream.Dispose(); // Consumer disconnects
-        _output.WriteLine($"Consumer count after dispose: {restream.ConsumerCount}");
+        Output.WriteLine($"Consumer count after dispose: {restream.ConsumerCount}");
 
         // Wait for grace period (5 seconds) + margin
         await Task.Delay(TimeSpan.FromSeconds(6));
 
         // Assert
         Assert.True(restream.IsDisposed, "Restream should be disposed after grace period with no consumers");
-        _output.WriteLine("Restream correctly disposed after grace period");
+        Output.WriteLine("Restream correctly disposed after grace period");
     }
 
     /// <summary>
@@ -218,7 +212,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_ReconnectWithinGracePeriod_PreservesStream()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
         var restream = CreateRestream(url);
         await restream.Open(CancellationToken.None);
 
@@ -228,7 +222,7 @@ public sealed class RestreamIntegrationTests : IDisposable
         await stream1.ReadAsync(buffer);
         stream1.Dispose();
 
-        _output.WriteLine("First consumer disconnected, waiting 3 seconds...");
+        Output.WriteLine("First consumer disconnected, waiting 3 seconds...");
         await Task.Delay(TimeSpan.FromSeconds(3)); // Less than 5-second grace period
 
         // Reconnect within grace period
@@ -240,7 +234,7 @@ public sealed class RestreamIntegrationTests : IDisposable
         // Assert
         Assert.True(read > 0, "Second consumer should receive data immediately");
         Assert.False(restream.IsDisposed, "Restream should still be active");
-        _output.WriteLine($"Reconnected consumer received {read} bytes");
+        Output.WriteLine($"Reconnected consumer received {read} bytes");
 
         stream2.Dispose();
     }
@@ -260,8 +254,8 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_MultipleConsumers_ShareSingleConnection()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
-        _fixture.ResetConnectionCount();
+        var url = $"{fixture.BaseUrl}/stream/5000";
+        fixture.ResetConnectionCount();
         var restream = CreateRestream(url);
         await restream.Open(CancellationToken.None);
 
@@ -309,17 +303,17 @@ public sealed class RestreamIntegrationTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"HTTP connection count: {_fixture.ConnectionCount}");
-        _output.WriteLine($"Consumer count: {consumerCount}");
+        Output.WriteLine($"HTTP connection count: {fixture.ConnectionCount}");
+        Output.WriteLine($"Consumer count: {consumerCount}");
 
         for (int i = 0; i < results.Length; i++)
         {
-            _output.WriteLine($"  Consumer {i + 1}: {results[i]:N0} bytes");
+            Output.WriteLine($"  Consumer {i + 1}: {results[i]:N0} bytes");
             Assert.True(results[i] > 0, $"Consumer {i + 1} should have received data");
         }
 
         // Key assertion: only one HTTP connection should have been made
-        Assert.Equal(1, _fixture.ConnectionCount);
+        Assert.Equal(1, fixture.ConnectionCount);
     }
 
     // =========================================================================
@@ -336,7 +330,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_SustainedStreaming_NoBufferIssues()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000"; // 5 Mbps
+        var url = $"{fixture.BaseUrl}/stream/5000"; // 5 Mbps
         var restream = CreateRestream(url);
         await restream.Open(CancellationToken.None);
 
@@ -348,22 +342,22 @@ public sealed class RestreamIntegrationTests : IDisposable
 
         // Assert
         var stats = consumer.GetStatistics();
-        _output.WriteLine($"Duration: {duration.TotalSeconds}s");
-        _output.WriteLine($"Total bytes: {stats.TotalBytesRead:N0}");
-        _output.WriteLine($"Read count: {stats.ReadCount}");
-        _output.WriteLine($"Zero reads: {stats.ZeroReadCount}");
-        _output.WriteLine($"Time to first byte: {stats.TimeToFirstByte?.TotalMilliseconds:F0}ms");
-        _output.WriteLine($"Max read gap: {stats.MaxReadGap.TotalMilliseconds:F0}ms");
-        _output.WriteLine($"Sync validity: {stats.SyncByteValidityRate:F1}%");
-        _output.WriteLine($"Avg read size: {stats.AverageReadSize:F0} bytes");
-        _output.WriteLine($"P95 latency: {stats.P95ReadLatency.TotalMilliseconds:F2}ms");
+        Output.WriteLine($"Duration: {duration.TotalSeconds}s");
+        Output.WriteLine($"Total bytes: {stats.TotalBytesRead:N0}");
+        Output.WriteLine($"Read count: {stats.ReadCount}");
+        Output.WriteLine($"Zero reads: {stats.ZeroReadCount}");
+        Output.WriteLine($"Time to first byte: {stats.TimeToFirstByte?.TotalMilliseconds:F0}ms");
+        Output.WriteLine($"Max read gap: {stats.MaxReadGap.TotalMilliseconds:F0}ms");
+        Output.WriteLine($"Sync validity: {stats.SyncByteValidityRate:F1}%");
+        Output.WriteLine($"Avg read size: {stats.AverageReadSize:F0} bytes");
+        Output.WriteLine($"P95 latency: {stats.P95ReadLatency.TotalMilliseconds:F2}ms");
 
         // Expected throughput: 5 Mbps = 625 KB/s = 18.75 MB in 30s
         var expectedBytes = 5_000_000L / 8 * (long)duration.TotalSeconds;
         var actualThroughput = stats.TotalBytesRead * 8.0 / duration.TotalSeconds;
 
-        _output.WriteLine($"Expected bytes: {expectedBytes:N0}");
-        _output.WriteLine($"Throughput: {actualThroughput / 1_000_000:F2} Mbps");
+        Output.WriteLine($"Expected bytes: {expectedBytes:N0}");
+        Output.WriteLine($"Throughput: {actualThroughput / 1_000_000:F2} Mbps");
 
         Assert.True(stats.TotalBytesRead > expectedBytes * 0.8, $"Should achieve >80% of target throughput");
         Assert.True(stats.TimeToFirstByte.HasValue, "Should have received first byte");
@@ -391,9 +385,9 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_SourceFailure_FailsOverSeamlessly()
     {
         // Arrange - unstable URL (drops after 2s) + stable backup
-        _fixture.UnstableDropAfterMs = 2000;
-        var unstableUrl = $"{_fixture.BaseUrl}/stream/unstable";
-        var stableUrl = $"{_fixture.BaseUrl}/stream/5000";
+        fixture.UnstableDropAfterMs = 2000;
+        var unstableUrl = $"{fixture.BaseUrl}/stream/unstable";
+        var stableUrl = $"{fixture.BaseUrl}/stream/5000";
 
         var restream = new RestreamTestBuilder()
             .WithUrls(unstableUrl, stableUrl)
@@ -413,11 +407,11 @@ public sealed class RestreamIntegrationTests : IDisposable
 
         // Assert
         var stats = consumer.GetStatistics();
-        _output.WriteLine($"Total bytes: {stats.TotalBytesRead:N0}");
-        _output.WriteLine($"Read count: {stats.ReadCount}");
-        _output.WriteLine($"Max read gap: {stats.MaxReadGap.TotalSeconds:F1}s");
-        _output.WriteLine($"Sync validity: {stats.SyncByteValidityRate:F1}%");
-        _output.WriteLine($"Time to first byte: {stats.TimeToFirstByte?.TotalMilliseconds:F0}ms");
+        Output.WriteLine($"Total bytes: {stats.TotalBytesRead:N0}");
+        Output.WriteLine($"Read count: {stats.ReadCount}");
+        Output.WriteLine($"Max read gap: {stats.MaxReadGap.TotalSeconds:F1}s");
+        Output.WriteLine($"Sync validity: {stats.SyncByteValidityRate:F1}%");
+        Output.WriteLine($"Time to first byte: {stats.TimeToFirstByte?.TotalMilliseconds:F0}ms");
 
         // Key assertions:
         // Note: If buffer warmup doesn't complete before unstable drops, we may get 0 bytes
@@ -452,7 +446,7 @@ public sealed class RestreamIntegrationTests : IDisposable
         var exception = await Assert.ThrowsAsync<TimeoutException>(() => restream.Open(CancellationToken.None));
         sw.Stop();
 
-        _output.WriteLine($"Open() failed in {sw.ElapsedMilliseconds}ms with: {exception.Message}");
+        Output.WriteLine($"Open() failed in {sw.ElapsedMilliseconds}ms with: {exception.Message}");
 
         // Should fail within timeout plus small tolerance for timer overhead, not hang forever
         Assert.True(sw.ElapsedMilliseconds < 16000, $"Should fail within 16s, took {sw.ElapsedMilliseconds}ms");
@@ -472,7 +466,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_FFprobeToFFmpegHandoff_ContinuesSeamlessly()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
         var restream = CreateRestream(url);
         await restream.Open(CancellationToken.None);
 
@@ -487,9 +481,9 @@ public sealed class RestreamIntegrationTests : IDisposable
         );
 
         // Assert
-        _output.WriteLine($"FFprobe bytes: {probeBytes:N0}");
-        _output.WriteLine($"FFmpeg bytes: {ffmpegBytes:N0}");
-        _output.WriteLine($"Reconnect successful: {reconnectSuccessful}");
+        Output.WriteLine($"FFprobe bytes: {probeBytes:N0}");
+        Output.WriteLine($"FFmpeg bytes: {ffmpegBytes:N0}");
+        Output.WriteLine($"Reconnect successful: {reconnectSuccessful}");
 
         Assert.True(probeBytes > 0, "FFprobe should have read data");
         Assert.True(reconnectSuccessful, "FFmpeg should successfully reconnect");
@@ -511,7 +505,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_HighBitrate_SustainsWithoutOverflow()
     {
         // Arrange - 15 Mbps (typical 4K bitrate)
-        var url = $"{_fixture.BaseUrl}/stream/15000";
+        var url = $"{fixture.BaseUrl}/stream/15000";
         var restream = new RestreamTestBuilder()
             .WithUrls(url)
             .WithQuality("4K") // Should use larger buffer
@@ -532,11 +526,11 @@ public sealed class RestreamIntegrationTests : IDisposable
         var expectedBytes = 15_000_000L / 8 * (long)duration.TotalSeconds; // ~28 MB
         var achievedThroughput = stats.TotalBytesRead * 8.0 / duration.TotalSeconds / 1_000_000;
 
-        _output.WriteLine($"Duration: {duration.TotalSeconds}s");
-        _output.WriteLine($"Expected bytes: {expectedBytes:N0}");
-        _output.WriteLine($"Actual bytes: {stats.TotalBytesRead:N0}");
-        _output.WriteLine($"Throughput: {achievedThroughput:F2} Mbps");
-        _output.WriteLine($"Max gap: {stats.MaxReadGap.TotalMilliseconds:F0}ms");
+        Output.WriteLine($"Duration: {duration.TotalSeconds}s");
+        Output.WriteLine($"Expected bytes: {expectedBytes:N0}");
+        Output.WriteLine($"Actual bytes: {stats.TotalBytesRead:N0}");
+        Output.WriteLine($"Throughput: {achievedThroughput:F2} Mbps");
+        Output.WriteLine($"Max gap: {stats.MaxReadGap.TotalMilliseconds:F0}ms");
 
         Assert.True(stats.TotalBytesRead > expectedBytes * 0.8, "Should achieve >80% of 15 Mbps");
         Assert.True(achievedThroughput > 10, $"Throughput {achievedThroughput:F2} Mbps should be > 10 Mbps");
@@ -558,7 +552,7 @@ public sealed class RestreamIntegrationTests : IDisposable
     public async Task Restream_SlowReader_DoesNotBlockFastReader()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
         var restream = CreateRestream(url);
         await restream.Open(CancellationToken.None);
 
@@ -619,8 +613,8 @@ public sealed class RestreamIntegrationTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Fast reader: {fastReaderBytes:N0} bytes ({fastReadCount} reads)");
-        _output.WriteLine($"Slow reader: {slowReaderBytes:N0} bytes ({slowReadCount} reads)");
+        Output.WriteLine($"Fast reader: {fastReaderBytes:N0} bytes ({fastReadCount} reads)");
+        Output.WriteLine($"Slow reader: {slowReaderBytes:N0} bytes ({slowReadCount} reads)");
 
         // Key assertion: both readers should have received data (neither blocked)
         Assert.True(fastReaderBytes > 0, "Fast reader should have received data");
@@ -629,6 +623,6 @@ public sealed class RestreamIntegrationTests : IDisposable
 
         // The slow reader should still get substantial data (not starved)
         // At 5 Mbps over 15s = ~9.4MB available, slow reader at 2 reads/s should get some
-        _output.WriteLine($"Fast read count: {fastReadCount}, Slow read count: {slowReadCount}");
+        Output.WriteLine($"Fast read count: {fastReadCount}, Slow read count: {slowReadCount}");
     }
 }

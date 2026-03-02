@@ -10,17 +10,8 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// NativeStreamer (HTTP fetch -> restamp -> output).
 /// </summary>
 [Collection("E2E-Streaming")]
-public class ThroughputTests
+public class ThroughputTests(DockerTestFixture fixture, ITestOutputHelper output) : NativeE2ETestBase(output)
 {
-    private readonly DockerTestFixture _fixture;
-    private readonly ITestOutputHelper _output;
-
-    public ThroughputTests(DockerTestFixture fixture, ITestOutputHelper output)
-    {
-        _fixture = fixture;
-        _output = output;
-    }
-
     [Theory]
     [InlineData(2_000)] // 2 Mbps (SD)
     [InlineData(5_000)] // 5 Mbps (HD)
@@ -29,45 +20,38 @@ public class ThroughputTests
     {
         // Arrange
         var streamDurationSec = GetStreamDuration();
-        var url = $"{_fixture.BaseUrl}/stream/{bitrateKbps}";
+        var url = $"{fixture.BaseUrl}/stream/{bitrateKbps}";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
-
-        streamer.AddUrl(url);
+        Streamer.AddUrl(url);
 
         // Act
-        Assert.True(streamer.Start(), "Streamer should start successfully");
+        Assert.True(Streamer.Start(), "Streamer should start successfully");
 
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        await WaitForConnection(Streamer, TimeSpan.FromSeconds(5));
 
         // Record start time and bytes
-        var startStatus = streamer.GetStatus();
+        var startStatus = Streamer.GetStatus();
         var startTime = DateTime.UtcNow;
 
         await Task.Delay(TimeSpan.FromSeconds(streamDurationSec), CancellationToken.None);
 
-        var endStatus = streamer.GetStatus();
+        var endStatus = Streamer.GetStatus();
         var endTime = DateTime.UtcNow;
-        streamer.Stop();
+        Streamer.Stop();
 
         // Assert
         var elapsedSeconds = (endTime - startTime).TotalSeconds;
         var bytesTransferred = endStatus.BytesReceived - startStatus.BytesReceived;
         var actualBytesPerSecond = bytesTransferred / elapsedSeconds;
 
-        _output.WriteLine($"Streamer bytes received: {endStatus.BytesReceived:N0}");
-        _output.WriteLine($"Streamer packets output: {endStatus.PacketsOutput:N0}");
-        _output.WriteLine($"Duration: {elapsedSeconds:F2}s");
+        Output.WriteLine($"Streamer bytes received: {endStatus.BytesReceived:N0}");
+        Output.WriteLine($"Streamer packets output: {endStatus.PacketsOutput:N0}");
+        Output.WriteLine($"Duration: {elapsedSeconds:F2}s");
 
         var targetBytesPerSecond = bitrateKbps * 1000.0 / 8.0;
         var efficiency = actualBytesPerSecond / targetBytesPerSecond * 100.0;
 
-        _output.WriteLine(
+        Output.WriteLine(
             $"Target: {targetBytesPerSecond / 1000:F1} KB/s, Actual: {actualBytesPerSecond / 1000:F1} KB/s ({efficiency:F1}%)"
         );
 
@@ -82,74 +66,28 @@ public class ThroughputTests
     public async Task Throughput_BufferUtilization_RemainsHealthy()
     {
         // Arrange - stream at moderate bitrate and verify data flows through
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        Streamer.AddUrl(url);
+        Assert.True(Streamer.Start());
 
-        streamer.AddUrl(url);
-        Assert.True(streamer.Start());
-
-        await WaitForConnection(streamer, TimeSpan.FromSeconds(5));
+        await WaitForConnection(Streamer, TimeSpan.FromSeconds(5));
 
         // Stream for 5 seconds
         await Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None);
 
-        var status = streamer.GetStatus();
-        streamer.Stop();
+        var status = Streamer.GetStatus();
+        Streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
-        _output.WriteLine($"Total packets: {status.PacketsOutput:N0}");
-        _output.WriteLine($"Throughput: {status.BytesReceived / 5.0 * 8 / 1000:F1} Kbps");
+        Output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
+        Output.WriteLine($"Total packets: {status.PacketsOutput:N0}");
+        Output.WriteLine($"Throughput: {status.BytesReceived / 5.0 * 8 / 1000:F1} Kbps");
 
         Assert.True(status.BytesReceived > 0, "Should have received data");
         Assert.True(status.PacketsOutput > 0, "Should have output TS packets");
         // At 5Mbps for 5s, expect at least 2MB (allowing for startup latency)
         Assert.True(status.BytesReceived > 2_000_000, $"Expected at least 2MB, got {status.BytesReceived:N0} bytes");
-    }
-
-    private static NativeStreamer? CreateStreamer()
-    {
-        var config = new TsDuckStreamerConfigNative
-        {
-            ConnectTimeoutMs = 5000,
-            ResponseTimeoutMs = 10000,
-            StallTimeoutMs = 15000,
-            MaxRetries = 3,
-            InitialBackoffMs = 200,
-            MaxBackoffMs = 5000,
-            BackoffMultiplier = 2.0,
-            BackoffJitterMs = 100,
-            OutputFd = -1,
-            AlignmentBufferPackets = 32,
-            EnableRestamp = 1,
-            RestampMode = (int)RestampingMode.Correct,
-            LowSpeedLimitBytes = 100,
-            LowSpeedTimeSec = 5,
-            StallsBeforeSwitch = 2,
-        };
-
-        return NativeStreamer.TryCreate(config);
-    }
-
-    private static async Task WaitForConnection(NativeStreamer streamer, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            var status = streamer.GetStatus();
-            if (status.State == StreamerState.Streaming)
-            {
-                return;
-            }
-
-            await Task.Delay(50);
-        }
     }
 
     private static int GetStreamDuration()

@@ -12,11 +12,8 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Tests verify that DNS settings, timeouts, and TCP keep-alive work correctly in production scenarios.
 /// </summary>
 [Collection("E2E-Failover")]
-public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelper output)
+public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelper output) : NativeE2ETestBase(output)
 {
-    private readonly DockerTestFixture _fixture = fixture;
-    private readonly ITestOutputHelper _output = output;
-
     // ========================================================================
     // Basic Network Configuration Tests
     // ========================================================================
@@ -28,13 +25,9 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_Default_StreamsSuccessfully()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamerWithDefaultNetworkConfig();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
+        streamer.SetNetworkConfig(NetworkConfig.CreateDefault());
 
         streamer.AddUrl(streamUrl);
 
@@ -47,9 +40,9 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with default network config");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -63,13 +56,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_IPv4Only_StreamsSuccessfully()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         var networkConfig = new NetworkConfig()
             .WithIpResolveMode(IpResolveMode.IPv4Only)
@@ -87,9 +75,9 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with IPv4-only config");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -102,13 +90,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_CloudflareDns_StreamsSuccessfully()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         var networkConfig = new NetworkConfig().UseCloudflareDns().WithTcpConnectTimeout(TimeSpan.FromSeconds(5));
 
@@ -124,10 +107,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"DNS Mode: CustomDns (Cloudflare 1.1.1.1, 1.0.0.1)");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"DNS Mode: CustomDns (Cloudflare 1.1.1.1, 1.0.0.1)");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with Cloudflare DNS");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -140,13 +123,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_GoogleDns_StreamsSuccessfully()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         var networkConfig = new NetworkConfig().UseGoogleDns().WithTcpConnectTimeout(TimeSpan.FromSeconds(5));
 
@@ -162,10 +140,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"DNS Mode: CustomDns (Google 8.8.8.8, 8.8.4.4)");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"DNS Mode: CustomDns (Google 8.8.8.8, 8.8.4.4)");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with Google DNS");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -178,13 +156,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_CreateForStreaming_OptimizedForIPTV()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         var networkConfig = NetworkConfig.CreateForStreaming();
         streamer.SetNetworkConfig(networkConfig);
@@ -199,10 +172,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"Using CreateForStreaming preset");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"Using CreateForStreaming preset");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with streaming preset");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -219,15 +192,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_VeryShortConnectTimeout_FailsFast()
     {
         // Arrange - use delayed endpoint
-        var delayedUrl = $"{_fixture.BaseUrl}/stream/delayed/3000"; // 3s delay
-        var fallbackUrl = $"{_fixture.BaseUrl}/stream/5000";
+        var delayedUrl = $"{fixture.BaseUrl}/stream/delayed/3000"; // 3s delay
+        var fallbackUrl = $"{fixture.BaseUrl}/stream/5000";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         // Very short timeout (100ms) should fail on 3s delayed endpoint
         var networkConfig = new NetworkConfig()
@@ -255,10 +223,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Switched to fallback: {switchedToFallback}");
-        _output.WriteLine($"URL index: {status.CurrentUrlIndex}");
-        _output.WriteLine($"Retry count: {status.RetryCount}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Switched to fallback: {switchedToFallback}");
+        Output.WriteLine($"URL index: {status.CurrentUrlIndex}");
+        Output.WriteLine($"Retry count: {status.RetryCount}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(status.BytesReceived > 0, "Should receive data from fallback URL");
     }
@@ -270,13 +238,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_CustomTimeouts_AppliedCorrectly()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         var networkConfig = new NetworkConfig()
             .WithConnectionTimeouts(
@@ -299,10 +262,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"Custom timeouts: TCP=3s, TLS=5s, FirstByte=10s, DNS=2s");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"Custom timeouts: TCP=3s, TLS=5s, FirstByte=10s, DNS=2s");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with custom timeouts");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -319,13 +282,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_TcpKeepalive_EnabledForLongStream()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         var networkConfig = new NetworkConfig()
             .WithTcpKeepalive(idle: TimeSpan.FromSeconds(30), interval: TimeSpan.FromSeconds(15))
@@ -346,10 +304,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"TCP Keepalive: idle=30s, interval=15s");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"TCP Keepalive: idle=30s, interval=15s");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with TCP keepalive");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -362,13 +320,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_TcpKeepalive_CanBeDisabled()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         var networkConfig = new NetworkConfig().DisableTcpKeepalive().WithIpResolveMode(IpResolveMode.IPv4Only);
 
@@ -384,10 +337,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"TCP Keepalive: disabled");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"TCP Keepalive: disabled");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state without TCP keepalive");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -404,13 +357,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_CustomBufferSize_AppliedCorrectly()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         var networkConfig = new NetworkConfig()
             .WithReceiveBufferSize(131072) // 128KB
@@ -428,10 +376,10 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine($"Receive buffer: 128KB");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine($"Receive buffer: 128KB");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with custom buffer");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -448,13 +396,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task GetLastDnsError_NoError_ReturnsNone()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         streamer.SetNetworkConfig(NetworkConfig.CreateDefault());
         streamer.AddUrl(streamUrl);
@@ -469,8 +412,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"DNS Error: {dnsError}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"DNS Error: {dnsError}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.Equal(DnsErrorType.None, dnsError);
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -487,13 +430,8 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public async Task NetworkConfig_FullConfiguration_StreamsSuccessfully()
     {
         // Arrange
-        var streamUrl = $"{_fixture.BaseUrl}/stream/5000";
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamUrl = $"{fixture.BaseUrl}/stream/5000";
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         // Configure all available options
         var networkConfig = new NetworkConfig()
@@ -525,17 +463,17 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reached streaming: {reachedStreaming}");
-        _output.WriteLine("Full configuration applied:");
-        _output.WriteLine("  - DNS: Cloudflare (1.1.1.1, 1.0.0.1)");
-        _output.WriteLine("  - IP: PreferIPv4");
-        _output.WriteLine("  - Timeouts: TCP=5s, TLS=5s, FirstByte=10s, DNS=3s");
-        _output.WriteLine("  - DNS Cache: 5min");
-        _output.WriteLine("  - TCP Keepalive: idle=60s, interval=30s");
-        _output.WriteLine("  - Buffer: 64KB");
-        _output.WriteLine("  - Happy Eyeballs: 300ms");
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reached streaming: {reachedStreaming}");
+        Output.WriteLine("Full configuration applied:");
+        Output.WriteLine("  - DNS: Cloudflare (1.1.1.1, 1.0.0.1)");
+        Output.WriteLine("  - IP: PreferIPv4");
+        Output.WriteLine("  - Timeouts: TCP=5s, TLS=5s, FirstByte=10s, DNS=3s");
+        Output.WriteLine("  - DNS Cache: 5min");
+        Output.WriteLine("  - TCP Keepalive: idle=60s, interval=30s");
+        Output.WriteLine("  - Buffer: 64KB");
+        Output.WriteLine("  - Happy Eyeballs: 300ms");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
 
         Assert.True(reachedStreaming, "Should reach streaming state with full config");
         Assert.True(status.BytesReceived > 0, "Should receive data");
@@ -548,12 +486,7 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public void NetworkConfig_SetBeforeStart_IsThreadSafe()
     {
         // Arrange
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Default);
 
         // Act - should not throw
         var exception = Record.Exception(() =>
@@ -567,7 +500,7 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
 
         // Assert
         Assert.Null(exception);
-        _output.WriteLine("Multiple SetNetworkConfig calls completed without exception");
+        Output.WriteLine("Multiple SetNetworkConfig calls completed without exception");
     }
 
     /// <summary>
@@ -577,58 +510,12 @@ public class NetworkConfigurationTest(DockerTestFixture fixture, ITestOutputHelp
     public void NetworkConfig_SetOnDisposed_ThrowsObjectDisposedException()
     {
         // Arrange
-        var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
-
+        var streamer = BuildStreamer(TestConfigs.Default);
         streamer.Dispose();
 
         // Act & Assert - intentionally using disposed instance to verify exception
 #pragma warning disable IDISP016 // Don't use disposed instance - intentional for this test
         Assert.Throws<ObjectDisposedException>(() => streamer.SetNetworkConfig(NetworkConfig.CreateDefault()));
 #pragma warning restore IDISP016
-    }
-
-    // ========================================================================
-    // Helper Methods
-    // ========================================================================
-
-    private static NativeStreamer? CreateStreamer()
-    {
-        var config = new TsDuckStreamerConfigNative
-        {
-            ConnectTimeoutMs = 5000,
-            ResponseTimeoutMs = 5000,
-            StallTimeoutMs = 5000,
-            MaxRetries = 5,
-            InitialBackoffMs = 100,
-            MaxBackoffMs = 1000,
-            BackoffMultiplier = 1.5,
-            BackoffJitterMs = 50,
-            OutputFd = -1,
-            AlignmentBufferPackets = 32,
-            EnableRestamp = 0,
-            RestampMode = 0,
-            LowSpeedLimitBytes = 100,
-            LowSpeedTimeSec = 2,
-            StallsBeforeSwitch = 2,
-        };
-
-        return NativeStreamer.TryCreate(config);
-    }
-
-    private static NativeStreamer? CreateStreamerWithDefaultNetworkConfig()
-    {
-        var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            return null;
-        }
-
-        streamer.SetNetworkConfig(NetworkConfig.CreateDefault());
-        return streamer;
     }
 }

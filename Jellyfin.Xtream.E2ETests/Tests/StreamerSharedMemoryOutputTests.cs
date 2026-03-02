@@ -36,58 +36,40 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// </para>
 /// </remarks>
 [Collection("E2E-SharedMemory")]
-public sealed class StreamerSharedMemoryOutputTests : IDisposable
+public sealed class StreamerSharedMemoryOutputTests(DockerTestFixture fixture, ITestOutputHelper output)
+    : NativeE2ETestBase(output)
 {
     private const int TsPacketSize = 188;
+    private readonly List<IDisposable> _disposables = [];
 
-    private readonly DockerTestFixture _fixture;
-    private readonly ITestOutputHelper _output;
-    private readonly List<IDisposable> _disposables = new();
-
-    public StreamerSharedMemoryOutputTests(DockerTestFixture fixture, ITestOutputHelper output)
+    protected override void Dispose(bool disposing)
     {
-        _fixture = fixture;
-        _output = output;
-    }
-
-    public void Dispose()
-    {
-        foreach (var disposable in _disposables)
+        if (disposing)
         {
-            try
+            foreach (var disposable in _disposables)
             {
-                disposable.Dispose();
+                try
+                {
+                    disposable.Dispose();
+                }
+                catch
+                {
+                    // Best effort cleanup
+                }
             }
-            catch
-            {
-                // Best effort cleanup
-            }
+            _disposables.Clear();
         }
 
-        _disposables.Clear();
-        GC.SuppressFinalize(this);
+        base.Dispose(disposing);
     }
 
     private static string GenerateUniqueShmName() => $"streamer_shm_test_{Guid.NewGuid():N}";
 
-    private NativeStreamer? CreateStreamer()
+    private NativeStreamer CreateTrackedStreamer()
     {
-        var streamer = NativeStreamer.TryCreate(TsDuckStreamerConfigNative.Default);
-        if (streamer != null)
-        {
-            _disposables.Add(streamer);
-        }
-
+        var streamer = BuildStreamer(TestConfigs.Production);
+        _disposables.Add(streamer);
         return streamer;
-    }
-
-    private void SkipIfNativeUnavailable(NativeStreamer? streamer)
-    {
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
     }
 
     // =========================================================================
@@ -102,15 +84,10 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
     public async Task SharedMemoryOutput_BasicDataFlow_BytesReceivedByConsumer()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000"; // 5 Mbps stream
+        var url = $"{fixture.BaseUrl}/stream/5000"; // 5 Mbps stream
         var shmName = GenerateUniqueShmName();
 
-        var streamer = CreateStreamer();
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamer = CreateTrackedStreamer();
 
         streamer.AddUrl(url);
         streamer.SetSharedMemoryOutput(shmName, slotCount: 1024, slotSize: 1316);
@@ -149,7 +126,7 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
 
             if (consumer.HasError)
             {
-                _output.WriteLine($"Consumer error: {consumer.ErrorCode} - {consumer.ErrorMessage}");
+                Output.WriteLine($"Consumer error: {consumer.ErrorCode} - {consumer.ErrorMessage}");
                 break;
             }
         }
@@ -158,9 +135,9 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
 
         // Assert
         var streamerStatus = streamer.GetStatus();
-        _output.WriteLine($"Streamer bytes received: {streamerStatus.BytesReceived:N0}");
-        _output.WriteLine($"Consumer bytes read: {totalBytesRead:N0}");
-        _output.WriteLine($"Streamer state: {streamerStatus.State}");
+        Output.WriteLine($"Streamer bytes received: {streamerStatus.BytesReceived:N0}");
+        Output.WriteLine($"Consumer bytes read: {totalBytesRead:N0}");
+        Output.WriteLine($"Streamer state: {streamerStatus.State}");
 
         Assert.True(streamerStatus.BytesReceived > 0, "Streamer should have received data from HTTP");
         Assert.True(totalBytesRead > 0, "Consumer should have read data from shared memory");
@@ -176,15 +153,10 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
     public async Task SharedMemoryOutput_DataIntegrity_SyncBytesValid()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
         var shmName = GenerateUniqueShmName();
 
-        var streamer = CreateStreamer();
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamer = CreateTrackedStreamer();
 
         streamer.AddUrl(url);
         streamer.SetSharedMemoryOutput(shmName, slotCount: 1024, slotSize: 1316);
@@ -236,8 +208,8 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
 
         int totalValidPackets = validSyncCount + paddingPacketCount;
         double syncRate = packetCount > 0 ? totalValidPackets * 100.0 / packetCount : 0;
-        _output.WriteLine($"Total bytes: {allData.Count:N0}");
-        _output.WriteLine(
+        Output.WriteLine($"Total bytes: {allData.Count:N0}");
+        Output.WriteLine(
             $"Packets: {packetCount}, Valid sync: {validSyncCount}, Padding: {paddingPacketCount} ({syncRate:F1}%)"
         );
 
@@ -257,15 +229,10 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
     public async Task SharedMemoryOutput_HighBitrate_SustainsDataFlow()
     {
         // Arrange - 10 Mbps stream
-        var url = $"{_fixture.BaseUrl}/stream/10000";
+        var url = $"{fixture.BaseUrl}/stream/10000";
         var shmName = GenerateUniqueShmName();
 
-        var streamer = CreateStreamer();
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamer = CreateTrackedStreamer();
 
         streamer.AddUrl(url);
         streamer.SetSharedMemoryOutput(shmName, slotCount: 2048, slotSize: 1316);
@@ -308,11 +275,11 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
         var status = streamer.GetStatus();
         var actualBitrateMbps = totalBytesRead * 8.0 / sw.Elapsed.TotalSeconds / 1_000_000;
 
-        _output.WriteLine($"Duration: {sw.Elapsed.TotalSeconds:F2}s");
-        _output.WriteLine($"Streamer received: {status.BytesReceived:N0} bytes");
-        _output.WriteLine($"Consumer read: {totalBytesRead:N0} bytes");
-        _output.WriteLine($"Consumer bitrate: {actualBitrateMbps:F2} Mbps");
-        _output.WriteLine($"Overflow events: {overflowCount}");
+        Output.WriteLine($"Duration: {sw.Elapsed.TotalSeconds:F2}s");
+        Output.WriteLine($"Streamer received: {status.BytesReceived:N0} bytes");
+        Output.WriteLine($"Consumer read: {totalBytesRead:N0} bytes");
+        Output.WriteLine($"Consumer bitrate: {actualBitrateMbps:F2} Mbps");
+        Output.WriteLine($"Overflow events: {overflowCount}");
 
         Assert.True(totalBytesRead > 1_000_000, "Should have read at least 1 MB of data");
         Assert.True(actualBitrateMbps > 5, $"Bitrate {actualBitrateMbps:F2} Mbps should be > 5 Mbps");
@@ -330,16 +297,11 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
     public async Task SharedMemoryOutput_UrlSwitch_DiscontinuitySignaled()
     {
         // Arrange - two URLs for switching
-        var url1 = $"{_fixture.BaseUrl}/stream/5000";
-        var url2 = $"{_fixture.BaseUrl}/stream/2000";
+        var url1 = $"{fixture.BaseUrl}/stream/5000";
+        var url2 = $"{fixture.BaseUrl}/stream/2000";
         var shmName = GenerateUniqueShmName();
 
-        var streamer = CreateStreamer();
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamer = CreateTrackedStreamer();
 
         streamer.AddUrl(url1);
         streamer.AddUrl(url2);
@@ -367,11 +329,11 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
             }
         }
 
-        _output.WriteLine($"Initial read: {totalBytesRead:N0} bytes");
+        Output.WriteLine($"Initial read: {totalBytesRead:N0} bytes");
 
         // Request URL switch
         streamer.RequestSwitch();
-        _output.WriteLine("Switch requested");
+        Output.WriteLine("Switch requested");
 
         // Wait for switch and check for discontinuity
         var switchSw = Stopwatch.StartNew();
@@ -382,7 +344,7 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
                 if (consumer.ConsumeDiscontinuity())
                 {
                     discontinuityDetected = true;
-                    _output.WriteLine(
+                    Output.WriteLine(
                         $"Discontinuity detected at {switchSw.ElapsedMilliseconds}ms after switch request"
                     );
                 }
@@ -402,9 +364,9 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
 
         // Assert
         var finalStatus = streamer.GetStatus();
-        _output.WriteLine($"Total bytes read: {totalBytesRead:N0}");
-        _output.WriteLine($"Switches completed: {finalStatus.SwitchesCompleted}");
-        _output.WriteLine($"Discontinuity detected: {discontinuityDetected}");
+        Output.WriteLine($"Total bytes read: {totalBytesRead:N0}");
+        Output.WriteLine($"Switches completed: {finalStatus.SwitchesCompleted}");
+        Output.WriteLine($"Discontinuity detected: {discontinuityDetected}");
 
         Assert.True(totalBytesRead > 0, "Should have read data");
         // Note: Discontinuity detection depends on timing - it may or may not occur
@@ -422,15 +384,10 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
     public async Task SharedMemoryOutput_StreamerStop_EosSignaled()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
         var shmName = GenerateUniqueShmName();
 
-        var streamer = CreateStreamer();
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamer = CreateTrackedStreamer();
 
         streamer.AddUrl(url);
         streamer.SetSharedMemoryOutput(shmName, slotCount: 1024, slotSize: 1316);
@@ -455,7 +412,7 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
             }
         }
 
-        _output.WriteLine($"Read before stop: {totalBytesRead:N0} bytes");
+        Output.WriteLine($"Read before stop: {totalBytesRead:N0} bytes");
         Assert.False(consumer.IsEndOfStream, "EOS should not be set before stop");
 
         // Act - stop the streamer
@@ -473,7 +430,7 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
             if (consumer.IsEndOfStream)
             {
                 eosDetected = true;
-                _output.WriteLine($"EOS detected at {eosSw.ElapsedMilliseconds}ms after stop");
+                Output.WriteLine($"EOS detected at {eosSw.ElapsedMilliseconds}ms after stop");
             }
         }
 
@@ -484,8 +441,8 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Total bytes read: {totalBytesRead:N0}");
-        _output.WriteLine($"EOS detected: {eosDetected}");
+        Output.WriteLine($"Total bytes read: {totalBytesRead:N0}");
+        Output.WriteLine($"EOS detected: {eosDetected}");
 
         Assert.True(eosDetected, "End-of-stream should be signaled when streamer stops");
         Assert.True(totalBytesRead > 0, "Should have read data before EOS");
@@ -502,15 +459,10 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
     public async Task SharedMemoryOutput_ConsumerAttachment_Detected()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/5000";
+        var url = $"{fixture.BaseUrl}/stream/5000";
         var shmName = GenerateUniqueShmName();
 
-        var streamer = CreateStreamer();
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamer = CreateTrackedStreamer();
 
         streamer.AddUrl(url);
         streamer.SetSharedMemoryOutput(shmName, slotCount: 1024, slotSize: 1316);
@@ -527,11 +479,11 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
             consumer1.WaitForData(TimeSpan.FromMilliseconds(500));
             consumer1.Read(buffer);
 
-            _output.WriteLine("Consumer 1 attached and read data");
+            Output.WriteLine("Consumer 1 attached and read data");
         }
         // consumer1 disposed
 
-        _output.WriteLine("Consumer 1 detached");
+        Output.WriteLine("Consumer 1 detached");
 
         // Attach second consumer
         using (var consumer2 = new SharedMemoryConsumer(shmName))
@@ -540,14 +492,14 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
             consumer2.WaitForData(TimeSpan.FromMilliseconds(500));
             int read = consumer2.Read(buffer);
 
-            _output.WriteLine($"Consumer 2 attached and read {read} bytes");
+            Output.WriteLine($"Consumer 2 attached and read {read} bytes");
 
             // Assert - consumer2 should be able to read data
             Assert.True(read > 0, "Second consumer should be able to read data");
         }
 
         streamer.Stop();
-        _output.WriteLine("Test completed successfully");
+        Output.WriteLine("Test completed successfully");
     }
 
     // =========================================================================
@@ -563,12 +515,7 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
         // Arrange
         var shmName = GenerateUniqueShmName();
 
-        var streamer = CreateStreamer();
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamer = CreateTrackedStreamer();
 
         // Act
         Assert.Null(streamer.SharedMemoryName);
@@ -580,8 +527,8 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
         Assert.Equal(shmName, streamer.SharedMemoryName);
         Assert.True(streamer.IsSharedMemoryMode);
 
-        _output.WriteLine($"SharedMemoryName: {streamer.SharedMemoryName}");
-        _output.WriteLine($"IsSharedMemoryMode: {streamer.IsSharedMemoryMode}");
+        Output.WriteLine($"SharedMemoryName: {streamer.SharedMemoryName}");
+        Output.WriteLine($"IsSharedMemoryMode: {streamer.IsSharedMemoryMode}");
     }
 
     // =========================================================================
@@ -596,16 +543,11 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
     {
         // Arrange - finite stream of 1000 packets
         const int packetCount = 1000;
-        var url = $"{_fixture.BaseUrl}/stream/finite/{packetCount}";
+        var url = $"{fixture.BaseUrl}/stream/finite/{packetCount}";
         var shmName = GenerateUniqueShmName();
         var expectedBytes = packetCount * TsPacketSize;
 
-        var streamer = CreateStreamer();
-        if (streamer is null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        var streamer = CreateTrackedStreamer();
 
         streamer.AddUrl(url);
         streamer.SetSharedMemoryOutput(shmName, slotCount: 1024, slotSize: 1316);
@@ -645,9 +587,9 @@ public sealed class StreamerSharedMemoryOutputTests : IDisposable
 
         // Assert
         var status = streamer.GetStatus();
-        _output.WriteLine($"Expected bytes: {expectedBytes:N0}");
-        _output.WriteLine($"Streamer received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Consumer read: {totalBytesRead:N0}");
+        Output.WriteLine($"Expected bytes: {expectedBytes:N0}");
+        Output.WriteLine($"Streamer received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Consumer read: {totalBytesRead:N0}");
 
         // Note: Due to slot alignment, we may read slightly more than expected
         Assert.True(

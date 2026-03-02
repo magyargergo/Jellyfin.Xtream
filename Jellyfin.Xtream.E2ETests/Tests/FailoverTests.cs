@@ -1,5 +1,4 @@
 using Jellyfin.Xtream.E2ETests.Infrastructure;
-using Jellyfin.Xtream.Service;
 using Jellyfin.Xtream.Service.Streaming.Native;
 using Xunit.Abstractions;
 
@@ -10,17 +9,8 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Verifies the native streamer rotates URLs and recovers without permanent stall.
 /// </summary>
 [Collection("E2E-Failover")]
-public class FailoverTests
+public class FailoverTests(DockerTestFixture fixture, ITestOutputHelper output) : NativeE2ETestBase(output)
 {
-    private readonly DockerTestFixture _fixture;
-    private readonly ITestOutputHelper _output;
-
-    public FailoverTests(DockerTestFixture fixture, ITestOutputHelper output)
-    {
-        _fixture = fixture;
-        _output = output;
-    }
-
     /// <summary>
     /// Tests that the streamer fails over from unstable URLs to a stable URL.
     /// The unstable URLs drop the connection after a configured interval,
@@ -30,17 +20,12 @@ public class FailoverTests
     public async Task Failover_UnstableUrl_RecoversToStable()
     {
         // Arrange - 2 unstable URLs + 1 stable URL
-        _fixture.UnstableDropAfterMs = 2000; // Drop after 2 seconds
-        var unstableUrl1 = $"{_fixture.BaseUrl}/stream/unstable";
-        var unstableUrl2 = $"{_fixture.BaseUrl}/stream/unstable";
-        var stableUrl = $"{_fixture.BaseUrl}/stream/5000";
+        fixture.UnstableDropAfterMs = 2000; // Drop after 2 seconds
+        var unstableUrl1 = $"{fixture.BaseUrl}/stream/unstable";
+        var unstableUrl2 = $"{fixture.BaseUrl}/stream/unstable";
+        var stableUrl = $"{fixture.BaseUrl}/stream/5000";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Production);
 
         // Add URLs: unstable first, stable last
         streamer.AddUrl(unstableUrl1);
@@ -63,12 +48,12 @@ public class FailoverTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Final state: {status.State}");
-        _output.WriteLine($"Current URL index: {status.CurrentUrlIndex}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Switches: {status.SwitchesCompleted}");
-        _output.WriteLine($"Reconnections: {status.Reconnections}");
-        _output.WriteLine($"Reached stable URL: {reachedStable}");
+        Output.WriteLine($"Final state: {status.State}");
+        Output.WriteLine($"Current URL index: {status.CurrentUrlIndex}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Switches: {status.SwitchesCompleted}");
+        Output.WriteLine($"Reconnections: {status.Reconnections}");
+        Output.WriteLine($"Reached stable URL: {reachedStable}");
 
         // Should have received data despite unstable connections
         Assert.True(status.BytesReceived > 0, "Should have received data");
@@ -88,15 +73,10 @@ public class FailoverTests
     public async Task Failover_AllUnstable_EventuallyRecovers()
     {
         // Arrange - all URLs are unstable but keep reconnecting
-        _fixture.UnstableDropAfterMs = 1500;
-        var url = $"{_fixture.BaseUrl}/stream/unstable";
+        fixture.UnstableDropAfterMs = 1500;
+        var url = $"{fixture.BaseUrl}/stream/unstable";
 
-        using var streamer = CreateStreamerForFailover();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Failover);
 
         // Add the same unstable URL multiple times (simulates multiple providers)
         streamer.AddUrl(url);
@@ -116,11 +96,11 @@ public class FailoverTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Reconnections: {status.Reconnections}");
-        _output.WriteLine($"Retry count: {status.RetryCount}");
-        _output.WriteLine($"Had reconnection: {hadReconnection}");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Reconnections: {status.Reconnections}");
+        Output.WriteLine($"Retry count: {status.RetryCount}");
+        Output.WriteLine($"Had reconnection: {hadReconnection}");
 
         // With max retries configured, should have received SOME data between disconnects
         Assert.True(status.BytesReceived > 0, "Should have received at least some data between reconnections");
@@ -136,15 +116,10 @@ public class FailoverTests
     public async Task Failover_ManualSwitch_RotatesToNextUrl()
     {
         // Arrange
-        var url1 = $"{_fixture.BaseUrl}/stream/2000";
-        var url2 = $"{_fixture.BaseUrl}/stream/5000";
+        var url1 = $"{fixture.BaseUrl}/stream/2000";
+        var url2 = $"{fixture.BaseUrl}/stream/5000";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Production);
 
         streamer.AddUrl(url1);
         streamer.AddUrl(url2);
@@ -155,7 +130,7 @@ public class FailoverTests
         Assert.True(reachedStreaming, "Should reach streaming state before switch");
 
         var statusBefore = streamer.GetStatus();
-        _output.WriteLine(
+        Output.WriteLine(
             $"Before switch: URL index={statusBefore.CurrentUrlIndex}, Bytes={statusBefore.BytesReceived:N0}"
         );
 
@@ -164,10 +139,10 @@ public class FailoverTests
         var switchCompleted = await TestHelpers.WaitForSwitchCountAsync(streamer, 1, TimeSpan.FromSeconds(5));
 
         var statusAfter = streamer.GetStatus();
-        _output.WriteLine(
+        Output.WriteLine(
             $"After switch: URL index={statusAfter.CurrentUrlIndex}, Bytes={statusAfter.BytesReceived:N0}"
         );
-        _output.WriteLine($"Switch completed: {switchCompleted}");
+        Output.WriteLine($"Switch completed: {switchCompleted}");
 
         streamer.Stop();
 
@@ -191,16 +166,11 @@ public class FailoverTests
     public async Task Failover_DataContinuity_NoLongGaps()
     {
         // Arrange - monitor data flow during failover to ensure no long gaps
-        _fixture.UnstableDropAfterMs = 2000;
-        var unstableUrl = $"{_fixture.BaseUrl}/stream/unstable";
-        var stableUrl = $"{_fixture.BaseUrl}/stream/5000";
+        fixture.UnstableDropAfterMs = 2000;
+        var unstableUrl = $"{fixture.BaseUrl}/stream/unstable";
+        var stableUrl = $"{fixture.BaseUrl}/stream/5000";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Production);
 
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(stableUrl);
@@ -223,10 +193,10 @@ public class FailoverTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Max gap between data: {maxGapMs:F0}ms");
-        _output.WriteLine($"Switches: {finalStatus.SwitchesCompleted}");
-        _output.WriteLine($"Reconnections: {finalStatus.Reconnections}");
-        _output.WriteLine($"Data continuity maintained: {success}");
+        Output.WriteLine($"Max gap between data: {maxGapMs:F0}ms");
+        Output.WriteLine($"Switches: {finalStatus.SwitchesCompleted}");
+        Output.WriteLine($"Reconnections: {finalStatus.Reconnections}");
+        Output.WriteLine($"Data continuity maintained: {success}");
 
         // Max gap should be under 15 seconds (includes reconnect backoff)
         Assert.True(success, $"Max data gap {maxGapMs:F0}ms exceeds {maxAllowedGapMs}ms threshold");
@@ -241,15 +211,10 @@ public class FailoverTests
     {
         // Arrange - verify analyzer metrics continue to accumulate after URL switch.
         // Start streaming, capture metrics, switch URLs, stream more, verify metrics grew.
-        var url1 = $"{_fixture.BaseUrl}/stream/5000";
-        var url2 = $"{_fixture.BaseUrl}/stream/5000";
+        var url1 = $"{fixture.BaseUrl}/stream/5000";
+        var url2 = $"{fixture.BaseUrl}/stream/5000";
 
-        using var streamer = CreateStreamerWithAnalyzer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.Analyzer);
 
         streamer.AddUrl(url1);
         streamer.AddUrl(url2);
@@ -262,7 +227,7 @@ public class FailoverTests
 
         var metricsBefore = streamer.GetMetrics();
         var statusBefore = streamer.GetStatus();
-        _output.WriteLine($"Before switch: {statusBefore.PacketsOutput} packets, URL={statusBefore.CurrentUrlIndex}");
+        Output.WriteLine($"Before switch: {statusBefore.PacketsOutput} packets, URL={statusBefore.CurrentUrlIndex}");
 
         // Request URL switch and wait for it
         streamer.RequestSwitch();
@@ -280,10 +245,10 @@ public class FailoverTests
         Assert.NotNull(metricsBefore);
         Assert.NotNull(metricsAfter);
 
-        _output.WriteLine($"After switch: {statusAfter.PacketsOutput} packets, URL={statusAfter.CurrentUrlIndex}");
-        _output.WriteLine($"Bitrate before: {metricsBefore.TsBitrate}, after: {metricsAfter.TsBitrate}");
-        _output.WriteLine($"Services before: {metricsBefore.ServiceCount}, after: {metricsAfter.ServiceCount}");
-        _output.WriteLine($"PIDs before: {metricsBefore.PidCount}, after: {metricsAfter.PidCount}");
+        Output.WriteLine($"After switch: {statusAfter.PacketsOutput} packets, URL={statusAfter.CurrentUrlIndex}");
+        Output.WriteLine($"Bitrate before: {metricsBefore.TsBitrate}, after: {metricsAfter.TsBitrate}");
+        Output.WriteLine($"Services before: {metricsBefore.ServiceCount}, after: {metricsAfter.ServiceCount}");
+        Output.WriteLine($"PIDs before: {metricsBefore.PidCount}, after: {metricsAfter.PidCount}");
 
         // Metrics should still be valid after switch
         Assert.True(metricsAfter.TsBitrate > 0, "Bitrate should still be detected after switch");
@@ -316,16 +281,11 @@ public class FailoverTests
     {
         // Arrange - verify that the analyzer detects errors during unstable streaming
         // but still produces valid metrics after recovery to stable URL.
-        _fixture.UnstableDropAfterMs = 2000;
-        var unstableUrl = $"{_fixture.BaseUrl}/stream/unstable";
-        var stableUrl = $"{_fixture.BaseUrl}/stream/5000";
+        fixture.UnstableDropAfterMs = 2000;
+        var unstableUrl = $"{fixture.BaseUrl}/stream/unstable";
+        var stableUrl = $"{fixture.BaseUrl}/stream/5000";
 
-        using var streamer = CreateStreamerWithAnalyzerForFailover();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
+        using var streamer = BuildStreamer(TestConfigs.FailoverAnalyzer);
 
         streamer.AddUrl(unstableUrl);
         streamer.AddUrl(stableUrl);
@@ -335,7 +295,7 @@ public class FailoverTests
 
         // Wait for failover to stable URL (index 1)
         var reachedStable = await TestHelpers.WaitForUrlSwitchAsync(streamer, 1, TimeSpan.FromSeconds(10));
-        _output.WriteLine($"Reached stable URL: {reachedStable}");
+        Output.WriteLine($"Reached stable URL: {reachedStable}");
 
         // Allow metrics to stabilize
         await Task.Delay(TimeSpan.FromSeconds(3));
@@ -345,18 +305,18 @@ public class FailoverTests
         streamer.Stop();
 
         // Assert
-        _output.WriteLine($"State: {status.State}");
-        _output.WriteLine($"Bytes: {status.BytesReceived:N0}");
-        _output.WriteLine($"Switches: {status.SwitchesCompleted}");
-        _output.WriteLine($"Metrics available: {metrics != null}");
+        Output.WriteLine($"State: {status.State}");
+        Output.WriteLine($"Bytes: {status.BytesReceived:N0}");
+        Output.WriteLine($"Switches: {status.SwitchesCompleted}");
+        Output.WriteLine($"Metrics available: {metrics != null}");
 
         Assert.True(status.BytesReceived > 0, "Should have received data");
 
         if (metrics != null)
         {
-            _output.WriteLine($"Services: {metrics.ServiceCount}, PIDs: {metrics.PidCount}");
-            _output.WriteLine($"Bitrate: {metrics.TsBitrate}");
-            _output.WriteLine($"Quality: {metrics.CalculateQualityScore()}");
+            Output.WriteLine($"Services: {metrics.ServiceCount}, PIDs: {metrics.PidCount}");
+            Output.WriteLine($"Bitrate: {metrics.TsBitrate}");
+            Output.WriteLine($"Quality: {metrics.CalculateQualityScore()}");
 
             // After recovering to stable URL, should detect stream structure
             Assert.True(
@@ -364,106 +324,5 @@ public class FailoverTests
                 $"Should detect stream structure after recovery. Services: {metrics.ServiceCount}, PIDs: {metrics.PidCount}"
             );
         }
-    }
-
-    // ========================================================================
-    // Helper Methods
-    // ========================================================================
-
-    private static NativeStreamer? CreateStreamerWithAnalyzer()
-    {
-        var config = new TsDuckStreamerConfigNative
-        {
-            ConnectTimeoutMs = 5000,
-            ResponseTimeoutMs = 10000,
-            StallTimeoutMs = 15000,
-            MaxRetries = 3,
-            InitialBackoffMs = 200,
-            MaxBackoffMs = 5000,
-            BackoffMultiplier = 2.0,
-            BackoffJitterMs = 100,
-            OutputFd = -1,
-            AlignmentBufferPackets = 32,
-            EnableRestamp = 0,
-            RestampMode = (int)RestampingMode.Disabled,
-            LowSpeedLimitBytes = 100,
-            LowSpeedTimeSec = 5,
-            StallsBeforeSwitch = 2,
-        };
-
-        var analyzerConfig = TsDuckConfigNative.FromManaged(
-            new TsDuckConfiguration
-            {
-                EnableTr101290 = true,
-                MetricsIntervalSeconds = 1,
-                EnableAutoRestamp = false,
-                RestampMode = RestampingMode.Disabled,
-            }
-        );
-
-        return NativeStreamer.TryCreate(config, analyzerConfig);
-    }
-
-    private static NativeStreamer? CreateStreamerWithAnalyzerForFailover()
-    {
-        var config = new TsDuckStreamerConfigNative
-        {
-            ConnectTimeoutMs = 3000,
-            ResponseTimeoutMs = 5000,
-            StallTimeoutMs = 5000,
-            MaxRetries = 10,
-            InitialBackoffMs = 200,
-            MaxBackoffMs = 2000,
-            BackoffMultiplier = 1.5,
-            BackoffJitterMs = 100,
-            OutputFd = -1,
-            AlignmentBufferPackets = 32,
-            EnableRestamp = 0,
-            RestampMode = (int)RestampingMode.Disabled,
-            LowSpeedLimitBytes = 100,
-            LowSpeedTimeSec = 3,
-            StallsBeforeSwitch = 1,
-        };
-
-        var analyzerConfig = TsDuckConfigNative.FromManaged(
-            new TsDuckConfiguration
-            {
-                EnableTr101290 = true,
-                MetricsIntervalSeconds = 1,
-                EnableAutoRestamp = false,
-                RestampMode = RestampingMode.Disabled,
-            }
-        );
-
-        return NativeStreamer.TryCreate(config, analyzerConfig);
-    }
-
-    private static NativeStreamer? CreateStreamer()
-    {
-        return NativeStreamer.TryCreate(TsDuckStreamerConfigNative.Default);
-    }
-
-    private static NativeStreamer? CreateStreamerForFailover()
-    {
-        var config = new TsDuckStreamerConfigNative
-        {
-            ConnectTimeoutMs = 3000,
-            ResponseTimeoutMs = 5000,
-            StallTimeoutMs = 5000,
-            MaxRetries = 10, // Allow many retries
-            InitialBackoffMs = 200,
-            MaxBackoffMs = 2000,
-            BackoffMultiplier = 1.5,
-            BackoffJitterMs = 100,
-            OutputFd = -1,
-            AlignmentBufferPackets = 32,
-            EnableRestamp = 1,
-            RestampMode = (int)RestampingMode.Correct,
-            LowSpeedLimitBytes = 100,
-            LowSpeedTimeSec = 3,
-            StallsBeforeSwitch = 1, // Switch quickly
-        };
-
-        return NativeStreamer.TryCreate(config);
     }
 }

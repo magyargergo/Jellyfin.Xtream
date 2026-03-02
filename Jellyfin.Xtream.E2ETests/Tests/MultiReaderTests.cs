@@ -10,21 +10,12 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// Uses high bitrate (50 Mbps) to ensure rapid data flow for stress testing.
 /// </summary>
 [Collection("E2E-Restream")]
-public class MultiReaderTests
+public class MultiReaderTests(DockerTestFixture fixture, ITestOutputHelper output) : NativeE2ETestBase(output)
 {
     private const int TsPacketSize = 188;
 
     // 50 Mbps ensures fast data flow for testing
     private const int HighBitrateKbps = 50000;
-
-    private readonly DockerTestFixture _fixture;
-    private readonly ITestOutputHelper _output;
-
-    public MultiReaderTests(DockerTestFixture fixture, ITestOutputHelper output)
-    {
-        _fixture = fixture;
-        _output = output;
-    }
 
     /// <summary>
     /// Tests that multiple concurrent readers can all observe valid data.
@@ -37,19 +28,12 @@ public class MultiReaderTests
     public async Task MultiReader_ConcurrentReads_AllGetValidData(int readerCount)
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/{HighBitrateKbps}";
+        var url = $"{fixture.BaseUrl}/stream/{HighBitrateKbps}";
         const int readDurationSec = 5;
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
-
-        streamer.AddUrl(url);
-        Assert.True(streamer.Start(), "Streamer should start successfully");
-        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Streamer.AddUrl(url);
+        Assert.True(Streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(Streamer, TimeSpan.FromSeconds(5));
         Assert.True(streaming, "Should reach streaming state");
 
         // Act - poll status multiple times to simulate concurrent reads
@@ -59,24 +43,24 @@ public class MultiReaderTests
         for (int i = 0; i < readerCount; i++)
         {
             int readerId = i;
-            readerTasks[i] = Task.Run(() => SimulateReader(streamer, readerId, cts.Token), cts.Token);
+            readerTasks[i] = Task.Run(() => SimulateReader(Streamer, readerId, cts.Token), cts.Token);
         }
 
         await Task.Delay(TimeSpan.FromSeconds(readDurationSec));
         await cts.CancelAsync();
 
         var results = await Task.WhenAll(readerTasks);
-        var status = streamer.GetStatus();
-        streamer.Stop();
+        var status = Streamer.GetStatus();
+        Streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Reader results ({readerCount} readers):");
-        _output.WriteLine($"Streamer bytes received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Streamer packets output: {status.PacketsOutput:N0}");
+        Output.WriteLine($"Reader results ({readerCount} readers):");
+        Output.WriteLine($"Streamer bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Streamer packets output: {status.PacketsOutput:N0}");
 
         foreach (var result in results)
         {
-            _output.WriteLine(
+            Output.WriteLine(
                 $"  Reader {result.ReaderId}: {result.StatusPolls} polls, "
                     + $"observed {result.TotalBytesObserved:N0} max bytes"
             );
@@ -101,42 +85,35 @@ public class MultiReaderTests
     public async Task MultiReader_SlowReader_DoesNotBlockFastReaders()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/{HighBitrateKbps}";
+        var url = $"{fixture.BaseUrl}/stream/{HighBitrateKbps}";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
-
-        streamer.AddUrl(url);
-        Assert.True(streamer.Start(), "Streamer should start successfully");
-        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Streamer.AddUrl(url);
+        Assert.True(Streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(Streamer, TimeSpan.FromSeconds(5));
         Assert.True(streaming, "Should reach streaming state");
 
         // Act - one fast reader + one slow reader (both polling status)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
 
-        var fastReaderTask = Task.Run(() => SimulateReader(streamer, 0, cts.Token), cts.Token);
-        var slowReaderTask = Task.Run(() => SimulateSlowReader(streamer, 1, cts.Token), cts.Token);
+        var fastReaderTask = Task.Run(() => SimulateReader(Streamer, 0, cts.Token), cts.Token);
+        var slowReaderTask = Task.Run(() => SimulateSlowReader(Streamer, 1, cts.Token), cts.Token);
 
         await Task.Delay(TimeSpan.FromSeconds(5));
         await cts.CancelAsync();
 
         var fastResult = await fastReaderTask;
         var slowResult = await slowReaderTask;
-        var status = streamer.GetStatus();
-        streamer.Stop();
+        var status = Streamer.GetStatus();
+        Streamer.Stop();
 
         // Assert
-        _output.WriteLine(
+        Output.WriteLine(
             $"Fast reader: {fastResult.StatusPolls} polls, {fastResult.TotalBytesObserved:N0} bytes observed"
         );
-        _output.WriteLine(
+        Output.WriteLine(
             $"Slow reader: {slowResult.StatusPolls} polls, {slowResult.TotalBytesObserved:N0} bytes observed"
         );
-        _output.WriteLine($"Total bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Total bytes received: {status.BytesReceived:N0}");
 
         // Fast reader should have more polls than slow reader
         Assert.True(fastResult.StatusPolls > slowResult.StatusPolls, "Fast reader should poll more than slow reader");
@@ -154,40 +131,33 @@ public class MultiReaderTests
     public async Task MultiReader_ReaderJoinLate_GetsCurrentData()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/{HighBitrateKbps}";
+        var url = $"{fixture.BaseUrl}/stream/{HighBitrateKbps}";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
-
-        streamer.AddUrl(url);
-        Assert.True(streamer.Start(), "Streamer should start successfully");
-        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Streamer.AddUrl(url);
+        Assert.True(Streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(Streamer, TimeSpan.FromSeconds(5));
         Assert.True(streaming, "Should reach streaming state");
 
         // Act - first reader starts immediately
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var earlyReaderTask = Task.Run(() => SimulateReader(streamer, 0, cts.Token), cts.Token);
+        var earlyReaderTask = Task.Run(() => SimulateReader(Streamer, 0, cts.Token), cts.Token);
 
         // Wait 3 seconds then start a late reader
         await Task.Delay(TimeSpan.FromSeconds(3));
-        var lateReaderTask = Task.Run(() => SimulateReader(streamer, 1, cts.Token), cts.Token);
+        var lateReaderTask = Task.Run(() => SimulateReader(Streamer, 1, cts.Token), cts.Token);
 
         await Task.Delay(TimeSpan.FromSeconds(4)); // Let late reader run for ~4 seconds
         await cts.CancelAsync();
 
         var earlyResult = await earlyReaderTask;
         var lateResult = await lateReaderTask;
-        var status = streamer.GetStatus();
-        streamer.Stop();
+        var status = Streamer.GetStatus();
+        Streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Early reader (7s): {earlyResult.TotalBytesObserved:N0} bytes observed");
-        _output.WriteLine($"Late reader (4s):  {lateResult.TotalBytesObserved:N0} bytes observed");
-        _output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
+        Output.WriteLine($"Early reader (7s): {earlyResult.TotalBytesObserved:N0} bytes observed");
+        Output.WriteLine($"Late reader (4s):  {lateResult.TotalBytesObserved:N0} bytes observed");
+        Output.WriteLine($"Total bytes: {status.BytesReceived:N0}");
 
         // Late reader should still observe valid data
         Assert.True(lateResult.TotalBytesObserved > 0, "Late reader should observe data");
@@ -201,18 +171,11 @@ public class MultiReaderTests
     public async Task MultiReader_ReaderDispose_DoesNotAffectOthers()
     {
         // Arrange
-        var url = $"{_fixture.BaseUrl}/stream/{HighBitrateKbps}";
+        var url = $"{fixture.BaseUrl}/stream/{HighBitrateKbps}";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
-
-        streamer.AddUrl(url);
-        Assert.True(streamer.Start(), "Streamer should start successfully");
-        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Streamer.AddUrl(url);
+        Assert.True(Streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(Streamer, TimeSpan.FromSeconds(5));
         Assert.True(streaming, "Should reach streaming state");
 
         // Act - create readers, dispose one while others continue
@@ -220,21 +183,21 @@ public class MultiReaderTests
         var disposeCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 
         // Reader 0 will be disposed after 2 seconds
-        var shortReaderTask = Task.Run(() => SimulateReader(streamer, 0, disposeCts.Token), CancellationToken.None);
+        var shortReaderTask = Task.Run(() => SimulateReader(Streamer, 0, disposeCts.Token), CancellationToken.None);
         // Reader 1 runs for full duration
-        var longReaderTask = Task.Run(() => SimulateReader(streamer, 1, cts.Token), cts.Token);
+        var longReaderTask = Task.Run(() => SimulateReader(Streamer, 1, cts.Token), cts.Token);
 
         await Task.Delay(TimeSpan.FromSeconds(6));
         await cts.CancelAsync();
 
         var shortResult = await shortReaderTask;
         var longResult = await longReaderTask;
-        var status = streamer.GetStatus();
-        streamer.Stop();
+        var status = Streamer.GetStatus();
+        Streamer.Stop();
 
         // Assert
-        _output.WriteLine($"Short-lived reader (2s): {shortResult.TotalBytesObserved:N0} bytes observed");
-        _output.WriteLine($"Long-lived reader (6s):  {longResult.TotalBytesObserved:N0} bytes observed");
+        Output.WriteLine($"Short-lived reader (2s): {shortResult.TotalBytesObserved:N0} bytes observed");
+        Output.WriteLine($"Long-lived reader (6s):  {longResult.TotalBytesObserved:N0} bytes observed");
 
         // Long reader should have observed more data (ran longer)
         Assert.True(longResult.StatusPolls > shortResult.StatusPolls, "Long reader should have more polls");
@@ -251,37 +214,30 @@ public class MultiReaderTests
     public async Task MultiReader_DataIntegrity_NoCorruptionUnderLoad()
     {
         // Arrange - verify no data corruption with multiple concurrent status polls
-        var url = $"{_fixture.BaseUrl}/stream/{HighBitrateKbps}";
+        var url = $"{fixture.BaseUrl}/stream/{HighBitrateKbps}";
 
-        using var streamer = CreateStreamer();
-        if (streamer == null)
-        {
-            _output.WriteLine("SKIP: Native library not available");
-            return;
-        }
-
-        streamer.AddUrl(url);
-        Assert.True(streamer.Start(), "Streamer should start successfully");
-        var streaming = await TestHelpers.WaitForStreamingAsync(streamer, TimeSpan.FromSeconds(5));
+        Streamer.AddUrl(url);
+        Assert.True(Streamer.Start(), "Streamer should start successfully");
+        var streaming = await TestHelpers.WaitForStreamingAsync(Streamer, TimeSpan.FromSeconds(5));
         Assert.True(streaming, "Should reach streaming state");
 
         // Act - 4 concurrent readers for 5 seconds
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
         var readerTasks = Enumerable
             .Range(0, 4)
-            .Select(id => Task.Run(() => SimulateReader(streamer, id, cts.Token), cts.Token))
+            .Select(id => Task.Run(() => SimulateReader(Streamer, id, cts.Token), cts.Token))
             .ToArray();
 
         await Task.Delay(TimeSpan.FromSeconds(5));
         await cts.CancelAsync();
 
         var results = await Task.WhenAll(readerTasks);
-        var status = streamer.GetStatus();
-        streamer.Stop();
+        var status = Streamer.GetStatus();
+        Streamer.Stop();
 
         // Assert - verify status consistency
-        _output.WriteLine($"Total bytes received: {status.BytesReceived:N0}");
-        _output.WriteLine($"Total packets output: {status.PacketsOutput:N0}");
+        Output.WriteLine($"Total bytes received: {status.BytesReceived:N0}");
+        Output.WriteLine($"Total packets output: {status.PacketsOutput:N0}");
         Assert.True(status.BytesReceived > 0, "Should have received bytes");
         Assert.True(status.PacketsOutput > 0, "Should have output packets");
 
@@ -291,7 +247,7 @@ public class MultiReaderTests
         // Each reader should have observed data
         foreach (var result in results)
         {
-            _output.WriteLine($"  Reader {result.ReaderId}: {result.TotalBytesObserved:N0} bytes observed");
+            Output.WriteLine($"  Reader {result.ReaderId}: {result.TotalBytesObserved:N0} bytes observed");
             Assert.True(result.TotalBytesObserved > 0, $"Reader {result.ReaderId} starved");
         }
     }
@@ -350,11 +306,6 @@ public class MultiReaderTests
     // ========================================================================
     // Helper Methods
     // ========================================================================
-
-    private static NativeStreamer? CreateStreamer()
-    {
-        return NativeStreamer.TryCreate(TsDuckStreamerConfigNative.Default);
-    }
 
     private class ReaderResult
     {

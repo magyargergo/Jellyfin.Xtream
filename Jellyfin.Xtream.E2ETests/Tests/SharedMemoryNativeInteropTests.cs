@@ -38,31 +38,28 @@ namespace Jellyfin.Xtream.E2ETests.Tests;
 /// </para>
 /// </remarks>
 [Collection("E2E-SharedMemory")]
-public sealed class SharedMemoryNativeInteropTests : IDisposable
+public sealed class SharedMemoryNativeInteropTests(DockerTestFixture fixture, ITestOutputHelper output)
+    : NativeE2ETestBase(output)
 {
     private const int TsPacketSize = 188;
     private const uint DefaultSlotCount = 1024;
     private const uint DefaultPacketsPerSlot = 7;
     private const uint DefaultSlotSize = DefaultPacketsPerSlot * TsPacketSize; // 1316 bytes
 
-    private readonly ITestOutputHelper _output;
-    private readonly List<IDisposable> _disposables = new();
+    private readonly List<IDisposable> _disposables = [];
 
-    public SharedMemoryNativeInteropTests(DockerTestFixture fixture, ITestOutputHelper output)
+    protected override void Dispose(bool disposing)
     {
-        _ = fixture; // Required by collection but not used directly
-        _output = output;
-    }
-
-    public void Dispose()
-    {
-        foreach (var disposable in _disposables)
+        if (disposing)
         {
-            disposable.Dispose();
+            foreach (var disposable in _disposables)
+            {
+                disposable.Dispose();
+            }
+            _disposables.Clear();
         }
 
-        _disposables.Clear();
-        GC.SuppressFinalize(this);
+        base.Dispose(disposing);
     }
 
     private static string GenerateUniqueName() => $"native_interop_test_{Guid.NewGuid():N}";
@@ -106,13 +103,13 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         SkipIfNativeUnavailable(producer);
 
         var sourceData = CreateGenerator().GenerateChunk(100); // 100 TS packets = 18,800 bytes
-        _output.WriteLine($"Generated {sourceData.Length} bytes ({sourceData.Length / TsPacketSize} packets)");
+        Output.WriteLine($"Generated {sourceData.Length} bytes ({sourceData.Length / TsPacketSize} packets)");
 
         // Act - write via native producer
         int bytesWritten = producer!.Write(sourceData);
         producer.Signal();
 
-        _output.WriteLine($"Native producer wrote {bytesWritten} bytes");
+        Output.WriteLine($"Native producer wrote {bytesWritten} bytes");
 
         // Read via C# consumer
         using var consumer = new SharedMemoryConsumer(name);
@@ -121,7 +118,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         var readBuffer = new byte[sourceData.Length];
         int bytesRead = consumer.Read(readBuffer);
 
-        _output.WriteLine($"C# consumer read {bytesRead} bytes");
+        Output.WriteLine($"C# consumer read {bytesRead} bytes");
 
         // Assert
         Assert.Equal(sourceData.Length, bytesWritten);
@@ -139,7 +136,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
             Assert.Equal(0x47, syncByte);
         }
 
-        _output.WriteLine($"Verified {packetCount} packets with valid sync bytes");
+        Output.WriteLine($"Verified {packetCount} packets with valid sync bytes");
     }
 
     [SkippableFact]
@@ -171,7 +168,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
             int written = producer!.Write(chunk);
             producer.Signal();
 
-            _output.WriteLine($"Chunk {i + 1}: wrote {written} bytes");
+            Output.WriteLine($"Chunk {i + 1}: wrote {written} bytes");
 
             // Small delay to ensure data propagates
             Thread.Sleep(1);
@@ -179,14 +176,14 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
             int read = consumer.Read(readBuffer);
             allReadData.AddRange(readBuffer.Take(read));
 
-            _output.WriteLine($"Chunk {i + 1}: read {read} bytes");
+            Output.WriteLine($"Chunk {i + 1}: read {read} bytes");
         }
 
         // Assert
         var expectedData = allSourceData.SelectMany(c => c).ToArray();
         var actualData = allReadData.ToArray();
 
-        _output.WriteLine($"Total source: {expectedData.Length}, Total read: {actualData.Length}");
+        Output.WriteLine($"Total source: {expectedData.Length}, Total read: {actualData.Length}");
 
         // Verify we read all the written data
         Assert.True(
@@ -290,10 +287,10 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
 
         // Assert
         var actualBitrate = totalRead * 8.0 / sw.Elapsed.TotalSeconds;
-        _output.WriteLine($"Duration: {sw.Elapsed.TotalSeconds:F2}s");
-        _output.WriteLine($"Written: {totalWritten:N0} bytes, Read: {totalRead:N0} bytes");
-        _output.WriteLine($"Overflow events: {overflowCount}");
-        _output.WriteLine($"Actual bitrate: {actualBitrate / 1_000_000:F2} Mbps");
+        Output.WriteLine($"Duration: {sw.Elapsed.TotalSeconds:F2}s");
+        Output.WriteLine($"Written: {totalWritten:N0} bytes, Read: {totalRead:N0} bytes");
+        Output.WriteLine($"Overflow events: {overflowCount}");
+        Output.WriteLine($"Actual bitrate: {actualBitrate / 1_000_000:F2} Mbps");
 
         // Verify no data loss (excluding any overflow scenarios)
         if (overflowCount == 0)
@@ -357,10 +354,10 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         var writeThroughput = sourceData.Length / writeTime.TotalSeconds / (1024 * 1024);
         var readThroughput = totalRead / readTime.TotalSeconds / (1024 * 1024);
 
-        _output.WriteLine(
+        Output.WriteLine(
             $"Native Write: {sourceData.Length:N0} bytes in {writeTime.TotalMilliseconds:F2}ms = {writeThroughput:F0} MB/s"
         );
-        _output.WriteLine(
+        Output.WriteLine(
             $"Managed Read: {totalRead:N0} bytes in {readTime.TotalMilliseconds:F2}ms = {readThroughput:F0} MB/s"
         );
 
@@ -398,7 +395,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
 
         // Before setting discontinuity
         bool discontinuityBefore = consumer.ConsumeDiscontinuity();
-        _output.WriteLine($"Discontinuity before signal: {discontinuityBefore}");
+        Output.WriteLine($"Discontinuity before signal: {discontinuityBefore}");
 
         // Set discontinuity via native producer
         producer.SetDiscontinuity();
@@ -410,8 +407,8 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         // Check discontinuity
         bool discontinuityDetected = consumer.ConsumeDiscontinuity();
         bool discontinuityAfterConsume = consumer.ConsumeDiscontinuity();
-        _output.WriteLine($"Discontinuity detected: {discontinuityDetected}");
-        _output.WriteLine($"Discontinuity after consume: {discontinuityAfterConsume}");
+        Output.WriteLine($"Discontinuity detected: {discontinuityDetected}");
+        Output.WriteLine($"Discontinuity after consume: {discontinuityAfterConsume}");
 
         // Assert
         Assert.False(discontinuityBefore, "No discontinuity should exist before native producer signals it");
@@ -438,14 +435,14 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
 
         // Check before EOS
         bool eosBefore = consumer.IsEndOfStream;
-        _output.WriteLine($"EOS before signal: {eosBefore}");
+        Output.WriteLine($"EOS before signal: {eosBefore}");
 
         // Signal EOS via native producer
         producer.SetEndOfStream();
         Thread.Sleep(10);
 
         bool eosAfter = consumer.IsEndOfStream;
-        _output.WriteLine($"EOS after signal: {eosAfter}");
+        Output.WriteLine($"EOS after signal: {eosAfter}");
 
         // Assert
         Assert.False(eosBefore, "EOS should not be set before native producer signals it");
@@ -468,7 +465,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
 
         // Check before error
         bool errorBefore = consumer.HasError;
-        _output.WriteLine($"Error before signal: {errorBefore}");
+        Output.WriteLine($"Error before signal: {errorBefore}");
 
         // Set error via native producer (error_message field is no longer read;
         // consumer maps error_code to a fixed string to avoid torn reads)
@@ -479,9 +476,9 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         var actualErrorCode = consumer.ErrorCode;
         var actualErrorMessage = consumer.ErrorMessage;
 
-        _output.WriteLine($"Error after signal: {errorAfter}");
-        _output.WriteLine($"Error code: {actualErrorCode}");
-        _output.WriteLine($"Error message: {actualErrorMessage}");
+        Output.WriteLine($"Error after signal: {errorAfter}");
+        Output.WriteLine($"Error code: {actualErrorCode}");
+        Output.WriteLine($"Error message: {actualErrorMessage}");
 
         // Assert
         Assert.False(errorBefore, "Error should not be set before native producer signals it");
@@ -528,54 +525,54 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         }
 
         // Verify expected offsets
-        _output.WriteLine("Verifying C++ -> C# header layout compatibility:");
+        Output.WriteLine("Verifying C++ -> C# header layout compatibility:");
 
         // Magic at 0x00 (8 bytes): "TSTREAM\0" = 0x5453545245414D00
         ulong magic = BitConverter.ToUInt64(rawHeader, 0x00);
-        _output.WriteLine($"  Magic (0x00): 0x{magic:X16}");
+        Output.WriteLine($"  Magic (0x00): 0x{magic:X16}");
         Assert.Equal(0x5453545245414D00UL, magic);
 
         // Version at 0x08 (4 bytes)
         uint version = BitConverter.ToUInt32(rawHeader, 0x08);
-        _output.WriteLine($"  Version (0x08): {version}");
+        Output.WriteLine($"  Version (0x08): {version}");
         Assert.Equal(1u, version);
 
         // Header size at 0x0C (4 bytes)
         uint headerSize = BitConverter.ToUInt32(rawHeader, 0x0C);
-        _output.WriteLine($"  HeaderSize (0x0C): {headerSize}");
+        Output.WriteLine($"  HeaderSize (0x0C): {headerSize}");
         Assert.Equal(256u, headerSize);
 
         // Buffer capacity at 0x10 (8 bytes)
         ulong bufferCapacity = BitConverter.ToUInt64(rawHeader, 0x10);
-        _output.WriteLine($"  BufferCapacity (0x10): {bufferCapacity}");
+        Output.WriteLine($"  BufferCapacity (0x10): {bufferCapacity}");
         Assert.Equal(DefaultSlotCount * DefaultSlotSize, bufferCapacity);
 
         // Slot count at 0x18 (8 bytes)
         ulong slotCount = BitConverter.ToUInt64(rawHeader, 0x18);
-        _output.WriteLine($"  SlotCount (0x18): {slotCount}");
+        Output.WriteLine($"  SlotCount (0x18): {slotCount}");
         Assert.Equal(DefaultSlotCount, slotCount);
 
         // Slot size at 0x20 (4 bytes)
         uint slotSize = BitConverter.ToUInt32(rawHeader, 0x20);
-        _output.WriteLine($"  SlotSize (0x20): {slotSize}");
+        Output.WriteLine($"  SlotSize (0x20): {slotSize}");
         Assert.Equal(DefaultSlotSize, slotSize);
 
         // TS packet size at 0x24 (4 bytes)
         uint tsPacketSize = BitConverter.ToUInt32(rawHeader, 0x24);
-        _output.WriteLine($"  TsPacketSize (0x24): {tsPacketSize}");
+        Output.WriteLine($"  TsPacketSize (0x24): {tsPacketSize}");
         Assert.Equal(188u, tsPacketSize);
 
         // Write position at 0x48 (8 bytes) - should be > 0 after writing
         ulong writePos = BitConverter.ToUInt64(rawHeader, 0x48);
-        _output.WriteLine($"  WritePosition (0x48): {writePos}");
+        Output.WriteLine($"  WritePosition (0x48): {writePos}");
         Assert.True(writePos > 0, "Write position should be > 0 after writing data");
 
         // Flags at 0xC0 (4 bytes) - ProducerReady should be set
         uint flags = BitConverter.ToUInt32(rawHeader, 0xC0);
-        _output.WriteLine($"  Flags (0xC0): 0x{flags:X8}");
+        Output.WriteLine($"  Flags (0xC0): 0x{flags:X8}");
         Assert.True((flags & 0x00000001) != 0, "ProducerReady flag (0x01) should be set by native producer");
 
-        _output.WriteLine("All header offsets match between native C++ and managed C#");
+        Output.WriteLine("All header offsets match between native C++ and managed C#");
     }
 
     [SkippableFact]
@@ -617,16 +614,16 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
 
         // Read position at 0x88
         ulong readPos = BitConverter.ToUInt64(rawHeader, 0x88);
-        _output.WriteLine($"Read position after consumer read: {readPos}");
-        _output.WriteLine($"Bytes read: {bytesRead}");
+        Output.WriteLine($"Read position after consumer read: {readPos}");
+        Output.WriteLine($"Bytes read: {bytesRead}");
 
         // Consumer state at 0x90
         ulong consumerState = BitConverter.ToUInt64(rawHeader, 0x90);
-        _output.WriteLine($"Consumer state: {consumerState} ({(ConsumerState)consumerState})");
+        Output.WriteLine($"Consumer state: {consumerState} ({(ConsumerState)consumerState})");
 
         // Flags at 0xC0 - ConsumerReady (0x02) should be set
         uint flags = BitConverter.ToUInt32(rawHeader, 0xC0);
-        _output.WriteLine($"Flags: 0x{flags:X8}");
+        Output.WriteLine($"Flags: 0x{flags:X8}");
 
         // Assert
         Assert.True(readPos > 0, "Read position should be > 0 after reading");
@@ -649,8 +646,8 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         int bufferCapacity = (int)(smallSlotCount * DefaultSlotSize);
         int packetsToWrite = (bufferCapacity / TsPacketSize) * 3; // 3x buffer capacity
 
-        _output.WriteLine($"Buffer capacity: {bufferCapacity} bytes ({smallSlotCount} slots)");
-        _output.WriteLine($"Writing {packetsToWrite} packets ({packetsToWrite * TsPacketSize} bytes)");
+        Output.WriteLine($"Buffer capacity: {bufferCapacity} bytes ({smallSlotCount} slots)");
+        Output.WriteLine($"Writing {packetsToWrite} packets ({packetsToWrite * TsPacketSize} bytes)");
 
         using var consumer = new SharedMemoryConsumer(name);
         _disposables.Add(consumer);
@@ -716,10 +713,10 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Total written: {totalWritten:N0} bytes in {batchesWritten} batches");
-        _output.WriteLine($"Total read: {totalRead:N0} bytes");
-        _output.WriteLine($"Overflow events: {overflowCount}");
-        _output.WriteLine($"Data loss: {totalWritten - totalRead:N0} bytes");
+        Output.WriteLine($"Total written: {totalWritten:N0} bytes in {batchesWritten} batches");
+        Output.WriteLine($"Total read: {totalRead:N0} bytes");
+        Output.WriteLine($"Overflow events: {overflowCount}");
+        Output.WriteLine($"Data loss: {totalWritten - totalRead:N0} bytes");
 
         // The key assertion is that we can write more than the buffer capacity and still read data
         // Overflow behavior depends on timing - may or may not occur
@@ -730,12 +727,12 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         if (overflowCount > 0)
         {
             Assert.True(totalRead <= totalWritten, "With overflow, read should not exceed written");
-            _output.WriteLine("Overflow detected as expected for slow consumer scenario");
+            Output.WriteLine("Overflow detected as expected for slow consumer scenario");
         }
         else
         {
             // Consumer was fast enough - all data should be read
-            _output.WriteLine("No overflow - consumer kept up with producer");
+            Output.WriteLine("No overflow - consumer kept up with producer");
         }
     }
 
@@ -754,8 +751,8 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         int bufferCapacity = (int)(smallSlotCount * DefaultSlotSize);
         int packetsToWrite = (bufferCapacity / TsPacketSize) * 5; // 5x buffer capacity
 
-        _output.WriteLine($"Buffer capacity: {bufferCapacity} bytes");
-        _output.WriteLine($"Writing {packetsToWrite} packets");
+        Output.WriteLine($"Buffer capacity: {bufferCapacity} bytes");
+        Output.WriteLine($"Writing {packetsToWrite} packets");
 
         var generator = CreateGenerator();
         var allWrittenData = new List<byte>();
@@ -813,9 +810,9 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         }
 
         // Assert
-        _output.WriteLine($"Total written: {allWrittenData.Count:N0} bytes");
-        _output.WriteLine($"Total read: {allReadData.Count:N0} bytes");
-        _output.WriteLine($"Any overflow: {anyOverflow}");
+        Output.WriteLine($"Total written: {allWrittenData.Count:N0} bytes");
+        Output.WriteLine($"Total read: {allReadData.Count:N0} bytes");
+        Output.WriteLine($"Any overflow: {anyOverflow}");
 
         // Key assertion: we should read a significant portion of data
         Assert.True(allReadData.Count > 0, "Should have read some data");
@@ -827,7 +824,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
                 allReadData.Count >= allWrittenData.Count * 0.95, // Allow 5% tolerance for timing
                 $"Without overflow, should read most data. Written: {allWrittenData.Count}, Read: {allReadData.Count}"
             );
-            _output.WriteLine("Fast consumer prevented overflow - good!");
+            Output.WriteLine("Fast consumer prevented overflow - good!");
         }
         else
         {
@@ -836,7 +833,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
                 allReadData.Count >= allWrittenData.Count * 0.5, // At least 50% of data
                 $"Even with overflow, should read substantial data. Written: {allWrittenData.Count}, Read: {allReadData.Count}"
             );
-            _output.WriteLine("Overflow occurred despite fast reading - acceptable in high-throughput scenarios");
+            Output.WriteLine("Overflow occurred despite fast reading - acceptable in high-throughput scenarios");
         }
 
         // Verify sync bytes are present somewhere in the data (data integrity)
@@ -844,7 +841,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         int syncByteCount = allReadData.Count(b => b == 0x47);
         int minExpectedSyncBytes = allReadData.Count / TsPacketSize / 2; // At least half the packets
 
-        _output.WriteLine($"Sync byte count: {syncByteCount}, minimum expected: {minExpectedSyncBytes}");
+        Output.WriteLine($"Sync byte count: {syncByteCount}, minimum expected: {minExpectedSyncBytes}");
 
         Assert.True(
             syncByteCount >= minExpectedSyncBytes,
@@ -866,20 +863,20 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
 
         // Act & Assert
         bool attachedBefore = producer!.IsConsumerAttached;
-        _output.WriteLine($"Consumer attached before: {attachedBefore}");
+        Output.WriteLine($"Consumer attached before: {attachedBefore}");
         Assert.False(attachedBefore, "No consumer should be attached initially");
 
         using (var consumer1 = new SharedMemoryConsumer(name))
         {
             Thread.Sleep(10); // Allow flag to propagate
             bool attachedDuring = producer.IsConsumerAttached;
-            _output.WriteLine($"Consumer attached during: {attachedDuring}");
+            Output.WriteLine($"Consumer attached during: {attachedDuring}");
             Assert.True(attachedDuring, "Producer should detect attached consumer");
         }
 
         Thread.Sleep(10); // Allow flag to propagate
         bool attachedAfter = producer.IsConsumerAttached;
-        _output.WriteLine($"Consumer attached after dispose: {attachedAfter}");
+        Output.WriteLine($"Consumer attached after dispose: {attachedAfter}");
         Assert.False(attachedAfter, "Producer should detect consumer detachment");
     }
 
@@ -927,9 +924,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
             var actualCode = consumer.ErrorCode;
             var actualMessage = consumer.ErrorMessage;
 
-            _output.WriteLine(
-                $"Code {(uint)code} ({code}): expected=\"{expectedMessage}\", actual=\"{actualMessage}\""
-            );
+            Output.WriteLine($"Code {(uint)code} ({code}): expected=\"{expectedMessage}\", actual=\"{actualMessage}\"");
 
             Assert.Equal(code, actualCode);
             Assert.True(
@@ -938,7 +933,7 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
             );
         }
 
-        _output.WriteLine("All 10 error codes mapped correctly via native producer");
+        Output.WriteLine("All 10 error codes mapped correctly via native producer");
     }
 
     /// <summary>
@@ -1029,20 +1024,20 @@ public sealed class SharedMemoryNativeInteropTests : IDisposable
         int producerIterations = await producerTask;
 
         // Assert
-        _output.WriteLine($"Producer iterations: {producerIterations}");
-        _output.WriteLine($"Consumer messages read: {messagesRead}");
-        _output.WriteLine($"Invalid messages: {invalidMessages}");
+        Output.WriteLine($"Producer iterations: {producerIterations}");
+        Output.WriteLine($"Consumer messages read: {messagesRead}");
+        Output.WriteLine($"Invalid messages: {invalidMessages}");
 
         if (firstInvalidMessage is not null)
         {
-            _output.WriteLine($"First invalid message: \"{firstInvalidMessage}\"");
+            Output.WriteLine($"First invalid message: \"{firstInvalidMessage}\"");
         }
 
         Assert.True(messagesRead > 0, "Consumer should have read at least one message");
         Assert.True(producerIterations > 0, "Producer should have written at least one error code");
         Assert.Equal(0, invalidMessages);
 
-        _output.WriteLine("No torn reads detected during concurrent native error code changes");
+        Output.WriteLine("No torn reads detected during concurrent native error code changes");
     }
 
     // =========================================================================
