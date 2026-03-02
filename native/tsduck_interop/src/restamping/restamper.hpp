@@ -663,6 +663,16 @@ private:
 
         eptla_update(last_pcr, original_pcr, wall_ns);
 
+        // During EPTLA startup (parabolic convergence), pass through original PCR
+        // without smoothing to prevent PCR-PTS divergence during FFmpeg's analysis
+        // window. The skew ratio hasn't converged yet, so smoothing would introduce
+        // error rather than reduce jitter.
+        if (eptla_filling_) {
+            last_smoothed_pcr_.store(original_pcr, std::memory_order_release);
+            pcr_smoothing_delta_90khz_.store(0, std::memory_order_release);
+            return original_pcr;
+        }
+
         if (wall_delta_ns <= 0) {
             last_smoothed_pcr_.store(original_pcr, std::memory_order_release);
             return original_pcr;

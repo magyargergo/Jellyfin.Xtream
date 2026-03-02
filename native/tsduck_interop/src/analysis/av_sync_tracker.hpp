@@ -447,7 +447,7 @@ private:
 
         double elapsed_sec = static_cast<double>(now_ns - start_time_ns) / 1e9;
         record_drift_sample(current_drift_ms, elapsed_sec);
-        update_analysis_from_drift(current_drift_ms, avg_drift_ms, drift_rate, elapsed_sec);
+        update_analysis_from_drift(current_drift_ms, avg_drift_ms, drift_rate, elapsed_sec, /*from_matched=*/true);
     }
 
     void update_drift_simple(int64_t now_ns) noexcept {
@@ -467,7 +467,7 @@ private:
 
         double elapsed_sec = static_cast<double>(now_ns - start_time_ns) / 1e9;
         record_drift_sample(drift_ms, elapsed_sec);
-        update_analysis_from_drift(drift_ms, drift_ms, 0.0, elapsed_sec);
+        update_analysis_from_drift(drift_ms, drift_ms, 0.0, elapsed_sec, /*from_matched=*/false);
     }
 
     void record_drift_sample(double drift_ms, double elapsed_sec) noexcept {
@@ -495,7 +495,7 @@ private:
     }
 
     void update_analysis_from_drift(double current_drift_ms, double avg_drift_ms, double drift_rate,
-                                 double elapsed_sec) noexcept {
+                                 double elapsed_sec, bool from_matched = true) noexcept {
         (void)elapsed_sec;  // Not currently used
 
         auto seq = analysis_seqlock.begin_write();
@@ -504,8 +504,11 @@ private:
         analysis.avg_drift_ms = avg_drift_ms;
         analysis.drift_rate_ms_per_sec = drift_rate;
 
+        // Only update peak from matched-pair measurements. The simple fallback
+        // (update_drift_simple) measures PTS emission phase, not real A/V drift,
+        // and produces transient peaks (e.g. -197ms) that are misleading.
         double abs_drift = std::abs(current_drift_ms);
-        if (abs_drift > std::abs(analysis.peak_drift_ms)) {
+        if (from_matched && abs_drift > std::abs(analysis.peak_drift_ms)) {
             analysis.peak_drift_ms = current_drift_ms;
         }
 

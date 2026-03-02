@@ -116,8 +116,9 @@ inline constexpr double DRIFT_THRESHOLD_MS = 45.0;
 /// Severe desync threshold
 inline constexpr double DESYNC_THRESHOLD_MS = 100.0;
 
-/// Drift outlier rejection threshold
-inline constexpr double DRIFT_OUTLIER_THRESHOLD_MS = 200.0;
+/// Drift outlier rejection threshold (150ms rejects startup transients from
+/// update_drift_simple() that previously reached ~197ms)
+inline constexpr double DRIFT_OUTLIER_THRESHOLD_MS = 150.0;
 
 // ============================================================================
 // Buffer Sizes (must be power of 2 for ring buffers)
@@ -174,11 +175,12 @@ inline constexpr double INTEGRAL_WARMUP_SEC = 30.0;
 inline constexpr double MIN_CORRECTION_INTERVAL_SEC = 0.1;
 
 /// Warmup period before drift correction activates (seconds).
-/// During startup, the A/V sync analyzer uses the inaccurate update_drift_simple()
-/// fallback until enough matched pairs accumulate. This produces transient drift
-/// peaks that would trigger false corrections. Skip correction during warmup to
-/// allow the analyzer to stabilize and the PCR bitrate estimate to converge.
-inline constexpr double CORRECTION_WARMUP_SEC = 3.0;
+/// Must exceed FFmpeg's analyzeduration (3s) so that FFmpeg captures stable,
+/// unmodified timestamps before we start applying corrections. During startup,
+/// the A/V sync analyzer uses the inaccurate update_drift_simple() fallback
+/// until enough matched pairs accumulate. Skip correction during warmup to
+/// allow the analyzer to stabilize and EPTLA to converge.
+inline constexpr double CORRECTION_WARMUP_SEC = 5.0;
 
 /// PCR smoothing EMA factor (used in EPTLA fallback path)
 inline constexpr double PCR_SMOOTHING_FACTOR = 0.95;
