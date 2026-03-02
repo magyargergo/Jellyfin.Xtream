@@ -117,7 +117,7 @@ internal sealed class RestreamHealthMonitor
             minReaderGapBytes,
             consumerCount
         );
-        LogProgress(streamId, buffer, consumerCount, bufferFillPct, minReaderGapBytes);
+        LogProgress(streamId, nativeStreamer, buffer, consumerCount, bufferFillPct, minReaderGapBytes);
     }
 
     /// <summary>
@@ -193,19 +193,40 @@ internal sealed class RestreamHealthMonitor
     /// </summary>
     private void LogProgress(
         string streamId,
+        NativeStreamer? nativeStreamer,
         CircularBufferWriteStream buffer,
         int consumerCount,
         double bufferFillPct,
         long minReaderGapBytes
     )
     {
-        _logger.PluginLogInformation(
-            "Broadcast progress for channel {ChannelId}: {TotalMB} MB written, {Consumers} consumers, reader gap {GapKB}KB ({FillPct:F1}%)",
-            streamId,
-            buffer.TotalBytesWritten / 1048576,
-            consumerCount,
-            minReaderGapBytes / 1024,
-            bufferFillPct
-        );
+        var avSync = nativeStreamer?.GetAvSyncAnalysis();
+        if (avSync != null)
+        {
+            var sync = avSync.Value;
+            _logger.PluginLogInformation(
+                "Broadcast progress for channel {ChannelId}: {TotalMB} MB written, {Consumers} consumers, reader gap {GapKB}KB ({FillPct:F1}%), A/V drift={DriftMs:F1}ms avg={AvgDriftMs:F1}ms peak={PeakDriftMs:F1}ms status={SyncStatus}",
+                streamId,
+                buffer.TotalBytesWritten / 1048576,
+                consumerCount,
+                minReaderGapBytes / 1024,
+                bufferFillPct,
+                sync.VideoAudioDriftMs,
+                sync.AvgDriftMs,
+                sync.PeakDriftMs,
+                sync.Status
+            );
+        }
+        else
+        {
+            _logger.PluginLogInformation(
+                "Broadcast progress for channel {ChannelId}: {TotalMB} MB written, {Consumers} consumers, reader gap {GapKB}KB ({FillPct:F1}%)",
+                streamId,
+                buffer.TotalBytesWritten / 1048576,
+                consumerCount,
+                minReaderGapBytes / 1024,
+                bufferFillPct
+            );
+        }
     }
 }

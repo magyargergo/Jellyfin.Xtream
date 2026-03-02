@@ -4,6 +4,7 @@
 #ifndef TSDUCK_INTEROP_RESTAMPING_RESTAMPER_HPP
 #define TSDUCK_INTEROP_RESTAMPING_RESTAMPER_HPP
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -191,6 +192,10 @@ public:
         last_smoothed_pcr_.store(INVALID_PCR, std::memory_order_release);
         last_original_pcr_.store(INVALID_PCR, std::memory_order_release);
         pcr_smoothing_delta_90khz_.store(0, std::memory_order_release);
+        // Reset PI controller state to prevent stale accumulated error from previous
+        // provider from influencing correction on the new source.
+        drift_integral_ms_.store(0.0, std::memory_order_release);
+        correction_activation_time_ns_.store(0, std::memory_order_release);
 
         LOG_INFO("Restamper", "Provider switch: offset=%lld (90kHz), discontinuity pending",
                 static_cast<long long>(new_offset));
@@ -719,6 +724,11 @@ private:
 
     // Warmup period tracking — skip correction during initial analyzer convergence
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> stream_start_time_ns_{0};
+
+    // PI controller integral term — accumulates drift×time to eliminate steady-state offset
+    alignas(CACHE_LINE_SIZE) std::atomic<double> drift_integral_ms_{0.0};
+    // Time when correction first activated — gates integral warmup
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> correction_activation_time_ns_{0};
 
     // Target stream selection for A/V drift correction
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> target_video_pid_{-1};

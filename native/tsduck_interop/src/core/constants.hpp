@@ -154,9 +154,21 @@ inline constexpr double DEFAULT_HYSTERESIS_THRESHOLD_MS = 5.0;    // Was 10.0; p
 /// Default gap between streams on switch: 100ms in 90kHz ticks
 inline constexpr std::int64_t DEFAULT_SWITCH_GAP_90KHZ = 9000;
 
-/// Correction ramp factor: 8% of drift per second (lowered from 15% to prevent
+/// Correction ramp factor (P term): 8% of drift per second (lowered from 15% to prevent
 /// oscillation in the feedback loop — analyzer measures corrected timestamps)
 inline constexpr double CORRECTION_RAMP_FACTOR = 0.08;
+
+/// Integral gain (I term): eliminates steady-state frequency offset between audio/video
+/// clocks that the P-only controller cannot reduce to zero. Ki=0.002 gives an integral
+/// time constant of ~500s — slow enough to prevent oscillation, fast enough to eliminate
+/// constant offsets over minutes. Anti-windup provided by MAX_ACCUMULATED_CORRECTION_MS.
+inline constexpr double CORRECTION_KI = 0.002;
+
+/// Integral warmup: seconds of active correction before I-term starts accumulating.
+/// The I-term helps long-running streams but can overcorrect in short windows because
+/// the analyzer measures corrected timestamps (feedback loop). Wait until the P-term
+/// has stabilized the drift before enabling the integral.
+inline constexpr double INTEGRAL_WARMUP_SEC = 30.0;
 
 /// Minimum correction interval in seconds
 inline constexpr double MIN_CORRECTION_INTERVAL_SEC = 0.1;
