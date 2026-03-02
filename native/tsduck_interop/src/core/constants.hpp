@@ -59,6 +59,7 @@ inline constexpr std::size_t MAX_PIDS = static_cast<std::size_t>(ts::PID_NULL) +
 
 /// TS packet size in bytes
 inline constexpr std::size_t TS_PACKET_SIZE = static_cast<std::size_t>(ts::PKT_SIZE);
+static_assert(sizeof(ts::TSPacket) == 188, "TSPacket must be exactly 188 bytes");
 
 /// TS packet size in bits
 inline constexpr std::size_t TS_PACKET_SIZE_BITS = static_cast<std::size_t>(ts::PKT_SIZE_BITS);
@@ -146,21 +147,29 @@ inline constexpr std::int64_t PTS_MATCH_TOLERANCE_90KHZ = 4500;
 // Restamping Constants
 // ============================================================================
 
-inline constexpr double DEFAULT_CORRECTION_THRESHOLD_MS = 25.0;
+inline constexpr double DEFAULT_CORRECTION_THRESHOLD_MS = 15.0;   // Was 25.0; lowered to catch drifts before EBU R37 20ms
 inline constexpr double DEFAULT_MAX_CORRECTION_RATE_MS = 20.0;
-inline constexpr double DEFAULT_HYSTERESIS_THRESHOLD_MS = 10.0;
+inline constexpr double DEFAULT_HYSTERESIS_THRESHOLD_MS = 5.0;    // Was 10.0; prevents oscillation at lower threshold
 
 /// Default gap between streams on switch: 100ms in 90kHz ticks
 inline constexpr std::int64_t DEFAULT_SWITCH_GAP_90KHZ = 9000;
 
-/// Correction ramp factor: 15% of drift per second
-inline constexpr double CORRECTION_RAMP_FACTOR = 0.15;
+/// Correction ramp factor: 8% of drift per second (lowered from 15% to prevent
+/// oscillation in the feedback loop — analyzer measures corrected timestamps)
+inline constexpr double CORRECTION_RAMP_FACTOR = 0.08;
 
 /// Minimum correction interval in seconds
 inline constexpr double MIN_CORRECTION_INTERVAL_SEC = 0.1;
 
+/// Warmup period before drift correction activates (seconds).
+/// During startup, the A/V sync analyzer uses the inaccurate update_drift_simple()
+/// fallback until enough matched pairs accumulate. This produces transient drift
+/// peaks that would trigger false corrections. Skip correction during warmup to
+/// allow the analyzer to stabilize and the PCR bitrate estimate to converge.
+inline constexpr double CORRECTION_WARMUP_SEC = 3.0;
+
 /// PCR smoothing EMA factor
-inline constexpr double PCR_SMOOTHING_FACTOR = 0.85;
+inline constexpr double PCR_SMOOTHING_FACTOR = 0.95;  // Was 0.85; gentler smoothing reduces PCR-PTS divergence
 
 // ============================================================================
 // TR 101 290 Timing Limits (ETSI TR 101 290 V1.3.1)

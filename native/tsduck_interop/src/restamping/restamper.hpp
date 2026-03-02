@@ -58,6 +58,12 @@ public:
             config = make_default_config();
         }
 
+        // Prime bitrate estimate so PCR smoothing starts with a reasonable
+        // expected_delta instead of waiting for 100+ packets to converge.
+        if (config.stream_bitrate_hint > 0) {
+            estimated_bitrate_.store(config.stream_bitrate_hint, std::memory_order_release);
+        }
+
         last_correction_time_ns_.store(now_ns(), std::memory_order_release);
     }
 
@@ -79,6 +85,12 @@ public:
         }
 
         std::int64_t current_time = now_ns();
+
+        // Record stream start time on first call for warmup period.
+        std::int64_t expected_zero = 0;
+        stream_start_time_ns_.compare_exchange_strong(
+            expected_zero, current_time, std::memory_order_release, std::memory_order_relaxed);
+
         std::int64_t last_time = last_correction_time_ns_.load(std::memory_order_relaxed);
         double elapsed_sec = static_cast<double>(current_time - last_time) / 1e9;
 
@@ -91,7 +103,10 @@ public:
         // Drift correction is stream-selective:
         // - Positive drift (audio timestamp later than video) => delay video only.
         // - Negative drift (audio timestamp earlier than video) => delay audio only.
-        // Switch offset applies to all streams for continuity across provider changes.
+        // Note: PCR smoothing delta is NOT applied to PTS/DTS. It cancels
+        // mathematically in drift (audio-video) and PCR-PTS divergence
+        // calculations, but its convergence transient during bitrate estimate
+        // warmup triggers false correction activations that create real drift.
         std::int64_t video_total_offset_90khz = switch_off_90khz;
         std::int64_t audio_total_offset_90khz = switch_off_90khz;
         if (accumulated_offset_90khz > 0) {
@@ -122,9 +137,9 @@ public:
             // Process PCR with switch offset only. Drift correction is for A/V stream timestamps.
             modifications += process_pcr(pkt, packet_idx, switch_off_90khz);
 
-            // Process PTS/DTS
-            if (config.mode == RESTAMP_MODE_CORRECT &&
-                (switch_off_90khz != 0 || accumulated_offset_90khz != 0)) {
+            // Process PTS/DTS — apply whenever in CORRECT mode.
+            // process_pts_dts() short-circuits via selected_offset_90khz == 0.
+            if (config.mode == RESTAMP_MODE_CORRECT) {
                 modifications += process_pts_dts(
                     pkt,
                     video_pid,
@@ -172,6 +187,7 @@ public:
         // Reset smoothing state for fresh start from new source
         last_smoothed_pcr_.store(INVALID_PCR, std::memory_order_release);
         last_original_pcr_.store(INVALID_PCR, std::memory_order_release);
+        pcr_smoothing_delta_90khz_.store(0, std::memory_order_release);
 
         LOG_INFO("Restamper", "Provider switch: offset=%lld (90kHz), discontinuity pending",
                 static_cast<long long>(new_offset));
@@ -251,12 +267,14 @@ public:
         last_smoothed_pcr_.store(INVALID_PCR, std::memory_order_release);
         last_pcr_packet_idx_.store(0, std::memory_order_release);
         last_original_pcr_.store(INVALID_PCR, std::memory_order_release);
+        pcr_smoothing_delta_90khz_.store(0, std::memory_order_release);
         pending_discontinuity_.store(false, std::memory_order_release);
         discontinuity_pcr_pid_.store(-1, std::memory_order_release);
         target_video_pid_.store(-1, std::memory_order_release);
         target_audio_pid_.store(-1, std::memory_order_release);
 
         last_correction_time_ns_.store(now_ns(), std::memory_order_release);
+        stream_start_time_ns_.store(0, std::memory_order_release);
     }
 
 private:
@@ -315,19 +333,38 @@ private:
             return 0.0;
         }
 
+        // During warmup, the analyzer uses update_drift_simple() which produces
+        // transient peaks from PTS emission timing artifacts. Skip correction
+        // until the matched-pair algorithm has enough data to be accurate.
+        std::int64_t start = stream_start_time_ns_.load(std::memory_order_relaxed);
+        if (start > 0) {
+            double stream_age_sec = static_cast<double>(now_ns() - start) / 1e9;
+            if (stream_age_sec < CORRECTION_WARMUP_SEC) {
+                return 0.0;
+            }
+        }
+
         AvSyncAnalysisNative sync_analysis;
         if (!av_sync->get_analysis(&sync_analysis)) {
             return 0.0;
         }
 
-        double drift_ms = sync_analysis.video_audio_drift_ms;
+        // Use average drift (over the sample window) instead of instantaneous drift.
+        // The instantaneous video_audio_drift_ms has periodic -50ms transient peaks
+        // from PTS emission timing gaps (audio/video PES written at different intervals).
+        // These peaks are NOT real A/V sync issues — Monitor mode shows ~3ms average.
+        // Using avg_drift_ms filters out transients and only responds to sustained drift.
+        double drift_ms = sync_analysis.avg_drift_ms;
         double abs_drift = std::abs(drift_ms);
 
         // Hysteresis logic
         if (correction_active_.load(std::memory_order_relaxed)) {
             if (abs_drift < config.hysteresis_threshold_ms) {
                 correction_active_.store(false, std::memory_order_release);
-                accumulated_correction_ms_.store(0.0, std::memory_order_release);
+                // Do NOT reset accumulated_correction_ms_ here.
+                // The accumulated value reflects PTS/DTS offsets already applied to packets.
+                // Resetting to zero causes the next activation to re-apply from scratch,
+                // creating oscillation as the analyzer measures corrected timestamps.
                 return 0.0;
             }
         } else {
@@ -549,6 +586,20 @@ private:
                                     static_cast<std::uint64_t>(PCR_WRAPAROUND);
         last_smoothed_pcr_.store(smoothed_pcr, std::memory_order_release);
 
+        // Track smoothing delta so PTS/DTS can be adjusted symmetrically.
+        // This keeps decoder clock (PCR-driven) coherent with presentation timestamps.
+        std::int64_t smoothing_delta = (static_cast<std::int64_t>(smoothed_pcr) -
+                                        static_cast<std::int64_t>(adjusted_pcr));
+        // Handle wraparound in the delta
+        if (smoothing_delta > half_scale) {
+            smoothing_delta -= PCR_WRAPAROUND;
+        } else if (smoothing_delta < -half_scale) {
+            smoothing_delta += PCR_WRAPAROUND;
+        }
+        // Convert from 27MHz PCR ticks to 90kHz PTS/DTS ticks
+        pcr_smoothing_delta_90khz_.store(smoothing_delta / PCR_TO_90KHZ,
+                                         std::memory_order_release);
+
         // Update bitrate estimate from PCR deltas
         if (packet_delta > 100) {
             update_bitrate_estimate(adjusted_pcr, last_pcr, bits_transmitted);
@@ -643,10 +694,14 @@ private:
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> last_pcr_packet_idx_{0};
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> estimated_bitrate_{0};
     alignas(CACHE_LINE_SIZE) std::atomic<std::uint64_t> last_original_pcr_{INVALID_PCR};
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> pcr_smoothing_delta_90khz_{0};
 
     // Discontinuity indicator management
     alignas(CACHE_LINE_SIZE) std::atomic<bool> pending_discontinuity_{false};
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> discontinuity_pcr_pid_{-1};
+
+    // Warmup period tracking — skip correction during initial analyzer convergence
+    alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> stream_start_time_ns_{0};
 
     // Target stream selection for A/V drift correction
     alignas(CACHE_LINE_SIZE) std::atomic<std::int64_t> target_video_pid_{-1};

@@ -523,6 +523,8 @@ public:
     }
 
     /// Handle provider switch for timestamp continuity.
+    /// Resets PCR analyzer state so post-reconnection interval measurements
+    /// start fresh instead of spanning the wall-clock gap during disconnect.
     /// @param last_output_pts Last PTS value output before switch (90kHz)
     /// @param new_input_first_pts First PTS from new provider (90kHz)
     void handle_switch(std::int64_t last_output_pts,
@@ -530,6 +532,11 @@ public:
         if (restamper) {
             restamper->handle_switch(last_output_pts, new_input_first_pts);
         }
+
+        // Reset PCR analyzer state: prevents interval measurements from
+        // spanning the reconnection gap (which would produce >100ms intervals
+        // that trigger TR 101 290 violations).
+        pcr.reset();
     }
 
     /// Get restamping statistics.
