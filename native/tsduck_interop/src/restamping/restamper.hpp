@@ -96,6 +96,13 @@ public:
             static_cast<std::int64_t>(std::llround(accumulated_ms * 90.0));
         std::int64_t switch_off_90khz = switch_offset_90khz_.load(std::memory_order_relaxed);
 
+        // PCR smoothing delta: when EPTLA smooths PCR, PTS/DTS must shift by
+        // the same amount to maintain PCR-PTS coherence. Without this, the
+        // decoder clock (PCR-based) diverges from presentation timestamps,
+        // causing A/V desync in FFmpeg's transcoding pipeline.
+        // DTS-derived PCR sets delta=0 (coherent by construction).
+        std::int64_t smoothing_delta = pcr_smoothing_delta_90khz_.load(std::memory_order_acquire);
+
         // Drift correction is stream-selective:
         // - Positive drift (audio timestamp later than video) => delay video only.
         // - Negative drift (audio timestamp earlier than video) => delay audio only.
@@ -103,8 +110,8 @@ public:
         // avg_drift_ms reflects the source's real A/V drift. The controller
         // computes the residual (source_drift - accumulated_correction) to
         // determine the remaining error that downstream consumers see.
-        std::int64_t video_total_offset_90khz = switch_off_90khz;
-        std::int64_t audio_total_offset_90khz = switch_off_90khz;
+        std::int64_t video_total_offset_90khz = switch_off_90khz + smoothing_delta;
+        std::int64_t audio_total_offset_90khz = switch_off_90khz + smoothing_delta;
         if (accumulated_offset_90khz > 0) {
             video_total_offset_90khz += accumulated_offset_90khz;
         } else if (accumulated_offset_90khz < 0) {
@@ -147,7 +154,7 @@ public:
                     pkt,
                     video_pid,
                     audio_pid,
-                    switch_off_90khz,
+                    switch_off_90khz + smoothing_delta,
                     video_total_offset_90khz,
                     audio_total_offset_90khz,
                     local_pts_corrected,
