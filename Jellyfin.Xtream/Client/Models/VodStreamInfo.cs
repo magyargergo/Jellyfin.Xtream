@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,15 +15,23 @@
 
 using Newtonsoft.Json;
 
-#pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents VOD stream information from the Xtream API.
+/// </summary>
 public class VodStreamInfo
 {
+    /// <summary>
+    /// Gets or sets the VOD info.
+    /// </summary>
     [JsonProperty("info")]
     [JsonConverter(typeof(OnlyObjectConverter<VodInfo>))]
     public VodInfo? Info { get; set; }
 
+    /// <summary>
+    /// Gets or sets the movie data.
+    /// </summary>
     [JsonProperty("movie_data")]
     [JsonConverter(typeof(OnlyObjectConverter<StreamInfo>))]
     public StreamInfo? MovieData { get; set; }

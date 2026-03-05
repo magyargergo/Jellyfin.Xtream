@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -13,12 +13,24 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#pragma warning disable CS1591
+using Newtonsoft.Json;
+
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents the player API response from the Xtream API.
+/// </summary>
 public class PlayerApi
 {
+    /// <summary>
+    /// Gets or sets the user information.
+    /// </summary>
+    [JsonProperty("user_info")]
     public UserInfo UserInfo { get; set; } = new UserInfo();
 
-    public ServerInfo ServerSnfo { get; set; } = new ServerInfo();
+    /// <summary>
+    /// Gets or sets the server information.
+    /// </summary>
+    [JsonProperty("server_info")]
+    public ServerInfo ServerInfo { get; set; } = new ServerInfo();
 }

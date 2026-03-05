@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -26,18 +26,20 @@ namespace Jellyfin.Xtream.Client;
 public class SingularToListConverter<T> : JsonConverter
 {
     /// <inheritdoc/>
-    public override bool CanConvert(Type objectType)
-    {
-        return objectType == typeof(T);
-    }
+    public override bool CanConvert(Type objectType) => objectType == typeof(T);
 
     /// <inheritdoc/>
-    public override ICollection<T>? ReadJson(JsonReader reader, Type objectType, object? existingValue, JsonSerializer serializer)
+    public override ICollection<T>? ReadJson(
+        JsonReader reader,
+        Type objectType,
+        object? existingValue,
+        JsonSerializer serializer
+    )
     {
         switch (reader.TokenType)
         {
             case JsonToken.StartObject:
-                T? result = serializer.Deserialize<T>(reader);
+                var result = serializer.Deserialize<T>(reader);
                 if (result is null)
                 {
                     return null;

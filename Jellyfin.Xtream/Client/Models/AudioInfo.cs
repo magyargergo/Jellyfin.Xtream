@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,32 +15,58 @@
 
 using Newtonsoft.Json;
 
-#pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents audio stream information from the Xtream API.
+/// </summary>
 public class AudioInfo
 {
+    /// <summary>
+    /// Gets or sets the stream index.
+    /// </summary>
     [JsonProperty("index")]
     public int Index { get; set; }
 
+    /// <summary>
+    /// Gets or sets the codec name.
+    /// </summary>
     [JsonProperty("codec_name")]
     public string CodecName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the codec profile.
+    /// </summary>
     [JsonProperty("profile")]
     public string Profile { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the sample format.
+    /// </summary>
     [JsonProperty("sample_fmt")]
     public string SampleFormat { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the sample rate in Hz.
+    /// </summary>
     [JsonProperty("sample_rate")]
     public int SampleRate { get; set; }
 
+    /// <summary>
+    /// Gets or sets the number of audio channels.
+    /// </summary>
     [JsonProperty("channels")]
     public int Channels { get; set; }
 
+    /// <summary>
+    /// Gets or sets the channel layout.
+    /// </summary>
     [JsonProperty("channel_layout")]
     public string ChannelLayout { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the bitrate in bits per second.
+    /// </summary>
     [JsonProperty("bit_rate")]
     public int Bitrate { get; set; }
 }

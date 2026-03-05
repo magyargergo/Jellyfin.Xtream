@@ -1,0 +1,377 @@
+# Multi-stage Dockerfile for building and testing libtsduck_interop
+# Extends the main Dockerfile with GoogleTest and fuzz testing support for CI/CD
+#
+# Usage:
+#   # Run all tests (unit, integration, stress, network):
+#   docker build -f Dockerfile.test --target test-runner .
+#
+#   # Run fuzz tests (30 seconds per fuzzer by default):
+#   docker build -f Dockerfile.test --target fuzz-tests .
+#
+#   # Run tests and output JUnit XML:
+#   docker build -f Dockerfile.test --target test-runner -o type=local,dest=./test-results .
+#
+#   # Run only unit tests:
+#   docker build -f Dockerfile.test --target unit-tests .
+#
+#   # Run only integration tests:
+#   docker build -f Dockerfile.test --target integration-tests .
+#
+# For static analysis, use Dockerfile.analysis instead:
+#   docker build -f Dockerfile.analysis .
+
+# =============================================================================
+# Stage 1: Use shared TSDuck base image
+# =============================================================================
+ARG TSDUCK_BASE_IMAGE=tsduck-base:local
+FROM ${TSDUCK_BASE_IMAGE} AS tsduck-builder
+
+# =============================================================================
+# Stage 2: Build the native interop library
+# =============================================================================
+FROM ubuntu:24.04 AS builder
+
+RUN mkdir -p /usr/share/man/man1 \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    zlib1g-dev \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tsduck-builder /opt/tsduck /opt/tsduck
+
+ENV PKG_CONFIG_PATH="/opt/tsduck/share/pkgconfig"
+ENV LD_LIBRARY_PATH="/opt/tsduck/lib"
+
+WORKDIR /build
+COPY native/tsduck_interop/include/ include/
+COPY native/tsduck_interop/src/ src/
+COPY native/tsduck_interop/CMakeLists.txt .
+
+RUN cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH=/opt/tsduck \
+    && cmake --build build --parallel $(nproc) \
+    && cmake --install build --prefix /install
+
+# =============================================================================
+# Stage 3: Test environment with GoogleTest
+# =============================================================================
+FROM ubuntu:24.04 AS test-builder
+
+RUN mkdir -p /usr/share/man/man1 \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    git \
+    ca-certificates \
+    libssl-dev \
+    zlib1g-dev \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TSDuck and built interop library
+COPY --from=tsduck-builder /opt/tsduck /opt/tsduck
+COPY --from=builder /install /install
+
+ENV PKG_CONFIG_PATH="/opt/tsduck/share/pkgconfig"
+ENV LD_LIBRARY_PATH="/opt/tsduck/lib:/install/lib"
+ENV CPATH="/install/include"
+ENV LIBRARY_PATH="/install/lib"
+
+# Copy source and test files
+WORKDIR /build
+COPY native/tsduck_interop/include/ include/
+COPY native/tsduck_interop/src/ src/
+COPY native/tsduck_interop/tests/ tests/
+COPY native/tsduck_interop/CMakeLists.txt .
+
+# Build tests using the CMakeLists.txt from tests/ folder with DOCKER_BUILD=ON
+RUN cd tests && \
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH=/opt/tsduck \
+        -DDOCKER_BUILD=ON \
+    && cmake --build build --parallel $(nproc)
+
+# =============================================================================
+# Stage 4: Run unit tests (require TsDuck for constants)
+# =============================================================================
+FROM ubuntu:24.04 AS unit-tests
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    zlib1g \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TsDuck libraries (needed by unit tests via constants.hpp)
+COPY --from=tsduck-builder /opt/tsduck/lib/*.so* /usr/local/lib/
+# Deploy TsDuck data files (required by DuckContext / Names singleton)
+COPY --from=tsduck-builder /opt/tsduck/share/tsduck /usr/local/share/tsduck
+RUN ldconfig
+ENV LD_LIBRARY_PATH="/usr/local/lib"
+
+WORKDIR /tests
+COPY --from=test-builder /build/tests/build/test_seqlock .
+COPY --from=test-builder /build/tests/build/test_pid_tracker .
+COPY --from=test-builder /build/tests/build/test_pcr_analyzer .
+COPY --from=test-builder /build/tests/build/test_iat_analyzer .
+COPY --from=test-builder /build/tests/build/test_alignment_buffer .
+COPY --from=test-builder /build/tests/build/test_failover_manager .
+COPY --from=test-builder /build/tests/build/test_quality_switch_trigger .
+COPY --from=test-builder /build/tests/build/test_duckcontext .
+COPY --from=test-builder /build/tests/build/test_psi_monitor .
+COPY --from=test-builder /build/tests/build/test_scte35_monitor .
+COPY --from=test-builder /build/tests/build/test_nal_parser .
+COPY --from=test-builder /build/tests/build/test_tr101290 .
+COPY --from=test-builder /build/tests/build/test_keyframe_aligner .
+
+# Run all unit tests
+RUN echo "=== Running Unit Tests ===" && \
+    ./test_seqlock --gtest_output=xml:test_seqlock.xml && \
+    ./test_pid_tracker --gtest_output=xml:test_pid_tracker.xml && \
+    ./test_pcr_analyzer --gtest_output=xml:test_pcr_analyzer.xml && \
+    ./test_iat_analyzer --gtest_output=xml:test_iat_analyzer.xml && \
+    ./test_alignment_buffer --gtest_output=xml:test_alignment_buffer.xml && \
+    ./test_failover_manager --gtest_output=xml:test_failover_manager.xml && \
+    ./test_quality_switch_trigger --gtest_output=xml:test_quality_switch_trigger.xml && \
+    ./test_duckcontext --gtest_output=xml:test_duckcontext.xml && \
+    ./test_psi_monitor --gtest_output=xml:test_psi_monitor.xml && \
+    ./test_scte35_monitor --gtest_output=xml:test_scte35_monitor.xml && \
+    ./test_nal_parser --gtest_output=xml:test_nal_parser.xml && \
+    ./test_tr101290 --gtest_output=xml:test_tr101290.xml && \
+    ./test_keyframe_aligner --gtest_output=xml:test_keyframe_aligner.xml && \
+    echo "=== All Unit Tests Passed ==="
+
+# =============================================================================
+# Stage 5: Run integration tests (require TSDuck)
+# =============================================================================
+FROM ubuntu:24.04 AS integration-tests
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    zlib1g \
+    libstdc++6 \
+    libcurl4t64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TSDuck libraries and our interop library
+COPY --from=tsduck-builder /opt/tsduck/lib/*.so* /usr/local/lib/
+COPY --from=builder /install/lib/*.so* /usr/local/lib/
+# Deploy TsDuck data files (required by DuckContext / Names singleton)
+COPY --from=tsduck-builder /opt/tsduck/share/tsduck /usr/local/share/tsduck
+
+WORKDIR /tests
+COPY --from=test-builder /build/tests/build/test_analyzer_integration .
+COPY --from=test-builder /build/tests/build/test_restamper_integration .
+COPY --from=test-builder /build/tests/build/test_streamer_integration .
+
+# Update library cache
+RUN ldconfig
+
+ENV LD_LIBRARY_PATH="/usr/local/lib"
+
+# Run integration tests
+RUN echo "=== Running Integration Tests ===" && \
+    ./test_analyzer_integration --gtest_output=xml:test_analyzer_integration.xml && \
+    ./test_restamper_integration --gtest_output=xml:test_restamper_integration.xml && \
+    ./test_streamer_integration --gtest_output=xml:test_streamer_integration.xml && \
+    ./test_scte35_integration --gtest_output=xml:test_scte35_integration.xml && \
+    ./test_nal_integration --gtest_output=xml:test_nal_integration.xml && \
+    echo "=== All Integration Tests Passed ==="
+
+# =============================================================================
+# Stage 6: Full test runner (all tests)
+# =============================================================================
+FROM ubuntu:24.04 AS test-runner
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    zlib1g \
+    libstdc++6 \
+    libcurl4t64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TSDuck libraries and our interop library
+COPY --from=tsduck-builder /opt/tsduck/lib/*.so* /usr/local/lib/
+COPY --from=builder /install/lib/*.so* /usr/local/lib/
+# Deploy TsDuck data files (required by DuckContext / Names singleton)
+COPY --from=tsduck-builder /opt/tsduck/share/tsduck /usr/local/share/tsduck
+
+WORKDIR /tests
+
+# Copy all test binaries
+COPY --from=test-builder /build/tests/build/test_seqlock .
+COPY --from=test-builder /build/tests/build/test_pid_tracker .
+COPY --from=test-builder /build/tests/build/test_pcr_analyzer .
+COPY --from=test-builder /build/tests/build/test_iat_analyzer .
+COPY --from=test-builder /build/tests/build/test_alignment_buffer .
+COPY --from=test-builder /build/tests/build/test_failover_manager .
+COPY --from=test-builder /build/tests/build/test_quality_switch_trigger .
+COPY --from=test-builder /build/tests/build/test_duckcontext .
+COPY --from=test-builder /build/tests/build/test_psi_monitor .
+COPY --from=test-builder /build/tests/build/test_scte35_monitor .
+COPY --from=test-builder /build/tests/build/test_nal_parser .
+COPY --from=test-builder /build/tests/build/test_tr101290 .
+COPY --from=test-builder /build/tests/build/test_keyframe_aligner .
+COPY --from=test-builder /build/tests/build/test_analyzer_integration .
+COPY --from=test-builder /build/tests/build/test_restamper_integration .
+COPY --from=test-builder /build/tests/build/test_streamer_integration .
+COPY --from=test-builder /build/tests/build/test_stress .
+COPY --from=test-builder /build/tests/build/test_network_simulation .
+
+RUN ldconfig
+
+ENV LD_LIBRARY_PATH="/usr/local/lib"
+
+# Copy test runner script
+COPY native/tsduck_interop/tests/scripts/run_tests.sh .
+RUN chmod +x run_tests.sh
+
+CMD ["./run_tests.sh"]
+
+# =============================================================================
+# Stage 7: Fuzz test builder (requires Clang with libfuzzer)
+# =============================================================================
+FROM ubuntu:24.04 AS fuzz-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    llvm \
+    libclang-rt-18-dev \
+    cmake \
+    pkg-config \
+    git \
+    ca-certificates \
+    libssl-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TSDuck
+COPY --from=tsduck-builder /opt/tsduck /opt/tsduck
+
+ENV PKG_CONFIG_PATH="/opt/tsduck/share/pkgconfig"
+ENV LD_LIBRARY_PATH="/opt/tsduck/lib"
+ENV CC=clang
+ENV CXX=clang++
+
+# Copy source and test files
+WORKDIR /build
+COPY native/tsduck_interop/include/ include/
+COPY native/tsduck_interop/src/ src/
+COPY native/tsduck_interop/tests/ tests/
+
+# Build fuzz tests manually (CMake fuzz support is complex)
+RUN mkdir -p /fuzz && \
+    # Original fuzz tests
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_alignment_buffer.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_alignment_buffer && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_pid_tracker.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_pid_tracker && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_psi_monitor.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_psi_monitor && \
+    # New fuzz tests
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_pcr_analyzer.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_pcr_analyzer && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_tr101290.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_tr101290 && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_restamper.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_restamper && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_ring_buffer.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_ring_buffer && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_failover_manager.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_failover_manager && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_keyframe_aligner.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_keyframe_aligner && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_scte35_monitor.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_scte35_monitor && \
+    clang++ -g -O1 -fsanitize=fuzzer,address,undefined \
+        -I src -I include \
+        $(pkg-config --cflags tsduck) \
+        tests/fuzz/fuzz_nal_parser.cpp \
+        $(pkg-config --libs tsduck) \
+        -o /fuzz/fuzz_nal_parser
+
+# =============================================================================
+# Stage 8: Run fuzz tests (short runs for CI)
+# =============================================================================
+FROM ubuntu:24.04 AS fuzz-tests
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    zlib1g \
+    libstdc++6 \
+    llvm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy TsDuck libraries
+COPY --from=tsduck-builder /opt/tsduck/lib/*.so* /usr/local/lib/
+COPY --from=tsduck-builder /opt/tsduck/share/tsduck /usr/local/share/tsduck
+RUN ldconfig
+
+ENV LD_LIBRARY_PATH="/usr/local/lib"
+
+WORKDIR /fuzz
+COPY --from=fuzz-builder /fuzz/ .
+
+# Create corpus directories
+RUN mkdir -p corpus/alignment corpus/pid corpus/psi corpus/pcr corpus/tr101290 corpus/restamper corpus/ring corpus/failover corpus/keyframe corpus/scte35 corpus/nal
+
+# Copy fuzz runner script
+COPY native/tsduck_interop/tests/scripts/run_fuzz.sh .
+RUN chmod +x run_fuzz.sh
+
+# Run fuzz tests during build
+RUN ./run_fuzz.sh
+
+# =============================================================================
+# Stage 9: Extract test results (for CI/CD)
+# =============================================================================
+FROM scratch AS test-results
+
+COPY --from=test-runner /tests/results/ /

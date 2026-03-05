@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/.vs/
+**/.idea/
+**/e2e-results/
+**/TestResults/
+**/*.user
+**/*.suo
+.git/
+.claude/

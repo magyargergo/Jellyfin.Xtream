@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
+using System.Text.Json.Serialization;
 using System.Xml;
 using System.Xml.Schema;
 using System.Xml.Serialization;
@@ -23,14 +24,15 @@ using System.Xml.Serialization;
 namespace Jellyfin.Xtream.Configuration;
 
 /// <summary>
-/// Dictionary implementation that can be serialized to and from XML.
+/// Dictionary implementation that can be serialized to and from XML and JSON.
 /// </summary>
 /// <typeparam name="TKey">The dictionary key type.</typeparam>
 /// <typeparam name="TValue">The dictionary value type.</typeparam>
 [Serializable]
 [XmlRoot("Dictionary")]
+[JsonConverter(typeof(SerializableDictionaryJsonConverterFactory))]
 public sealed class SerializableDictionary<TKey, TValue> : Dictionary<TKey, TValue>, IXmlSerializable
-where TKey : notnull
+    where TKey : notnull
 {
     private const string ItemTag = "Item";
 
@@ -45,22 +47,17 @@ where TKey : notnull
     /// <summary>Initializes a new instance of the
     /// <see cref="SerializableDictionary&lt;TKey, TValue&gt;"/> class.
     /// </summary>
-    public SerializableDictionary()
-    {
-    }
+    public SerializableDictionary() { }
 
     /// <inheritdoc />
-    public XmlSchema? GetSchema()
-    {
-        return null;
-    }
+    public XmlSchema? GetSchema() => null;
 
     /// <inheritdoc />
     public void ReadXml(XmlReader reader)
     {
         var wasEmpty = reader.IsEmptyElement;
 
-        reader.Read();
+        _ = reader.Read();
         if (wasEmpty)
         {
             return;
@@ -71,7 +68,7 @@ where TKey : notnull
             while (reader.NodeType != XmlNodeType.EndElement)
             {
                 ReadItem(reader);
-                reader.MoveToContent();
+                _ = reader.MoveToContent();
             }
         }
         finally
@@ -98,7 +95,10 @@ where TKey : notnull
         reader.ReadStartElement(ItemTag);
         try
         {
-            Add(SerializableDictionary<TKey, TValue>.ReadKey(reader), SerializableDictionary<TKey, TValue>.ReadValue(reader));
+            Add(
+                SerializableDictionary<TKey, TValue>.ReadKey(reader),
+                SerializableDictionary<TKey, TValue>.ReadValue(reader)
+            );
         }
         finally
         {
@@ -116,7 +116,8 @@ where TKey : notnull
         reader.ReadStartElement(KeyTag);
         try
         {
-            TKey deserialized = (TKey?)_keySerializer.Deserialize(reader) ?? throw new SerializationException("Key cannot be null");
+            var deserialized =
+                (TKey?)_keySerializer.Deserialize(reader) ?? throw new SerializationException("Key cannot be null");
             return deserialized;
         }
         finally
@@ -135,7 +136,9 @@ where TKey : notnull
         reader.ReadStartElement(ValueTag);
         try
         {
-            TValue deserialized = (TValue?)_valueSerializer.Deserialize(reader) ?? throw new SerializationException("Value cannot be null");
+            var deserialized =
+                (TValue?)_valueSerializer.Deserialize(reader)
+                ?? throw new SerializationException("Value cannot be null");
             return deserialized;
         }
         finally

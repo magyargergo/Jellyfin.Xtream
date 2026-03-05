@@ -1,0 +1,98 @@
+# Standalone TsDuck builder image for reuse across CI jobs.
+# Tagged as ghcr.io/<owner>/tsduck-base:<version>
+#
+# Multi-stage Dockerfile for building a minimal TsDuck installation with NO unnecessary dependencies.
+# Builds TsDuck from source to eliminate runtime dependencies on:
+#   - libusb (USB device support)
+#   - libpcsclite (smartcard support)
+#   - libsrt (SRT protocol)
+#   - librist (RIST protocol)
+#   - libedit (line editing)
+#   - libcurl (HTTP support)
+#   - Dektec/HiDes/VATek hardware support
+#
+# References:
+#   - https://tsduck.io/docs/tsduck-dev.html
+#   - https://github.com/tsduck/tsduck/issues/1488
+
+ARG TSDUCK_VERSION=3.43-4549
+
+# =============================================================================
+# Stage 1: Build TsDuck from source with minimal dependencies
+# =============================================================================
+FROM ubuntu:24.04 AS builder
+
+ARG TSDUCK_VERSION
+
+# Install only the essential build dependencies for minimal TsDuck
+# We explicitly DO NOT install: libusb-1.0-0-dev, libpcsclite-dev, libsrt-openssl-dev,
+# librist-dev, libedit-dev, libcurl4-openssl-dev
+RUN mkdir -p /usr/share/man/man1 \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    dos2unix \
+    ca-certificates \
+    # Python 3 is required by TsDuck build system (even with NOPYTHON=1)
+    python3 \
+    # Locale support for build scripts
+    locales \
+    # Minimal TsDuck build dependencies (from their docs)
+    libssl-dev \
+    zlib1g-dev \
+    && locale-gen en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set locale to avoid warnings in build scripts
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+# Clone TsDuck source at specific version
+WORKDIR /tsduck-src
+RUN git clone --depth 1 --branch v${TSDUCK_VERSION} https://github.com/tsduck/tsduck.git .
+
+# Common build flags to disable unnecessary features
+# This produces a minimal libtsduck.so without external dependencies
+# See: https://tsduck.io/docs/tsduck-dev.html section 1.1.2.6
+ENV TSDUCK_BUILD_FLAGS="NODEKTEC=1 NOHIDES=1 NOVATEK=1 NOCURL=1 NOPCSC=1 NOSRT=1 NORIST=1 NOEDITLINE=1 NOUSB=1 NOJAVA=1 NOPYTHON=1 NOTEST=1"
+
+RUN make -j$(nproc) $TSDUCK_BUILD_FLAGS
+
+# Install TsDuck to /opt/tsduck for isolation
+# NODOC=1 skips documentation which requires asciidoctor
+RUN make install $TSDUCK_BUILD_FLAGS NODOC=1 SYSPREFIX=/opt/tsduck
+
+# Verify the minimal build has no unwanted dependencies
+# TsDuck is split into libtscore.so (basic utils) and libtsduck.so (TS processing)
+RUN echo "=== Checking library files ===" && \
+    ls -la /opt/tsduck/lib/*.so* && \
+    echo "=== Checking libtscore.so dependencies ===" && \
+    ldd /opt/tsduck/lib/libtscore.so && \
+    echo "=== Checking libtsduck.so dependencies ===" && \
+    ldd /opt/tsduck/lib/libtsduck.so && \
+    echo "=== Verifying no unwanted dependencies ===" && \
+    ! ldd /opt/tsduck/lib/libtsduck.so | grep -E 'libusb|libpcsclite|libsrt|librist|libedit' && \
+    ! ldd /opt/tsduck/lib/libtscore.so | grep -E 'libusb|libpcsclite|libsrt|librist|libedit' && \
+    echo "SUCCESS: No unwanted dependencies found"
+
+# =============================================================================
+# Stage 2: Final slim image with only the TsDuck installation
+# =============================================================================
+FROM ubuntu:24.04
+
+# Install only the minimal runtime dependencies that TsDuck needs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the minimal TsDuck installation from builder
+COPY --from=builder /opt/tsduck /opt/tsduck
+
+# Set up environment for downstream builds
+ENV PKG_CONFIG_PATH="/opt/tsduck/share/pkgconfig"
+ENV LD_LIBRARY_PATH="/opt/tsduck/lib"
+
+# Label with version for tracking
+ARG TSDUCK_VERSION
+LABEL tsduck.version=${TSDUCK_VERSION}

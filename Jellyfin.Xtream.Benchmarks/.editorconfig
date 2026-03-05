@@ -1,0 +1,90 @@
+# Benchmarks project - relaxed analyzer settings
+# Benchmarks are test/development code, not production code
+
+[*.cs]
+# Disable most strict rules for benchmark code
+
+# ============================================================================
+# Microsoft .NET Analyzers (CA rules)
+# ============================================================================
+
+# CA1001: Type owns disposable field but is not disposable
+dotnet_diagnostic.CA1001.severity = none
+
+# CA1303: Do not pass literals as localized parameters
+dotnet_diagnostic.CA1303.severity = none
+
+# CA1305: Specify IFormatProvider - not critical for benchmarks
+dotnet_diagnostic.CA1305.severity = none
+
+# CA1707: Identifiers should not contain underscores (benchmarks use descriptive names)
+dotnet_diagnostic.CA1707.severity = none
+
+# CA1835: Prefer Memory-based overloads
+dotnet_diagnostic.CA1835.severity = suggestion
+
+# CA1849: Call async methods when in async method - benchmarks may intentionally use sync
+dotnet_diagnostic.CA1849.severity = none
+
+# CA2000: Dispose objects before losing scope
+dotnet_diagnostic.CA2000.severity = suggestion
+
+# CA5369: Use XmlReader for Deserialize
+dotnet_diagnostic.CA5369.severity = suggestion
+
+# CA5394: Random is insecure
+dotnet_diagnostic.CA5394.severity = none
+
+# ============================================================================
+# IDisposable Analyzers (IDISP rules)
+# ============================================================================
+
+# IDISP003: Dispose previous before re-assigning
+dotnet_diagnostic.IDISP003.severity = none
+
+# IDISP006: Implement IDisposable
+dotnet_diagnostic.IDISP006.severity = none
+
+# ============================================================================
+# Meziantou Analyzers (MA rules)
+# ============================================================================
+
+# MA0060: The value returned is not used (common in benchmarks)
+dotnet_diagnostic.MA0060.severity = none
+
+# ============================================================================
+# StyleCop Analyzers (SA rules)
+# ============================================================================
+
+# SA1117: Parameters should all be on same line or each on own line
+dotnet_diagnostic.SA1117.severity = none
+
+# SA1507: Code should not contain multiple blank lines
+dotnet_diagnostic.SA1507.severity = none
+
+# SA1615: Element return value documentation should have text
+dotnet_diagnostic.SA1615.severity = none
+
+# SA1616: Element return value documentation should have text
+dotnet_diagnostic.SA1616.severity = none
+
+# SA1636: File header copyright text should match
+dotnet_diagnostic.SA1636.severity = none
+
+# SA1648: inheritdoc should be used with inheriting class
+dotnet_diagnostic.SA1648.severity = none
+
+# SA1651: Do not use placeholder elements
+dotnet_diagnostic.SA1651.severity = none
+
+# Disable documentation requirements for benchmarks
+dotnet_diagnostic.SA1600.severity = none
+dotnet_diagnostic.SA1601.severity = none
+dotnet_diagnostic.SA1602.severity = none
+
+# ============================================================================
+# Threading Analyzers (VSTHRD rules)
+# ============================================================================
+
+# VSTHRD103: Call async methods in async methods - benchmarks may test sync patterns
+dotnet_diagnostic.VSTHRD103.severity = none

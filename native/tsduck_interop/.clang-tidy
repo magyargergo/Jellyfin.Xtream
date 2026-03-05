@@ -1,0 +1,120 @@
+# clang-tidy configuration for TsDuck Interop Library
+# Run: clang-tidy -p build src/**/*.cpp src/**/*.hpp
+
+# Enable comprehensive checks for modern C++20 code
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-union-access,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  -modernize-use-trailing-return-type,
+  -readability-braces-around-statements,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-do-while,
+  -misc-const-correctness,
+  -modernize-concat-nested-namespaces,
+
+# Treat warnings as errors in CI
+WarningsAsErrors: ''
+
+# Explicitly disable analysis of system headers (TsDuck, CURL, STL)
+SystemHeaders: false
+
+# Header filter - only check our code, not TsDuck or system headers
+# Match only our project's src/ and include/ directories, excluding any tsduck paths
+# Only check .hpp files (C++ headers) - .h files like tsduck_interop.h are C API headers
+# that must remain C-compatible for P/Invoke and should not be modernized
+HeaderFilterRegex: '(?!.*/tsduck/).*/(src|include)/.*\.hpp$'
+
+# Check options
+CheckOptions:
+  # Naming conventions
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+  # Global/static constants use UPPER_CASE, but local const variables use lower_case
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.StaticConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+
+  # Modernize settings
+  - key: modernize-use-nullptr.NullMacros
+    value: 'NULL'
+  - key: modernize-loop-convert.MinConfidence
+    value: reasonable
+  - key: modernize-pass-by-value.IncludeStyle
+    value: google
+
+  # Performance settings
+  - key: performance-for-range-copy.WarnOnAllAutoCopies
+    value: true
+  - key: performance-inefficient-string-concatenation.StrictMode
+    value: true
+  - key: performance-move-const-arg.CheckTriviallyCopyableMove
+    value: false
+
+  # Concurrency settings (important for our multi-threaded code)
+  - key: concurrency-mt-unsafe.FunctionSet
+    value: posix
+
+  # Misc settings
+  - key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic
+    value: true
+
+  # Cert settings
+  - key: cert-err33-c.CheckedFunctions
+    value: ''
+
+  # Function size limits
+  - key: readability-function-size.LineThreshold
+    value: 200
+  - key: readability-function-size.StatementThreshold
+    value: 100
+  - key: readability-function-size.ParameterThreshold
+    value: 8

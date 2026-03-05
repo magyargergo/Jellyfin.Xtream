@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -25,21 +25,37 @@ namespace Jellyfin.Xtream.Client;
 public class Base64Converter : JsonConverter
 {
     /// <inheritdoc />
-    public override bool CanConvert(Type objectType)
-    {
-        return objectType == typeof(string);
-    }
+    public override bool CanConvert(Type objectType) => objectType == typeof(string);
 
     /// <inheritdoc />
-    public override object ReadJson(JsonReader reader, Type objectType, object? existingValue, JsonSerializer serializer)
+    public override object ReadJson(
+        JsonReader reader,
+        Type objectType,
+        object? existingValue,
+        JsonSerializer serializer
+    )
     {
         if (reader.Value == null)
         {
-            throw new ArgumentException("Value cannot be null.");
+            return string.Empty;
         }
 
-        byte[] bytes = Convert.FromBase64String((string)reader.Value);
-        return Encoding.UTF8.GetString(bytes);
+        var value = (string)reader.Value;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var bytes = Convert.FromBase64String(value);
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch (FormatException)
+        {
+            // If the value isn't valid base64, return it as-is
+            return value;
+        }
     }
 
     /// <inheritdoc />
@@ -50,7 +66,7 @@ public class Base64Converter : JsonConverter
             throw new ArgumentException("Value cannot be null.");
         }
 
-        byte[] bytes = Encoding.UTF8.GetBytes((string)value);
+        var bytes = Encoding.UTF8.GetBytes((string)value);
         writer.WriteValue(Convert.ToBase64String(bytes));
     }
 }

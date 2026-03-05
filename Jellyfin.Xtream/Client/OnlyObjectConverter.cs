@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -26,26 +26,21 @@ namespace Jellyfin.Xtream.Client;
 public class OnlyObjectConverter<T> : JsonConverter
 {
     /// <inheritdoc/>
-    public override bool CanConvert(Type objectType)
+    public override bool CanConvert(Type objectType) => objectType == typeof(T);
+
+    /// <inheritdoc/>
+    public override object? ReadJson(
+        JsonReader reader,
+        Type objectType,
+        object? existingValue,
+        JsonSerializer serializer
+    )
     {
-        return objectType == typeof(T);
+        var token = JToken.Load(reader);
+        return token.Type == JTokenType.Object ? token.ToObject<T>() : null;
     }
 
     /// <inheritdoc/>
-    public override object? ReadJson(JsonReader reader, Type objectType, object? existingValue, JsonSerializer serializer)
-    {
-        JToken token = JToken.Load(reader);
-        if (token.Type == JTokenType.Object)
-        {
-            return token.ToObject<T>();
-        }
-
-        return null;
-    }
-
-    /// <inheritdoc/>
-    public override void WriteJson(JsonWriter writer, object? value, JsonSerializer serializer)
-    {
+    public override void WriteJson(JsonWriter writer, object? value, JsonSerializer serializer) =>
         serializer.Serialize(writer, value);
-    }
 }

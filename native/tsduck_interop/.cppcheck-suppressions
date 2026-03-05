@@ -1,0 +1,68 @@
+# cppcheck suppressions for TsDuck Interop Library
+# Run: cppcheck --enable=all --std=c++20 --suppressions-list=.cppcheck-suppressions --project=build/compile_commands.json
+
+# ============================================================================
+# False Positives / Intentional Design
+# ============================================================================
+
+# We use unions for type punning in MPEG-TS parsing (valid in C++)
+cstyleCast
+
+# Suppressed: cppcheck doesn't understand our seqlock pattern
+# The memory barriers and atomic operations ensure thread safety
+unreadVariable:*seqlock.hpp
+
+# TsDuck includes trigger many warnings we can't control
+*:*/tsduck/*
+
+# System headers
+*:/usr/include/*
+*:/usr/local/include/*
+
+# Google Test headers
+*:*/_deps/googletest-src/*
+
+# ============================================================================
+# Performance - Intentional Copies for Thread Safety
+# ============================================================================
+
+# We intentionally copy small structs for thread safety (seqlock reads)
+passedByValue:*analyzer.hpp
+passedByValue:*psi_monitor.hpp
+
+# ============================================================================
+# Style - Project Conventions
+# ============================================================================
+
+# We use snake_case for configuration struct members (C interop)
+# This matches the C# naming conventions for P/Invoke
+variableScope
+
+# Short variable names in tight loops (i, j, k) are idiomatic
+shadowVariable
+
+# ============================================================================
+# Missing Includes - TsDuck Provides These
+# ============================================================================
+
+# TsDuck headers include these transitively
+missingIncludeSystem
+
+# ============================================================================
+# Specific File Suppressions
+# ============================================================================
+
+# Ring buffer uses intentional unsigned wraparound
+shiftTooManyBits:*ring_buffer.hpp
+
+# SIMD search uses platform-specific intrinsics
+syntaxError:*simd_search.hpp
+
+# Alignment buffer uses pointer arithmetic intentionally
+pointerArithmetic:*alignment_buffer.hpp
+
+# Stream source uses C-style libcurl callbacks
+constParameterCallback:*stream_source.cpp
+
+# Native structures use C-compatible types for interop
+unusedStructMember:*tsduck_interop.h

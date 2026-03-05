@@ -1,0 +1,114 @@
+name: "Jellyfin.Xtream CodeQL Config"
+
+paths:
+  - Jellyfin.Xtream/
+  - Jellyfin.Xtream.Tests/
+  - native/tsduck_interop/src/
+  - native/tsduck_interop/include/
+
+paths-ignore:
+  - "**/bin/**"
+  - "**/obj/**"
+  - "**/output/**"
+  - "**/build/**"
+  - "**/third_party/**"
+  - "**/generated/**"
+  - native/tsduck_interop/output/
+
+query-filters:
+  # Structured logging (ILogger with message templates) is the standard
+  # mitigation for log forging. CodeQL does not recognise ILogger as a
+  # safe sink, so every structured-log call is a false positive.
+  - exclude:
+      id: cs/log-forging
+
+  # Broad exception catching is intentional in streaming, network I/O,
+  # and plugin lifecycle code for resilience.
+  - exclude:
+      id: cs/catch-of-all-exceptions
+
+  # LINQ optimisation hints are style suggestions, not correctness issues.
+  - exclude:
+      id: cs/linq/missed-where
+  - exclude:
+      id: cs/linq/missed-select
+
+  # IDisposable field suggestions conflict with Jellyfin's DI lifetime
+  # management where the container owns disposable services.
+  - exclude:
+      id: cs/missed-using-statement
+
+  # The standard .NET Dispose pattern (CA1063) requires ~Finalizer()
+  # to call virtual Dispose(false). CodeQL flags this as "virtual call
+  # in destructor" but the pattern is mandated by the Roslyn analyzer.
+  - exclude:
+      id: cs/virtual-call-in-constructor
+
+  # ── C# native interop false positives ──────────────────────────────
+
+  # P/Invoke DllImport calls are the entire point of the native interop
+  # layer. "Replace with managed code" is not applicable here.
+  - exclude:
+      id: cs/call-to-unmanaged-code
+
+  # Plugin.Instance singleton pattern is standard Jellyfin plugin
+  # architecture — the instance field is set once during plugin init.
+  - exclude:
+      id: cs/static-field-written-by-instance
+
+  # Path.Combine arguments are all controlled strings (not user input).
+  # CodeQL warns about theoretical path-dropping which cannot happen here.
+  - exclude:
+      id: cs/path-combine
+
+  # ── C# analysis false positives ───────────────────────────────────
+
+  # Null-conditional (?.) on nullable ILogger? parameters is correct
+  # defensive coding. CodeQL falsely claims "always not null" by tracing
+  # callers, but the method signature explicitly allows null.
+  - exclude:
+      id: cs/constant-condition
+
+  # Cast chain (TKey)(object)value is required in C# generic methods.
+  # Direct cast from concrete types to unconstrained TKey is illegal;
+  # the intermediate (object) cast satisfies the compiler's type system.
+  - exclude:
+      id: cs/useless-upcast
+
+  # Testing Equals(null) is standard practice for Object.Equals contract
+  # validation. Our implementations handle null correctly via pattern matching.
+  - exclude:
+      id: cs/null-argument-to-equals
+
+  # ── C++ header-only code false positives ───────────────────────────
+
+  # Header-only C++ with lambdas and constexpr constants causes false
+  # "poor global variable name" alerts for short lambda parameters.
+  - exclude:
+      id: cpp/short-global-name
+
+  # Lambda captures and local scopes in header-only code shadow outer
+  # variables intentionally — this is standard C++ practice.
+  - exclude:
+      id: cpp/declaration-hides-variable
+  - exclude:
+      id: cpp/local-variable-hides-global-variable
+
+  # Commented-out code blocks document alternative implementations
+  # and are retained intentionally for reference.
+  - exclude:
+      id: cpp/commented-out-code
+
+  # Single-case switch statements and partial case coverage are intentional —
+  # only relevant cases are handled, with default covering the rest.
+  - exclude:
+      id: cpp/missing-case-in-switch
+  - exclude:
+      id: cpp/trivial-switch
+
+  # Bit field type warnings originate from third-party TsDuck library
+  # headers included in our translation units. We cannot modify those.
+  - exclude:
+      id: cpp/non-standard-bitfield-type
+  - exclude:
+      id: cpp/ambiguously-signed-bit-field

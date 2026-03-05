@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -14,23 +14,41 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using Newtonsoft.Json;
 
-#pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents series stream information from the Xtream API.
+/// </summary>
 public class SeriesStreamInfo
 {
+    /// <summary>
+    /// Gets or sets the collection of seasons.
+    /// </summary>
     [JsonProperty("seasons")]
-#pragma warning disable CA2227
-    public ICollection<Season> Seasons { get; set; } = new List<Season>();
-#pragma warning restore CA2227
+    [SuppressMessage(
+        "Usage",
+        "CA2227:Collection properties should be read only",
+        Justification = "Required for JSON deserialization"
+    )]
+    public ICollection<Season> Seasons { get; set; } = [];
 
+    /// <summary>
+    /// Gets or sets the series information.
+    /// </summary>
     [JsonProperty("info")]
     public SeriesInfo Info { get; set; } = new SeriesInfo();
 
+    /// <summary>
+    /// Gets or sets the episodes grouped by season number.
+    /// </summary>
     [JsonProperty("episodes")]
-#pragma warning disable CA2227
-    public Dictionary<int, ICollection<Episode>> Episodes { get; set; } = new Dictionary<int, ICollection<Episode>>();
-#pragma warning restore CA2227
+    [SuppressMessage(
+        "Usage",
+        "CA2227:Collection properties should be read only",
+        Justification = "Required for JSON deserialization"
+    )]
+    public Dictionary<int, ICollection<Episode>> Episodes { get; set; } = [];
 }

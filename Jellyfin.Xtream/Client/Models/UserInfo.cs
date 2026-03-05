@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,31 +15,83 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using Newtonsoft.Json;
 
-#pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents user information from the Xtream API.
+/// </summary>
 public class UserInfo
 {
+    /// <summary>
+    /// Gets or sets the username.
+    /// </summary>
+    [JsonProperty("username")]
     public string Username { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the password.
+    /// </summary>
+    [JsonProperty("password")]
     public string Password { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the authentication status.
+    /// </summary>
+    [JsonProperty("auth")]
     public int Auth { get; set; }
 
+    /// <summary>
+    /// Gets or sets the account status.
+    /// </summary>
+    [JsonProperty("status")]
     public string Status { get; set; } = string.Empty;
 
-    public DateTime ExpDate { get; set; }
+    /// <summary>
+    /// Gets or sets the expiration date.
+    /// </summary>
+    [JsonProperty("exp_date")]
+    [JsonConverter(typeof(FlexibleDateTimeConverter))]
+    public DateTime? ExpDate { get; set; }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether this is a trial account.
+    /// </summary>
+    [JsonProperty("is_trial")]
+    [JsonConverter(typeof(FlexibleBoolConverter))]
     public bool IsTrial { get; set; }
 
+    /// <summary>
+    /// Gets or sets the number of active connections.
+    /// </summary>
+    [JsonProperty("active_cons")]
+    [JsonConverter(typeof(FlexibleIntConverter))]
     public int ActiveCons { get; set; }
 
-    public DateTime CreatedAt { get; set; }
+    /// <summary>
+    /// Gets or sets the account creation date.
+    /// </summary>
+    [JsonProperty("created_at")]
+    [JsonConverter(typeof(FlexibleDateTimeConverter))]
+    public DateTime? CreatedAt { get; set; }
 
+    /// <summary>
+    /// Gets or sets the maximum number of connections allowed.
+    /// </summary>
+    [JsonProperty("max_connections")]
+    [JsonConverter(typeof(FlexibleIntConverter))]
     public int MaxConnections { get; set; }
 
-    #pragma warning disable CA2227
-    public ICollection<string> AllowedOutputFormats { get; set; } = new List<string>();
-    #pragma warning restore CA2227
+    /// <summary>
+    /// Gets or sets the allowed output formats.
+    /// </summary>
+    [JsonProperty("allowed_output_formats")]
+    [SuppressMessage(
+        "Usage",
+        "CA2227:Collection properties should be read only",
+        Justification = "Required for JSON deserialization"
+    )]
+    public ICollection<string> AllowedOutputFormats { get; set; } = [];
 }

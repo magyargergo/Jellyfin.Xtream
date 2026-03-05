@@ -1,0 +1,310 @@
+name: "CI"
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "**/*.md"
+  pull_request:
+    branches:
+      - master
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Job 0: Build and cache TsDuck base image
+  # Runs first to provide the base image for all downstream jobs
+  # ============================================================
+  build-tsduck-base:
+    name: Build TsDuck Base Image
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image-ref.outputs.image }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read TsDuck version
+        id: version
+        run: |
+          VERSION=$(cat native/tsduck_interop/TSDUCK_VERSION)
+          echo "tsduck_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "TsDuck version: $VERSION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image reference
+        id: image-ref
+        run: |
+          IMAGE_REF="ghcr.io/${{ github.repository_owner }}/tsduck-base:${{ steps.version.outputs.tsduck_version }}"
+          echo "image=$IMAGE_REF" >> $GITHUB_OUTPUT
+          echo "Using image reference: $IMAGE_REF"
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/tsduck-base
+          tags: |
+            type=raw,value=${{ steps.version.outputs.tsduck_version }}
+            type=raw,value=latest
+
+      - name: Build and push TsDuck base image
+        uses: docker/build-push-action@v5
+        with:
+          context: native/tsduck_interop
+          file: native/tsduck_interop/Dockerfile.tsduck-base
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            TSDUCK_VERSION=${{ steps.version.outputs.tsduck_version }}
+
+  # ============================================================
+  # Job 1: .NET unit tests (no Docker needed)
+  # ============================================================
+  dotnet-tests:
+    name: .NET Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run unit tests
+        run: >-
+          dotnet test
+          --configuration Release
+          --no-restore
+          --filter 'Category!=Integration'
+          --logger 'trx;LogFileName=results.trx'
+          --results-directory ./test-results
+          -p:BuildNativeLibrary=false
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dotnet-test-results
+          path: ./test-results/*.trx
+          retention-days: 30
+
+  # ============================================================
+  # Job 2: Native C++ tests (unit, integration, stress)
+  # ============================================================
+  native-tests:
+    name: Native C++ Tests
+    runs-on: ubuntu-latest
+    needs: build-tsduck-base
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and run native tests
+        run: >-
+          docker build
+          -f native/tsduck_interop/Dockerfile.test
+          --target test-runner
+          --build-arg TSDUCK_BASE_IMAGE=${{ needs.build-tsduck-base.outputs.image }}
+          -t tsduck-interop-tests
+          .
+
+      - name: Run tests
+        run: docker run --rm tsduck-interop-tests
+
+  # ============================================================
+  # Job 3: Native C++ fuzz tests (short CI runs)
+  # ============================================================
+  fuzz-tests:
+    name: Fuzz Tests
+    runs-on: ubuntu-latest
+    needs: build-tsduck-base
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and run fuzz tests
+        run: >-
+          docker build
+          -f native/tsduck_interop/Dockerfile.test
+          --target fuzz-tests
+          --build-arg TSDUCK_BASE_IMAGE=${{ needs.build-tsduck-base.outputs.image }}
+          -t tsduck-interop-fuzz
+          .
+
+  # ============================================================
+  # Job 4: E2E tests (Docker Compose)
+  # ============================================================
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: build-tsduck-base
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run E2E tests
+        env:
+          TSDUCK_BASE_IMAGE: ${{ needs.build-tsduck-base.outputs.image }}
+        run: >-
+          docker compose
+          -f docker-compose.e2e.yaml
+          up --build
+          --abort-on-container-exit
+          --exit-code-from e2e-tests
+
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-results
+          path: ./e2e-results/*.trx
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.e2e.yaml down
+
+  # ============================================================
+  # Job 5: Build release artifacts
+  # Depends on all test jobs passing
+  # ============================================================
+  build-artifacts:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    needs:
+      - build-tsduck-base
+      - dotnet-tests
+      - native-tests
+      - fuzz-tests
+      - e2e-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build native libraries first (outputs .so files)
+      - name: Build native TsDuck libraries
+        run: >-
+          docker build
+          --target artifacts
+          --build-arg TSDUCK_BASE_IMAGE=${{ needs.build-tsduck-base.outputs.image }}
+          -o type=local,dest=native/tsduck_interop/output
+          native/tsduck_interop
+
+      - name: Verify native libraries
+        run: ls -la native/tsduck_interop/output/
+
+      # Build the .NET plugin (picks up native libs from output/)
+      - name: Build plugin (Release)
+        run: >-
+          dotnet build
+          --configuration Release
+          -p:TreatWarningsAsErrors=true
+          -p:BuildNativeLibrary=false
+
+      # Collect all artifacts into a single directory
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts/runtimes/linux-x64/native
+
+          BUILD_DIR=Jellyfin.Xtream/bin/Release/net8.0
+
+          # Main plugin DLL
+          cp "$BUILD_DIR/Jellyfin.Xtream.dll" artifacts/
+
+          # Required dependencies
+          DEPS=(
+            "Discord.Net.Core.dll"
+            "Discord.Net.Rest.dll"
+            "Discord.Net.Webhook.dll"
+            "Polly.dll"
+            "Polly.Core.dll"
+            "AngleSharp.dll"
+            "TurboXml.dll"
+            "Newtonsoft.Json.dll"
+          )
+
+          for dep in "${DEPS[@]}"; do
+            if [ -f "$BUILD_DIR/$dep" ]; then
+              cp "$BUILD_DIR/$dep" artifacts/
+            else
+              echo "::warning::Missing dependency: $dep"
+            fi
+          done
+
+          # Native libraries
+          cp native/tsduck_interop/output/*.so artifacts/runtimes/linux-x64/native/
+
+          echo "=== Artifact contents ==="
+          find artifacts -type f -exec ls -lh {} \;
+
+      - name: Upload plugin artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jellyfin-xtream-plugin
+          path: artifacts/
+          retention-days: 90

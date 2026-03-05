@@ -1,0 +1,209 @@
+<div id="XtreamChannelsPage" data-role="page" class="page type-interior pluginConfigurationPage withTabs"
+  data-require="emby-input,emby-button,emby-select,emby-checkbox" data-controller="__plugin/XtreamChannels.js">
+  <div data-role="content">
+    <div class="content-primary">
+      <form id="XtreamChannelsForm">
+
+        <!-- Sub-tabs: Live TV | VOD | Series | Overrides -->
+        <div class="channel-type-tabs" id="ChannelTypeTabs">
+          <button type="button" class="channel-type-tab active" data-tab="live">
+            <span class="material-icons">live_tv</span>
+            <span>Live TV</span>
+          </button>
+          <button type="button" class="channel-type-tab" data-tab="vod">
+            <span class="material-icons">movie</span>
+            <span>VOD</span>
+          </button>
+          <button type="button" class="channel-type-tab" data-tab="series">
+            <span class="material-icons">tv</span>
+            <span>Series</span>
+          </button>
+          <button type="button" class="channel-type-tab" data-tab="overrides">
+            <span class="material-icons">tune</span>
+            <span>Overrides</span>
+          </button>
+        </div>
+
+        <!-- Provider Selection (shared across all sub-tabs) -->
+        <div class="provider-section">
+          <div class="selectContainer" style="flex: 1; min-width: 200px;">
+            <select is="emby-select" id="ProviderSelect" label="Provider">
+              <option value="">Loading providers...</option>
+            </select>
+          </div>
+          <button is="emby-button" type="button" id="RefreshContent" class="fab emby-button" title="Refresh">
+            <span class="material-icons refresh"></span>
+          </button>
+        </div>
+
+        <!-- No Provider Message -->
+        <div id="NoProviderMessage" class="empty-state hide">
+          <span class="material-icons">cloud_off</span>
+          <p>No providers configured. Please add a provider in the <a href="/configurationpage?name=XtreamProviders.html">Providers</a> tab first.</p>
+        </div>
+
+        <!-- Provider Content Area -->
+        <div id="ProviderContent" class="hide">
+
+          <!-- ===== LIVE TV TAB ===== -->
+          <div id="TabLive" class="tab-panel active">
+            <!-- Content-specific options -->
+            <div class="content-options">
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" id="IsCatchupVisible" type="checkbox" />
+                  <span>Show catch-up content</span>
+                </label>
+              </div>
+
+              <!-- Failover Settings (Collapsible) -->
+              <div class="settings-section" style="margin-top: 12px;">
+                <div class="settings-section-header" id="FailoverSettingsHeader">
+                  <h3 class="settings-section-title" style="font-size: 14px;">Failover Settings</h3>
+                  <span class="material-icons">expand_more</span>
+                </div>
+                <div class="settings-section-content" id="FailoverSettingsContent" style="display: none;">
+                  <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label>
+                      <input is="emby-checkbox" id="EnableProviderFailover" type="checkbox" />
+                      <span>Enable Provider Failover</span>
+                    </label>
+                    <div class="fieldDescription">
+                      Automatically switch to another provider if the current stream fails.
+                    </div>
+                  </div>
+                  <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="MaxFailoverAttempts">Max Failover Attempts</label>
+                    <input id="MaxFailoverAttempts" type="number" min="1" max="10" is="emby-input" />
+                    <div class="fieldDescription">Maximum providers to try before giving up (1-10). Default: 3.</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Copy from Provider -->
+              <div id="CopyFromProviderSection" class="hide" style="margin-top: 12px;">
+                <div class="copy-from-row">
+                  <div class="selectContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="CopyFromProviderSelect">Copy selections from</label>
+                    <select is="emby-select" id="CopyFromProviderSelect">
+                      <option value="">Select source provider...</option>
+                    </select>
+                  </div>
+                  <button is="emby-button" type="button" id="CopyChannelsBtn" class="raised emby-button">
+                    <span class="material-icons" style="margin-right: 8px;">content_copy</span>
+                    <span>Copy Channels</span>
+                  </button>
+                </div>
+                <div class="fieldDescription" style="margin-top: 8px;">
+                  Automatically select matching channels from another provider. Channels are matched by name.
+                </div>
+                <div id="CopyResultMessage" class="copy-result-message hide"></div>
+              </div>
+            </div>
+
+            <div id="LiveContent">
+              <!-- Category cards inserted dynamically -->
+            </div>
+          </div>
+
+          <!-- ===== VOD TAB ===== -->
+          <div id="TabVod" class="tab-panel">
+            <div class="content-options">
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" id="IsVodVisible" type="checkbox" />
+                  <span>Show VOD content</span>
+                </label>
+              </div>
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" id="IsTmdbVodOverride" type="checkbox" />
+                  <span>Override metadata with TMDB</span>
+                </label>
+                <div class="fieldDescription">
+                  Movie metadata will be fetched from The Movie Database (TMDB) instead of provider data.
+                </div>
+              </div>
+            </div>
+
+            <div id="VodContent">
+              <!-- Category cards inserted dynamically -->
+            </div>
+          </div>
+
+          <!-- ===== SERIES TAB ===== -->
+          <div id="TabSeries" class="tab-panel">
+            <div class="content-options">
+              <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                  <input is="emby-checkbox" id="IsSeriesVisible" type="checkbox" />
+                  <span>Show series content</span>
+                </label>
+              </div>
+            </div>
+
+            <div id="SeriesContent">
+              <!-- Category cards inserted dynamically -->
+            </div>
+          </div>
+
+          <!-- ===== OVERRIDES TAB ===== -->
+          <div id="TabOverrides" class="tab-panel">
+            <!-- Batch Operations Toolbar -->
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;">
+              <button is="emby-button" type="button" id="ExportOverridesBtn" class="raised emby-button">
+                <span class="material-icons" style="margin-right: 6px;">download</span>
+                <span>Export</span>
+              </button>
+              <button is="emby-button" type="button" id="ImportOverridesBtn" class="raised emby-button">
+                <span class="material-icons" style="margin-right: 6px;">upload</span>
+                <span>Import</span>
+              </button>
+              <input type="file" id="ImportFileInput" accept=".json" style="display: none;" />
+              <button is="emby-button" type="button" id="ClearOverridesBtn" class="raised button-cancel emby-button">
+                <span class="material-icons" style="margin-right: 6px;">delete_sweep</span>
+                <span>Clear All</span>
+              </button>
+            </div>
+
+            <!-- Search Bar -->
+            <div class="search-filter-bar" style="margin-bottom: 16px;">
+              <div class="search-container">
+                <span class="material-icons search-icon">search</span>
+                <input type="text" id="OverrideSearch" class="search-input" placeholder="Search channels...">
+                <button type="button" id="ClearOverrideSearch" class="clear-search hide">
+                  <span class="material-icons">close</span>
+                </button>
+              </div>
+              <div class="selection-stats">
+                <span class="stat-selected" id="OverrideCount">0</span>
+                <span> overrides</span>
+                <span class="stat-divider"></span>
+                <span class="stat-categories" id="OverrideChannelCount">0 channels</span>
+              </div>
+            </div>
+
+            <!-- Override Header -->
+            <div class="override-header">
+              <span>Number</span>
+              <span>Name</span>
+              <span>Logo URL</span>
+            </div>
+
+            <!-- Channel List -->
+            <div id="OverrideChannels">
+              <!-- Channel rows inserted dynamically -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Save Button -->
+        <div style="margin-top: 24px;">
+          <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+            <span>Save</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -21,7 +21,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
+using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
+using Jellyfin.Xtream.Utility;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
@@ -34,9 +36,11 @@ namespace Jellyfin.Xtream.Providers;
 /// <summary>
 /// The Xtream Codes VOD metadata provider.
 /// </summary>
-/// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
+/// <param name="logger">Instance of the <see cref="ILogger{TCategoryName}"/> interface.</param>
 /// <param name="providerManager">Instance of the <see cref="IProviderManager"/> interface.</param>
-public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager providerManager) : ICustomMetadataProvider<Movie>, IPreRefreshProvider
+public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager providerManager)
+    : ICustomMetadataProvider<Movie>,
+        IPreRefreshProvider
 {
     /// <summary>
     /// The name of the provider.
@@ -47,16 +51,30 @@ public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager prov
     public string Name => ProviderName;
 
     /// <inheritdoc/>
-    public async Task<ItemUpdateType> FetchAsync(Movie item, MetadataRefreshOptions options, CancellationToken cancellationToken)
+    public async Task<ItemUpdateType> FetchAsync(
+        Movie item,
+        MetadataRefreshOptions options,
+        CancellationToken cancellationToken
+    )
     {
-        string? idStr = item.GetProviderId(ProviderName);
+        var idStr = item.GetProviderId(ProviderName);
         if (idStr is not null)
         {
-            logger.LogDebug("Getting metadata for movie {Id}", idStr);
-            int id = int.Parse(idStr, CultureInfo.InvariantCulture);
-            using XtreamClient client = new();
-            VodStreamInfo vod = await client.GetVodInfoAsync(Plugin.Instance.Creds, id, cancellationToken).ConfigureAwait(false);
-            VodInfo? i = vod.Info;
+            logger.LogDebugIfEnabled("Getting metadata for movie {Id}", idStr);
+            var id = int.Parse(idStr, CultureInfo.InvariantCulture);
+
+            var provider = Plugin.Instance.Configuration.GetEnabledProviders().FirstOrDefault();
+            if (provider == null)
+            {
+                logger.PluginLogWarning("No enabled provider found for VOD metadata");
+                return ItemUpdateType.None;
+            }
+
+            using var client = Plugin.Instance.CreateXtreamClient();
+            var vod = await client
+                .GetVodInfoAsync(provider.ToConnectionInfo(), id, cancellationToken)
+                .ConfigureAwait(false);
+            var i = vod.Info;
 
             if (i is null)
             {
@@ -70,7 +88,7 @@ public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager prov
 
             if (i.Genre is string genres)
             {
-                item.Genres ??= genres.Split(',').Select(genre => genre.Trim()).ToArray();
+                item.Genres ??= [.. genres.Split(',').Select(genre => genre.Trim())];
             }
 
             if (!item.HasProviderId(MetadataProvider.Tmdb))
@@ -82,7 +100,6 @@ public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager prov
                 }
                 else if (Plugin.Instance.Configuration.IsTmdbVodOverride)
                 {
-                    // Try to fetch the TMDB id to get proper metadata.
                     RemoteSearchQuery<MovieInfo> query = new()
                     {
                         SearchInfo = new()
@@ -92,13 +109,15 @@ public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager prov
                         },
                         SearchProviderName = "TheMovieDb",
                     };
-                    IEnumerable<RemoteSearchResult> results = await providerManager.GetRemoteSearchResults<Movie, MovieInfo>(query, cancellationToken).ConfigureAwait(false);
+                    var results = await providerManager
+                        .GetRemoteSearchResults<Movie, MovieInfo>(query, cancellationToken)
+                        .ConfigureAwait(false);
                     if (results.Any())
                     {
-                        RemoteSearchResult tmdbMovie = results.First();
+                        var tmdbMovie = results.First();
                         if (tmdbMovie.HasProviderId(MetadataProvider.Tmdb))
                         {
-                            string? queryId = tmdbMovie.GetProviderId(MetadataProvider.Tmdb);
+                            var queryId = tmdbMovie.GetProviderId(MetadataProvider.Tmdb);
                             if (queryId is not null)
                             {
                                 options.ReplaceAllMetadata = true;

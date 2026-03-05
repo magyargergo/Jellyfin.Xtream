@@ -3,4 +3,12 @@ obj/
 .vs/
 .idea/
 .vscode/
+.history/
+.claude/
 artifacts
+native/tsduck_interop/output/
+native/tsduck_interop/build/
+native/tsduck_interop/tests/build_standalone/
+native/tsduck_interop/analysis-results/
+e2e-results/
+native-build-output/

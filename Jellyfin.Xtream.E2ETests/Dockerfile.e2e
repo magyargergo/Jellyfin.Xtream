@@ -1,0 +1,158 @@
+# syntax=docker/dockerfile:1.4
+# Multi-stage Dockerfile for E2E testing the native streaming pipeline.
+# Builds TsDuck from source, then builds native interop library linked against it,
+# then runs .NET E2E tests.
+#
+# Usage:
+#   docker compose -f docker-compose.e2e.yaml up --build
+#   OR
+#   docker build -f Jellyfin.Xtream.E2ETests/Dockerfile.e2e --target test-runner .
+#   docker run --rm -v ./e2e-results:/results <image>
+
+# =============================================================================
+# Stage 0: Use pre-built TsDuck base image
+# =============================================================================
+ARG TSDUCK_BASE_IMAGE=tsduck-base:local
+FROM ${TSDUCK_BASE_IMAGE} AS tsduck-builder
+
+# =============================================================================
+# Stage 1: Build the native interop library (linked against TsDuck)
+# =============================================================================
+FROM ubuntu:24.04 AS native-builder
+
+RUN mkdir -p /usr/share/man/man1 \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    libcurl4-openssl-dev \
+    libssl-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the minimal TsDuck installation
+COPY --from=tsduck-builder /opt/tsduck /opt/tsduck
+
+# Set up pkg-config to find TsDuck
+ENV PKG_CONFIG_PATH="/opt/tsduck/share/pkgconfig"
+ENV LD_LIBRARY_PATH="/opt/tsduck/lib"
+
+WORKDIR /build
+COPY native/tsduck_interop/include/ include/
+COPY native/tsduck_interop/src/ src/
+COPY native/tsduck_interop/CMakeLists.txt .
+
+RUN cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DUSE_TSDUCK=ON \
+    -DCMAKE_PREFIX_PATH=/opt/tsduck \
+    && cmake --build build --parallel $(nproc) \
+    && cmake --install build --prefix /install
+
+# Prepare bundled libraries (interop + TsDuck libs)
+RUN mkdir -p /bundle && \
+    cp /install/lib/libtsduck_interop.so* /bundle/ && \
+    cp /opt/tsduck/lib/libtscore.so* /bundle/ && \
+    cp /opt/tsduck/lib/libtsduck.so* /bundle/ && \
+    echo "=== Bundle contents ===" && \
+    ls -la /bundle/ && \
+    echo "=== libtsduck_interop.so dependencies ===" && \
+    ldd /bundle/libtsduck_interop.so
+
+# =============================================================================
+# Stage 2: Build .NET E2E test project
+# =============================================================================
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS dotnet-builder
+
+# .NET SDK optimizations for faster builds
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+ENV DOTNET_NOLOGO=1
+
+# Copy native libraries so they're available during build
+COPY --from=native-builder /bundle/ /native-libs/
+
+# Copy solution and project files for restore
+WORKDIR /src
+COPY *.sln ./
+# Use Docker-specific props that disables all analyzers (avoids 5000+ SA/CA errors in Release)
+COPY Directory.Build.Docker.props Directory.Build.props
+COPY Jellyfin.Xtream/Jellyfin.Xtream.csproj Jellyfin.Xtream/
+COPY Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj Jellyfin.Xtream.E2ETests/
+
+# Restore dependencies with NuGet cache mount for faster rebuilds
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet restore Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj \
+    -p:BuildNativeLibrary=false
+
+# Copy all source code
+COPY Jellyfin.Xtream/ Jellyfin.Xtream/
+COPY Jellyfin.Xtream.E2ETests/ Jellyfin.Xtream.E2ETests/
+
+# Build the E2E test project with cache mount
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet build Jellyfin.Xtream.E2ETests/Jellyfin.Xtream.E2ETests.csproj \
+    -c Release \
+    -p:BuildNativeLibrary=false \
+    --no-restore
+
+# =============================================================================
+# Stage 3: Run E2E tests
+# Must use noble (Ubuntu 24.04) to match glibc version used in native build
+# =============================================================================
+FROM mcr.microsoft.com/dotnet/sdk:9.0-noble AS test-runner
+
+# Install runtime dependencies for native libraries
+# libcurl4: HTTP streaming in our interop lib
+# libssl3 + zlib1g: TsDuck runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcurl4 \
+    libssl3 \
+    zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy all native libraries (interop + TsDuck)
+COPY --from=native-builder /bundle/ /usr/local/lib/
+
+# Copy TsDuck data files (required for DuckContext/SectionDemux initialization)
+COPY --from=tsduck-builder /opt/tsduck/share/tsduck /usr/local/share/tsduck
+
+RUN ldconfig
+
+# Copy built .NET project (includes all binaries)
+COPY --from=dotnet-builder /src/ /src/
+WORKDIR /src
+
+# Place native libraries in the output directory for .NET resolution
+RUN mkdir -p /src/native/tsduck_interop/output/ && \
+    cp /usr/local/lib/libtsduck_interop.so* /src/native/tsduck_interop/output/
+
+# Copy native libs to the E2E test output's runtimes directory
+RUN RUNTIMES_DIR=/src/Jellyfin.Xtream.E2ETests/bin/Release/net9.0/runtimes/linux-x64/native && \
+    mkdir -p "$RUNTIMES_DIR" && \
+    cp /usr/local/lib/libtsduck_interop.so* "$RUNTIMES_DIR/" && \
+    cp /usr/local/lib/libtscore.so* "$RUNTIMES_DIR/" && \
+    cp /usr/local/lib/libtsduck.so* "$RUNTIMES_DIR/" && \
+    echo "=== Native libraries ===" && \
+    ls -la "$RUNTIMES_DIR/"*.so*
+
+# Runtime environment
+ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV E2E_STREAM_DURATION_SEC=10
+ENV E2E_TARGET_BITRATE_MBPS=5
+ENV E2E_TEST_FILTER=""
+
+# .NET runtime optimizations for faster test execution
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+ENV DOTNET_NOLOGO=1
+ENV DOTNET_EnableDiagnostics=0
+
+# Create results directory
+RUN mkdir -p /results
+
+# Copy and prepare entrypoint script
+COPY Jellyfin.Xtream.E2ETests/run-tests.sh /run-tests.sh
+RUN chmod +x /run-tests.sh
+
+ENTRYPOINT ["/run-tests.sh"]

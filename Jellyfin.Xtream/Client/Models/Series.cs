@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Kevin Jilissen
+// Copyright (C) 2025  Gergo Magyar
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,63 +15,111 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 
-#pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
 
+/// <summary>
+/// Represents a TV series from the Xtream API.
+/// </summary>
 public class Series
 {
+    /// <summary>
+    /// Gets or sets the series number.
+    /// </summary>
     [JsonProperty("num")]
     public int Num { get; set; }
 
+    /// <summary>
+    /// Gets or sets the series name.
+    /// </summary>
     [JsonProperty("name")]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the series identifier.
+    /// </summary>
     [JsonProperty("series_id")]
     public int SeriesId { get; set; }
 
+    /// <summary>
+    /// Gets or sets the cover image URL.
+    /// </summary>
     [JsonProperty("cover")]
     public string Cover { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the plot summary.
+    /// </summary>
     [JsonProperty("plot")]
     public string Plot { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the cast members.
+    /// </summary>
     [JsonProperty("cast")]
     public string Cast { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the director.
+    /// </summary>
     [JsonProperty("director")]
     public string Director { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the genre.
+    /// </summary>
     [JsonProperty("genre")]
     public string Genre { get; set; } = string.Empty;
 
-    // [JsonProperty("releaseDate")]
-    // public long ReleaseDate { get; set; }
-
+    /// <summary>
+    /// Gets or sets the last modified date.
+    /// </summary>
     [JsonConverter(typeof(UnixDateTimeConverter))]
     [JsonProperty("last_modified")]
     public DateTime LastModified { get; set; }
 
+    /// <summary>
+    /// Gets or sets the rating.
+    /// </summary>
     [JsonProperty("rating")]
     public decimal Rating { get; set; }
 
+    /// <summary>
+    /// Gets or sets the rating on a 5-point scale.
+    /// </summary>
     [JsonProperty("rating_5based")]
     public decimal Rating5Based { get; set; }
 
+    /// <summary>
+    /// Gets or sets the backdrop image paths.
+    /// </summary>
     [JsonConverter(typeof(SingularToListConverter<string>))]
     [JsonProperty("backdrop_path")]
-#pragma warning disable CA2227
-    public ICollection<string> BackdropPaths { get; set; } = new List<string>();
-#pragma warning restore CA2227
+    [SuppressMessage(
+        "Usage",
+        "CA2227:Collection properties should be read only",
+        Justification = "Required for JSON deserialization"
+    )]
+    public ICollection<string> BackdropPaths { get; set; } = [];
 
+    /// <summary>
+    /// Gets or sets the YouTube trailer URL.
+    /// </summary>
     [JsonProperty("youtube_trailer")]
     public string YoutubeTrailer { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets the episode run time in minutes.
+    /// </summary>
     [JsonProperty("episode_run_time")]
     public int EpisodeRunTime { get; set; }
 
+    /// <summary>
+    /// Gets or sets the category identifier.
+    /// </summary>
     [JsonProperty("category_id")]
     public int CategoryId { get; set; }
 }
